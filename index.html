@@ -435,7 +435,7 @@ function apportionShare(cbill, f, period){
     return {share: cbill.totalAmount/n, basis:`1 of ${n} flats (${scopeLabel}, equal share)`, percent: 100/n};
   }
   if(cbill.apportionMethod==='area'){
-    const totalArea = pool.reduce((s,x)=>s+(x.area||0),0)||1;
+    const totalArea = (!scoped && DB.society.totalArea)? DB.society.totalArea : pool.reduce((s,x)=>s+(x.area||0),0)||1;
     const percent = (f.area||0)/totalArea*100;
     return {share: cbill.totalAmount*(f.area||0)/totalArea, basis:`${f.area||0} of ${totalArea} sqft (${scopeLabel}) built-up area`, percent};
   }
@@ -729,7 +729,7 @@ function renderDashboard(){
       <div class="stat"><div class="lbl">Expenditure (MTD)</div><div class="val">₹${fmt(expMTD)}</div></div>
       <div class="stat ${surplusMTD>=0?'good':'alert'}"><div class="lbl">${surplusMTD>=0?'Surplus':'Deficit'} (MTD)</div><div class="val">₹${fmt(Math.abs(surplusMTD))}</div></div>
     </div>
-    ${collectionEfficiency!==null? `<div style="margin-top:6px;font-size:12px;color:var(--ink-soft);">Collection efficiency this month: <b style="color:var(--ink);">${collectionEfficiency}%</b> of billed amount collected so far.</div>`:''}
+    ${collectionEfficiency!==null? `<div style="margin-top:6px;font-size:12px;color:var(--ink-soft);">Collection efficiency this month: <b>${collectionEfficiency}%</b> of billed amount collected so far.</div>`:''}
   </div>
 
   <div class="card">
@@ -2298,8 +2298,10 @@ function renderSettings(){
     return `<tr onclick="openTowerModal('${t.id}')"><td>${t.name}</td><td class="num-cell">${n} flat${n===1?'':'s'}</td></tr>`;
   }).join('');
   return `
-  <div class="card"><div class="section-title">Society Name</div>
-    <div class="field"><input id="st_name" value="${DB.society.name}"></div>
+  <div class="card"><div class="section-title">Society Name & Total Area</div>
+    <div class="field"><label>Society Name</label><input id="st_name" value="${DB.society.name}"></div>
+    <div class="field"><label>Total Society Area (sqft)</label><input id="st_area" type="number" value="${DB.society.totalArea||''}" placeholder="Leave blank to auto-sum flat areas"></div>
+    <p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:8px;">Used when apportioning society-wide expenses by area (Billing → Consolidated Bills). Set this explicitly if your total includes common areas, corridors, or clubhouse space not part of any single flat — otherwise it defaults to the sum of all flat areas (currently ${fmt(DB.flats.reduce((s,f)=>s+(f.area||0),0))} sqft).</p>
     <button class="btn btn-primary btn-sm" onclick="saveSocietyName()">Save</button>
   </div>
   <div class="card"><div class="section-title">Opening Balances</div>
@@ -2366,7 +2368,11 @@ function renderSettings(){
     ${DB.wipeBackupAt? `<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="restoreWipeBackup()">Restore Last Wipe (from ${new Date(DB.wipeBackupAt).toLocaleString('en-IN')})</button>` : ''}
   </div>`;
 }
-function saveSocietyName(){ DB.society.name=document.getElementById('st_name').value.trim()||'My Housing Society'; save(); toast('Saved'); render(); }
+function saveSocietyName(){
+  DB.society.name=document.getElementById('st_name').value.trim()||'My Housing Society';
+  DB.society.totalArea = Number(document.getElementById('st_area').value)||0;
+  save(); toast('Saved'); render();
+}
 function saveUtilityRates(){
   if(!canEdit()) return;
   DB.utilityRates.govtElectricityRate = Number(document.getElementById('ur_govt').value)||0;
@@ -2865,7 +2871,7 @@ function renderHelp(){
     ['Data & Backup', `All data lives only on this device (offline-first). Export a backup regularly from Setup → Data, and store it somewhere safe (e.g. Google Drive/email to yourself). Import restores a full backup, replacing current data — use with care.`],
     ['Modules at a Glance', `<b>Flats</b> — owners, tenants, areas, parking · <b>Billing</b> — bills & meter readings · <b>Receipts</b> — payments received · <b>Vendors</b> — vendor bills, TDS, payments · <b>Payroll</b> — salary, PF, ESI · <b>Assets</b> — register & depreciation · <b>Stock</b> — inventory in/out · <b>Accounts</b> — vouchers & ledgers · <b>Approve</b> — maker-checker queue & audit log · <b>Issues</b> — complaints · <b>Reports</b> — Trial Balance, I&E, Balance Sheet, GST, Defaulters, Flat Ledger.`],
   ];
-  return sections.map(([title,body])=>`<div class="card"><div class="section-title">${title}</div><p style="font-size:13px;line-height:1.6;color:var(--ink);">${body}</p></div>`).join('');
+  return sections.map(([title,body])=>`<div class="card"><div class="section-title">${title}</div><p style="font-size:13px;line-height:1.6;">${body}</p></div>`).join('');
 }
 
 /* ============ THEME ============ */
