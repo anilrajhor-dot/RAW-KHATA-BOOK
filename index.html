@@ -255,11 +255,17 @@ function load(){
   };
 }
 if(!DB.security) DB.security = {pins:{Accountant:'1234',Treasurer:'1234',Auditor:'1234'}};
-['vendors','vendorBills','employees','payrollRuns','assets','inventoryItems','inventoryTx','flatTypes','meterReadings'].forEach(k=>{ if(!DB[k]) DB[k]=[]; });
+['vendors','vendorBills','employees','payrollRuns','assets','inventoryItems','inventoryTx','flatTypes','meterReadings','consolidatedBills','towers','mainMeterReadings'].forEach(k=>{ if(!DB[k]) DB[k]=[]; });
+if(!DB.seq.tower) DB.seq.tower=1;
+if(!DB.seq.mmr) DB.seq.mmr=1;
+if(!DB.seq.cbill) DB.seq.cbill=1;
 if(!DB.categoryRates) DB.categoryRates = {};
+if(!DB.utilityRates) DB.utilityRates = {govtElectricityRate:0, dgSupplyRate:0};
+if(!DB.bankAccounts) DB.bankAccounts = [];
+if(!DB.seq.bank) DB.seq.bank=1;
 DB.flatTypes.forEach(t=>{ if(!t.mode) t.mode='name'; if(t.minArea===undefined) t.minArea=0; if(t.maxArea===undefined) t.maxArea=0; });
 Object.assign(DB.seq, {vendor:DB.seq.vendor||1, vbill:DB.seq.vbill||1, emp:DB.seq.emp||1, payroll:DB.seq.payroll||1, asset:DB.seq.asset||1, item:DB.seq.item||1, itx:DB.seq.itx||1, ftype:DB.seq.ftype||1, meter:DB.seq.meter||1});
-DB.chargeHeads.forEach(h=>{ if(h.gstApplicable===undefined) h.gstApplicable=false; if(h.gstRate===undefined) h.gstRate=18; });
+DB.chargeHeads.forEach(h=>{ if(h.gstApplicable===undefined) h.gstApplicable=false; if(h.gstRate===undefined) h.gstRate=18; if(!h.applicableCategories) h.applicableCategories=[]; });
 DB.seq.head = Math.max(DB.seq.head||1, ...DB.chargeHeads.map(h=>h.id), 0) + 1;
 DB.flats.forEach(f=>{ if(f.flatTypeId===undefined) f.flatTypeId=''; });
 function save(){ localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
@@ -280,7 +286,7 @@ const ACCOUNTS = {
   'Cash in Hand':'Asset','Bank Account':'Asset','Maintenance Receivable':'Asset',
   'Fixed Assets':'Asset','Accumulated Depreciation':'Asset','Inventory Stock':'Asset','GST Input Credit':'Asset',
   'Sinking Fund':'Liability','Corpus Fund':'Liability','Security Deposits':'Liability','Vendor Creditors':'Liability','GST Payable':'Liability',
-  'PF Payable':'Liability','ESI Payable':'Liability','TDS Payable':'Liability',
+  'PF Payable':'Liability','ESI Payable':'Liability','TDS Payable':'Liability','Opening Balance Equity':'Liability',
   'Maintenance Income':'Income','Water Income':'Income','Parking Income':'Income','Penalty Income':'Income','Other Income':'Income',
   'Common Electricity Income':'Income','Lift Maintenance Income':'Income','DG Income':'Income','Electricity Income':'Income',
   'Housekeeping Expense':'Expense','Security Expense':'Expense','Electricity Expense':'Expense','Repairs & Maintenance':'Expense',
@@ -296,7 +302,7 @@ function modeToAccount(mode){ return mode==='Cash'?'Cash in Hand':'Bank Account'
 const ACCOUNT_GROUPS = {
   'Cash in Hand':'Current Assets','Bank Account':'Current Assets','Maintenance Receivable':'Current Assets','Inventory Stock':'Current Assets','GST Input Credit':'Current Assets',
   'Fixed Assets':'Fixed Assets','Accumulated Depreciation':'Fixed Assets',
-  'Sinking Fund':'Reserves & Funds','Corpus Fund':'Reserves & Funds',
+  'Sinking Fund':'Reserves & Funds','Corpus Fund':'Reserves & Funds','Opening Balance Equity':'Reserves & Funds',
   'Security Deposits':'Current Liabilities','Vendor Creditors':'Current Liabilities','GST Payable':'Current Liabilities','PF Payable':'Current Liabilities','ESI Payable':'Current Liabilities','TDS Payable':'Current Liabilities',
   'Maintenance Income':'Operating Income','Water Income':'Operating Income','Parking Income':'Operating Income','Common Electricity Income':'Operating Income','Lift Maintenance Income':'Operating Income','DG Income':'Operating Income','Electricity Income':'Operating Income',
   'Penalty Income':'Other Income','Other Income':'Other Income',
@@ -312,6 +318,30 @@ function groupedRows(accNames, valueFn){
     const subtotal = rows.reduce((s,x)=>s+x.v,0);
     return {group:g, rows, subtotal};
   }).filter(g=>g.rows.length);
+}
+function bankLedgerName(b){ return `${b.bankName} — ${b.type}${b.accountNumber? ' ×'+b.accountNumber.slice(-4):''}`; }
+function syncBankLedgerAccounts(){
+  DB.bankAccounts.filter(b=>b.type!=='FD').forEach(b=>{
+    if(!b.ledgerAccountName) b.ledgerAccountName = bankLedgerName(b);
+    ACCOUNTS[b.ledgerAccountName] = 'Asset';
+    ACCOUNT_GROUPS[b.ledgerAccountName] = 'Current Assets';
+  });
+}
+function paymentAccountOptions(){
+  syncBankLedgerAccounts();
+  const banks = DB.bankAccounts.filter(b=>b.type!=='FD' && b.ledgerAccountName);
+  const opts = ['Cash in Hand', ...banks.map(b=>b.ledgerAccountName)];
+  if(!banks.length) opts.push('Bank Account');
+  return opts;
+}
+function paymentAccountSelect(id, selected, onchangeExtra){
+  const opts = paymentAccountOptions();
+  const sel = selected && opts.includes(selected)? selected : opts[0];
+  return `<select id="${id}" ${onchangeExtra?`onchange="${onchangeExtra}"`:''}>${opts.map(a=>`<option ${a===sel?'selected':''}>${a}</option>`).join('')}</select>`;
+}
+function paymentViaSelect(id, selected){
+  const modes = ['UPI','NEFT','RTGS','IMPS','Cheque','Direct Deposit'];
+  return `<select id="${id}">${modes.map(m=>`<option ${m===selected?'selected':''}>${m}</option>`).join('')}</select>`;
 }
 
 /* ============ ROUTER ============ */
@@ -329,6 +359,7 @@ const TABS = [
   {id:'complaints', label:'Issues', ic:'⚑'},
   {id:'reports', label:'Reports', ic:'▦'},
   {id:'gst', label:'GST', ic:'%'},
+  {id:'audit', label:'Audit', ic:'🔍'},
   {id:'settings', label:'Setup', ic:'⚙'},
   {id:'help', label:'Help', ic:'?'},
 ];
@@ -357,7 +388,7 @@ function render(){
   fab.style.display='flex';
   if(route==='dashboard'){ c.innerHTML = renderDashboard(); fab.style.display='none'; }
   else if(route==='flats'){ c.innerHTML = renderFlats(); fab.onclick=()=>openFlatModal(); }
-  else if(route==='billing'){ c.innerHTML = renderBilling(); if(subroute==='meters'){ fab.style.display='none'; } else { fab.onclick=()=>openGenerateBillModal(); } }
+  else if(route==='billing'){ c.innerHTML = renderBilling(); if(subroute==='meters'){ fab.style.display='none'; } else if(subroute==='consolidated'){ fab.onclick=()=>openConsolidatedBillModal(); } else { fab.onclick=()=>openGenerateBillModal(); } }
   else if(route==='receipts'){ c.innerHTML = renderReceipts(); fab.onclick=()=>openReceiptModal(); }
   else if(route==='vendors'){ c.innerHTML = renderVendors(); fab.onclick=()=>(subroute==='bills'?openVendorBillModal():subroute==='payments'?openVendorPaymentModal():openVendorModal()); }
   else if(route==='payroll'){ c.innerHTML = renderPayroll(); fab.onclick=()=>(subroute==='runs'?openPayrollRunModal():openEmployeeModal()); }
@@ -368,6 +399,7 @@ function render(){
   else if(route==='complaints'){ c.innerHTML = renderComplaints(); fab.onclick=()=>openComplaintModal(); }
   else if(route==='reports'){ c.innerHTML = renderReports(); fab.style.display='none'; }
   else if(route==='gst'){ c.innerHTML = renderGST(); fab.style.display='none'; }
+  else if(route==='audit'){ c.innerHTML = renderAudit(); fab.style.display='none'; }
   else if(route==='settings'){ c.innerHTML = renderSettings(); fab.style.display='none'; }
   else if(route==='help'){ c.innerHTML = renderHelp(); fab.style.display='none'; }
   if(isReadOnly() && ['flats','billing','receipts','vendors','payroll','assets','inventory','accounts','complaints'].includes(route)) fab.style.display='none';
@@ -392,9 +424,42 @@ function categoryRate(head, category){
   }
   return head.rate;
 }
+function apportionShare(cbill, f, period){
+  const scoped = cbill.scope==='tower' && cbill.tower;
+  if(scoped && f.tower!==cbill.tower) return null;
+  const pool = scoped? DB.flats.filter(x=>x.tower===cbill.tower) : DB.flats;
+  const scopeLabel = scoped? `Tower ${cbill.tower}` : 'society-wide';
+  if(cbill.apportionMethod==='equal'){
+    const n = pool.length||1;
+    return {share: cbill.totalAmount/n, basis:`1 of ${n} flats (${scopeLabel}, equal share)`, percent: 100/n};
+  }
+  if(cbill.apportionMethod==='area'){
+    const totalArea = pool.reduce((s,x)=>s+(x.area||0),0)||1;
+    const percent = (f.area||0)/totalArea*100;
+    return {share: cbill.totalAmount*(f.area||0)/totalArea, basis:`${f.area||0} of ${totalArea} sqft (${scopeLabel}) built-up area`, percent};
+  }
+  if(cbill.apportionMethod==='meterReading'){
+    const h = DB.chargeHeads.find(x=>x.id===cbill.chargeHeadId);
+    const meterType = h?.meterType;
+    const allUnits = pool.reduce((s,x)=>{ const r=DB.meterReadings.find(r=>r.flatId===x.id&&r.meterType===meterType&&r.period===period); return s+(r?Math.max(0,r.current-r.previous):0); },0)||1;
+    const r = DB.meterReadings.find(r=>r.flatId===f.id&&r.meterType===meterType&&r.period===period);
+    const units = r?Math.max(0,r.current-r.previous):0;
+    const percent = units/allUnits*100;
+    return {share: cbill.totalAmount*units/allUnits, basis:`${units} of ${allUnits} units metered consumption (${scopeLabel})`, percent};
+  }
+  return null;
+}
 function billOutstanding(b){ return b.total - b.paid; }
 function flatOutstanding(flatId){
   return DB.bills.filter(b=>b.flatId===flatId).reduce((s,b)=>s+billOutstanding(b),0);
+}
+function flatLedgerBalance(flatId, uptoDate){
+  let bal=0;
+  DB.vouchers.filter(v=>v.flatId===flatId && v.status==='approved' && (!uptoDate || v.date<=uptoDate)).sort((a,b)=>a.date.localeCompare(b.date)).forEach(v=>{
+    const rec = v.entries.find(e=>e.account==='Maintenance Receivable'); if(!rec) return;
+    bal += (rec.debit||0)-(rec.credit||0);
+  });
+  return bal;
 }
 function addVoucher(v){
   v.id = nextId('voucher'); v.date = v.date||todayISO();
@@ -495,21 +560,77 @@ function rejectVoucher(id, note){
   logAction('Reject', `${v.type} voucher #${v.id} — ${v.narration||''} — reason: ${note}`);
   save(); render(); toast('Rejected');
 }
+
+/* ============ DELETE (WITH MAKER-CHECKER FOR APPROVED ENTRIES) ============ */
+function withdrawVoucher(id){
+  if(!canEdit()) return;
+  const v = DB.vouchers.find(x=>x.id===id); if(!v) return;
+  if(v.status==='approved'){ toast('This entry is already approved — use "Request Deletion" instead.'); return; }
+  if(v.status==='pending' && v.maker!==window.__currentRole){ toast('Only the person who raised this can withdraw it before approval.'); return; }
+  DB.vouchers = DB.vouchers.filter(x=>x.id!==id);
+  if(v.ref){
+    DB.bills = DB.bills.filter(b=>b.id!==v.ref);
+    DB.vendorBills = DB.vendorBills.filter(b=>b.id!==v.ref);
+    if(DB.consolidatedBills) DB.consolidatedBills = DB.consolidatedBills.filter(c=>c.id!==v.ref);
+  }
+  logAction('Withdraw', `${v.type} voucher #${v.id} withdrawn before posting — ${v.narration||''}`);
+  save(); render(); toast('Entry withdrawn');
+}
+function billHasOtherPayments(v){
+  if(!v.ref) return false;
+  const bill = DB.bills.find(b=>b.id===v.ref);
+  if(bill && bill.paid>0) return true;
+  const vb = DB.vendorBills.find(b=>b.id===v.ref);
+  if(vb && vb.paid>0) return true;
+  return false;
+}
+function requestDeleteVoucher(id){
+  if(!canEdit()) return;
+  const v = DB.vouchers.find(x=>x.id===id); if(!v) return;
+  if(v.status!=='approved'){ toast('Only approved entries need a deletion request — pending/rejected ones can be withdrawn directly.'); return; }
+  if(billHasOtherPayments(v)){ toast('This bill already has payments recorded against it — delete/reverse those receipts first.'); return; }
+  const reason = prompt('Reason for requesting deletion (required):');
+  if(!reason || !reason.trim()) return;
+  v.deleteRequested = true; v.deleteRequestedBy = window.__currentRole; v.deleteRequestedAt = nowTS(); v.deleteReason = reason.trim();
+  logAction('Delete Requested', `${v.type} voucher #${v.id} — ${v.narration||''} — reason: ${reason.trim()}`);
+  save(); render(); toast('Deletion requested — awaiting a different role to confirm');
+}
+function cancelDeleteRequest(id){
+  if(!canEdit()) return;
+  const v = DB.vouchers.find(x=>x.id===id); if(!v) return;
+  v.deleteRequested=false; v.deleteRequestedBy=null; v.deleteRequestedAt=null; v.deleteReason='';
+  logAction('Delete Request Cancelled', `${v.type} voucher #${v.id} — ${v.narration||''}`);
+  save(); render(); toast('Deletion request withdrawn');
+}
+function confirmDeleteVoucher(id){
+  const v = DB.vouchers.find(x=>x.id===id); if(!v) return;
+  if(isReadOnly()){ toast('Auditors cannot delete entries — view only.'); return; }
+  if(v.deleteRequestedBy===window.__currentRole){ toast('A different role must confirm this deletion.'); return; }
+  if(billHasOtherPayments(v)){ toast('This bill now has payments recorded against it — cannot delete safely. Cancel the request and investigate.'); return; }
+  reverseApprovalSideEffects(v);
+  DB.vouchers = DB.vouchers.filter(x=>x.id!==id);
+  logAction('Delete Confirmed', `${v.type} voucher #${v.id} deleted (requested by ${v.deleteRequestedBy}) — ${v.narration||''}`);
+  save(); render(); toast('Entry deleted and reversed from the ledger');
+}
 function applyApprovalSideEffects(v){
   if(v.type==='Receipt' && v.flatId){
     let remaining = v.entries.find(e=>e.debit>0)?.debit||0;
+    v.allocations = [];
     DB.bills.filter(b=>b.flatId===v.flatId && billOutstanding(b)>0).sort((a,b)=>a.period.localeCompare(b.period)).forEach(b=>{
       if(remaining<=0) return;
       const due = billOutstanding(b); const alloc = Math.min(due,remaining);
       b.paid += alloc; remaining -= alloc; b.status = billOutstanding(b)<=0?'paid':'partial';
+      v.allocations.push({billId:b.id, amount:alloc});
     });
   }
   if(v.type==='VendorPayment' && v.vendorId){
     let remaining = v.entries.find(e=>e.debit>0)?.debit||0;
+    v.allocations = [];
     DB.vendorBills.filter(b=>b.vendorId===v.vendorId && (b.netPayable-b.paid)>0).sort((a,b)=>a.date.localeCompare(b.date)).forEach(b=>{
       if(remaining<=0) return;
       const due = b.netPayable-b.paid; const alloc=Math.min(due,remaining);
       b.paid += alloc; remaining -= alloc; b.status = (b.netPayable-b.paid)<=0?'paid':'partial';
+      v.allocations.push({vendorBillId:b.id, amount:alloc});
     });
   }
   if(v.type==='Payroll' && v.ref){
@@ -519,6 +640,23 @@ function applyApprovalSideEffects(v){
     const a = DB.assets.find(x=>x.id===v.assetRef); if(a) a.posted=true;
   }
 }
+function reverseApprovalSideEffects(v){
+  if(v.type==='Receipt' && v.allocations){
+    v.allocations.forEach(a=>{ const b=DB.bills.find(x=>x.id===a.billId); if(b){ b.paid-=a.amount; b.status = billOutstanding(b)<=0?'paid':(b.paid>0?'partial':'unpaid'); } });
+  }
+  if(v.type==='VendorPayment' && v.allocations){
+    v.allocations.forEach(a=>{ const b=DB.vendorBills.find(x=>x.id===a.vendorBillId); if(b){ b.paid-=a.amount; b.status = (b.netPayable-b.paid)<=0?'paid':(b.paid>0?'partial':'unpaid'); } });
+  }
+  if(v.type==='Payroll' && v.ref){
+    const run = DB.payrollRuns.find(r=>r.id===v.ref); if(run) run.status='Cancelled (entry deleted)';
+  }
+  // Remove the supporting record this voucher created, if any, so nothing dangles with zero accounting effect
+  if(v.ref){
+    const billIdx = DB.bills.findIndex(b=>b.id===v.ref); if(billIdx>=0) DB.bills.splice(billIdx,1);
+    const vbIdx = DB.vendorBills.findIndex(b=>b.id===v.ref); if(vbIdx>=0) DB.vendorBills.splice(vbIdx,1);
+    const cbIdx = DB.consolidatedBills? DB.consolidatedBills.findIndex(c=>c.id===v.ref) : -1; if(cbIdx>=0) DB.consolidatedBills.splice(cbIdx,1);
+  }
+}
 
 /* ============ DASHBOARD ============ */
 function renderDashboard(){
@@ -526,10 +664,33 @@ function renderDashboard(){
   const occupied = DB.flats.filter(f=>f.occupancy!=='vacant').length;
   const totalOutstanding = DB.bills.reduce((s,b)=>s+billOutstanding(b),0);
   const thisMonth = todayISO().slice(0,7);
+  const monthStart = thisMonth+'-01';
   const collectedThisMonth = DB.vouchers.filter(v=>v.type==='Receipt' && v.date.slice(0,7)===thisMonth)
     .reduce((s,v)=> s+ v.entries.reduce((s2,e)=> s2+(e.debit||0),0)/2 ,0);
   const openComplaints = DB.complaints.filter(c=>c.status!=='Closed').length;
   const billedThisMonth = DB.bills.filter(b=>b.period===thisMonth).reduce((s,b)=>s+b.total,0);
+
+  // Financial snapshot
+  const cashBank = accBalance('Cash in Hand').net + accBalance('Bank Account').net;
+  const incomeAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income'), expAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense');
+  const incomeMTD = incomeAccs.reduce((s,a)=>s+accBalance(a,{from:monthStart,upto:todayISO()}).cr,0);
+  const expMTD = expAccs.reduce((s,a)=>s+accBalance(a,{from:monthStart,upto:todayISO()}).dr,0);
+  const surplusMTD = incomeMTD-expMTD;
+  const collectionEfficiency = billedThisMonth>0? Math.round(collectedThisMonth/billedThisMonth*100) : null;
+
+  // Dues, advances, compliance
+  const advancesTotal = DB.flats.reduce((s,f)=>{ const b=flatLedgerBalance(f.id); return s+(b<0?-b:0); },0);
+  const vendorDue = DB.vendorBills.reduce((s,b)=>s+(b.netPayable-b.paid),0);
+  const pfEsiDue = -accBalance('PF Payable').net + -accBalance('ESI Payable').net;
+  const gstDue = -accBalance('GST Payable').net - accBalance('GST Input Credit').net;
+  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length;
+
+  // Asset alerts (AMC/warranty due within 30 days or expired)
+  const today = todayISO();
+  const assetAlerts = DB.assets.filter(a=>{
+    const check = d=>{ if(!d) return false; const days=Math.round((new Date(d)-new Date(today))/86400000); return days<=30; };
+    return check(a.amcExpiry)||check(a.warrantyExpiry);
+  }).length;
 
   // last 6 months collection
   const months=[]; const d=new Date();
@@ -543,19 +704,43 @@ function renderDashboard(){
   <div class="stat-grid">
     <div class="stat"><div class="lbl">Total Flats</div><div class="val">${totalFlats}</div></div>
     <div class="stat"><div class="lbl">Occupied</div><div class="val">${occupied}</div></div>
-    <div class="stat alert"><div class="lbl">Outstanding Dues</div><div class="val">₹${fmt(totalOutstanding)}</div></div>
-    <div class="stat good"><div class="lbl">Collected · ${thisMonth}</div><div class="val">₹${fmt(collectedThisMonth)}</div></div>
+    <div class="stat alert" style="cursor:pointer;" onclick="go('reports','defaulters')"><div class="lbl">Outstanding Dues ›</div><div class="val">₹${fmt(totalOutstanding)}</div></div>
+    <div class="stat good" style="cursor:pointer;" onclick="go('reports','advances')"><div class="lbl">Advances Held ›</div><div class="val">₹${fmt(advancesTotal)}</div></div>
+    <div class="stat"><div class="lbl">Collected · ${thisMonth}</div><div class="val">₹${fmt(collectedThisMonth)}</div></div>
     <div class="stat"><div class="lbl">Billed · ${thisMonth}</div><div class="val">₹${fmt(billedThisMonth)}</div></div>
-    <div class="stat ${openComplaints>0?'alert':''}"><div class="lbl">Open Issues</div><div class="val">${openComplaints}</div></div>
+    <div class="stat ${openComplaints>0?'alert':''}" style="cursor:pointer;" onclick="go('complaints')"><div class="lbl">Open Issues ›</div><div class="val">${openComplaints}</div></div>
+    <div class="stat ${pendingApprovals>0?'alert':'good'}" style="cursor:pointer;" onclick="go('approvals')"><div class="lbl">Pending Approvals ›</div><div class="val">${pendingApprovals}</div></div>
   </div>
+
   <div class="card">
-    <div class="section-title"><span><span class="num">01</span>Collections — Last 6 Months</span></div>
+    <div class="section-title"><span><span class="num">01</span>Financial Snapshot — ${thisMonth}</span><button class="btn btn-outline btn-sm" onclick="go('reports','ie')">Full Statement</button></div>
+    <div class="stat-grid">
+      <div class="stat good"><div class="lbl">Cash & Bank Balance</div><div class="val">₹${fmt(cashBank)}</div></div>
+      <div class="stat"><div class="lbl">Income (MTD)</div><div class="val">₹${fmt(incomeMTD)}</div></div>
+      <div class="stat"><div class="lbl">Expenditure (MTD)</div><div class="val">₹${fmt(expMTD)}</div></div>
+      <div class="stat ${surplusMTD>=0?'good':'alert'}"><div class="lbl">${surplusMTD>=0?'Surplus':'Deficit'} (MTD)</div><div class="val">₹${fmt(Math.abs(surplusMTD))}</div></div>
+    </div>
+    ${collectionEfficiency!==null? `<div style="margin-top:6px;font-size:12px;color:var(--ink-soft);">Collection efficiency this month: <b style="color:var(--ink);">${collectionEfficiency}%</b> of billed amount collected so far.</div>`:''}
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span><span class="num">02</span>Payables & Compliance</span></div>
+    <div class="tbl-wrap"><table>
+      <tr onclick="go('vendors','bills')" style="cursor:pointer;"><td>Vendor Payments Due</td><td class="num-cell" style="${vendorDue>0?'color:var(--brick)':''}">₹${fmt(vendorDue)}</td></tr>
+      <tr onclick="go('payroll','pf')" style="cursor:pointer;"><td>PF & ESI Payable</td><td class="num-cell" style="${pfEsiDue>0?'color:var(--brick)':''}">₹${fmt(pfEsiDue)}</td></tr>
+      <tr onclick="go('gst','summary')" style="cursor:pointer;"><td>Net GST Payable</td><td class="num-cell" style="${gstDue>0?'color:var(--brick)':''}">₹${fmt(gstDue)}</td></tr>
+      <tr onclick="go('assets')" style="cursor:pointer;"><td>Assets with AMC/Warranty Due (30 days)</td><td class="num-cell" style="${assetAlerts>0?'color:var(--gold)':''}">${assetAlerts}</td></tr>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span><span class="num">03</span>Collections — Last 6 Months</span></div>
     <div class="bar-chart">
       ${months.map((m,i)=>`<div class="bar-col"><div class="bar" style="height:${(collByMonth[i]/maxColl*100)||2}%"></div><div class="bar-label">${m.slice(5)}</div></div>`).join('')}
     </div>
   </div>
   <div class="card">
-    <div class="section-title"><span><span class="num">02</span>Top Defaulters</span><button class="btn btn-outline btn-sm" onclick="go('reports','defaulters')">View all</button></div>
+    <div class="section-title"><span><span class="num">04</span>Top Defaulters</span><button class="btn btn-outline btn-sm" onclick="go('reports','defaulters')">View all</button></div>
     ${defaulters.length? `<div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th class="num-cell">Due</th></tr>
       ${defaulters.map(x=>`<tr><td>${flatLabel(x.f)}</td><td>${x.f.owner?.name||'—'}</td><td class="num-cell" style="color:var(--brick)">₹${fmt(x.out)}</td></tr>`).join('')}
     </table></div>` : `<div class="empty"><div class="ic">✓</div>No outstanding dues.</div>`}
@@ -680,7 +865,7 @@ function openFlatModal(id){
   if(!id) DB.seq.flat--; // don't burn id until saved
   openModal(`
     <div class="modal-head"><h2>${id?'Edit Flat':'Add Flat'}</h2><button class="close-x" onclick="closeModal()">×</button></div>
-    <div class="row2"><div class="field"><label>Tower/Block</label><input id="f_tower" value="${f.tower||''}" placeholder="A"></div>
+    <div class="row2"><div class="field"><label>Tower/Block</label><input id="f_tower" value="${f.tower||''}" placeholder="A" list="towerList"><datalist id="towerList">${DB.towers.map(t=>`<option value="${t.name}">`).join('')}</datalist></div>
     <div class="field"><label>Flat No.</label><input id="f_flatNo" value="${f.flatNo||''}" placeholder="101"></div></div>
     <div class="field"><label>Category</label><select id="f_type" onchange="applyFlatType()"><option value="">— No fixed category —</option>${DB.flatTypes.filter(t=>t.mode!=='sqft').map(t=>`<option value="${t.id}" ${f.flatTypeId===t.id?'selected':''}>${t.name} (${t.defaultArea} sqft)</option>`).join('')}</select></div>
     <div class="row2"><div class="field"><label>Area (sqft)</label><input id="f_area" type="number" value="${f.area||''}" onchange="showAutoCategory()"></div>
@@ -697,6 +882,8 @@ function openFlatModal(id){
     <div class="row2"><div class="field"><label>Owner Phone</label><input id="f_ownerPhone" value="${f.owner?.phone||''}"></div>
     <div class="field"><label>Owner Email</label><input id="f_ownerEmail" value="${f.owner?.email||''}"></div></div>
     <div class="field"><label>Tenant Name (if any)</label><input id="f_tenantName" value="${f.tenant?.name||''}"></div>
+    <div class="row2"><div class="field"><label>Tenant Phone</label><input id="f_tenantPhone" value="${f.tenant?.phone||''}"></div>
+    <div class="field"><label>Tenant Email</label><input id="f_tenantEmail" value="${f.tenant?.email||''}"></div></div>
     <div style="display:flex; gap:10px; margin-top:16px;">
       <button class="btn btn-primary" style="flex:1" onclick="saveFlat('${f.id}')">Save Flat</button>
       ${id?`<button class="btn btn-danger" onclick="deleteFlat('${f.id}')">Delete</button>`:''}
@@ -728,7 +915,7 @@ function saveFlat(id){
     area:Number(document.getElementById('f_area').value)||0, parkingSlots:Number(document.getElementById('f_parking').value)||0,
     occupancy:document.getElementById('f_occ').value,
     owner:{name:document.getElementById('f_ownerName').value.trim(),phone:document.getElementById('f_ownerPhone').value.trim(),email:document.getElementById('f_ownerEmail').value.trim()},
-    tenant: document.getElementById('f_tenantName').value.trim()? {name:document.getElementById('f_tenantName').value.trim()} : null
+    tenant: document.getElementById('f_tenantName').value.trim()? {name:document.getElementById('f_tenantName').value.trim(), phone:document.getElementById('f_tenantPhone').value.trim(), email:document.getElementById('f_tenantEmail').value.trim()} : null
   };
   if(!data.flatNo){ toast('Flat No. is required'); return; }
   const existing = DB.flats.findIndex(x=>x.id===id);
@@ -744,7 +931,7 @@ function deleteFlat(id){
 /* ============ BILLING ============ */
 function renderBilling(){
   const sr = subroute || 'bills';
-  const tabs=[['bills','Bills'],['meters','Meter Readings']];
+  const tabs=[['bills','Bills'],['meters','Meter Readings'],['consolidated','Consolidated Bills']];
   let body='';
   const actionBar = isReadOnly()? '' : `<div style="display:flex; gap:8px; margin-bottom:12px;">
       <button class="btn btn-outline btn-sm" style="flex:1" onclick="openIndividualBillModal()">Bill One Flat</button>
@@ -766,17 +953,253 @@ function renderBilling(){
     }
   } else if(sr==='meters'){
     body = renderMeterEntry();
+  } else if(sr==='consolidated'){
+    body = renderConsolidatedBills();
   }
   return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('billing','${t[0]}')">${t[1]}</button>`).join('')}</div>${body}`;
 }
+function renderConsolidatedBills(){
+  const bills = DB.consolidatedBills.slice().sort((a,b)=>b.billDate.localeCompare(a.billDate));
+  const liftHead = DB.chargeHeads.find(h=>h.name.toLowerCase().includes('lift'));
+  let liftSummary = '';
+  if(liftHead){
+    const liftBills = DB.consolidatedBills.filter(c=>c.chargeHeadId===liftHead.id);
+    if(liftBills.length){
+      const byTower = {};
+      liftBills.forEach(c=>{ const key = c.scope==='tower'&&c.tower? c.tower : 'All Towers (society-wide)'; byTower[key]=(byTower[key]||0)+c.totalAmount; });
+      const grand = Object.values(byTower).reduce((s,v)=>s+v,0);
+      liftSummary = `<div class="card"><div class="section-title">Lift Expense — Total ₹${fmt(grand)}</div>
+        <div class="tbl-wrap"><table><tr><th>Tower</th><th class="num-cell">Total Lift Expense</th></tr>
+        ${Object.entries(byTower).map(([t,amt])=>`<tr><td>${t}</td><td class="num-cell">₹${fmt(amt)}</td></tr>`).join('')}
+        <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>All Towers Combined</td><td class="num-cell">₹${fmt(grand)}</td></tr>
+        </table></div></div>`;
+    }
+  }
+  const body = bills.length? `<div class="tbl-wrap"><table><tr><th>Charge / Period</th><th class="num-cell">Total</th><th>Scope / Method</th></tr>
+    ${bills.map(c=>{ const h=DB.chargeHeads.find(x=>x.id===c.chargeHeadId);
+      return `<tr onclick="viewConsolidatedBill('${c.id}')"><td><b>${h?h.name:'—'}</b><div style="font-size:11px;color:var(--ink-soft)">${c.period} · ${c.authority||''}${c.billNumber?' · #'+c.billNumber:''}</div></td><td class="num-cell">₹${fmt(c.totalAmount)}</td><td style="font-size:12px;">${c.scope==='tower'?'Tower '+c.tower+' · ':''}${c.apportionMethod==='area'?'By area':c.apportionMethod==='equal'?'Equal split':'By meter reading'}${c.mainMeterCalc?' · main-meter calc':''}</td></tr>`; }).join('')}
+    </table></div>` : `<div class="empty"><div class="ic">▤</div>No consolidated bills logged yet.</div>`;
+  return `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">For charges the RWA pays as one lump-sum bill — common-area electricity, water, or a tower's lift AMC — log the actual bill here, choose how (and among which flats) it's split, and each flat's bill will show exactly how their share was worked out.</p>${liftSummary}<div class="card">${body}</div>`;
+}
+function openConsolidatedBillModal(){
+  const heads = DB.chargeHeads;
+  if(!heads.length){ toast('Add a charge head first'); go('settings'); return; }
+  const expAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense');
+  const towerNames = [...new Set([...DB.towers.map(t=>t.name), ...DB.flats.map(f=>f.tower).filter(Boolean)])];
+  openModal(`<div class="modal-head"><h2>Log Consolidated Bill</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Charge (which resident charge does this fund?)</label><select id="cb_head">${heads.map(h=>`<option value="${h.id}">${h.name}</option>`).join('')}</select></div>
+    <div class="field"><label>Billing Period</label><input id="cb_period" type="month" value="${todayISO().slice(0,7)}"></div>
+    <div class="row2"><div class="field"><label>Authority / Utility / Vendor</label><input id="cb_authority" placeholder="e.g. MSEB, Everest Lift AMC"></div><div class="field"><label>Bill Number</label><input id="cb_billno"></div></div>
+    <div class="row2"><div class="field"><label>Bill Date</label><input id="cb_date" type="date" value="${todayISO()}"></div><div class="field"><label>Total Amount ₹</label><input id="cb_amt" type="number"></div></div>
+    <div class="field"><label>Apply To</label><select id="cb_scope" onchange="toggleConsolidatedScope()">
+      <option value="society">Whole Society</option>
+      <option value="tower">One Tower Only (e.g. that tower's lift)</option>
+    </select></div>
+    <div class="field" id="cb_towerField" style="display:none"><label>Tower</label><input id="cb_tower" list="towerList2" placeholder="e.g. A"><datalist id="towerList2">${towerNames.map(t=>`<option value="${t}">`).join('')}</datalist></div>
+    <div class="field"><label>Apportion Across Flats By</label><select id="cb_method">
+      <option value="area">Built-up Area (sqft)</option>
+      <option value="equal">Equal Split per Flat</option>
+      <option value="meterReading">Individual Meter Reading</option>
+    </select></div>
+    <hr class="divider">
+    <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="cb_mmr" onchange="toggleConsolidatedMMR()" style="width:auto"> Calculate from Main Meter (common = main meter − sum of individual Electricity sub-meters)</label></div>
+    <div id="cb_mmrFields" style="display:none">
+      <div class="row2"><div class="field"><label>Main Meter Previous</label><input id="cb_mmrPrev" type="number" onchange="suggestMMRBill()"></div><div class="field"><label>Main Meter Current</label><input id="cb_mmrCurr" type="number" onchange="suggestMMRBill()"></div></div>
+      <div class="field"><label>Total Bill Amount for Main Meter ₹</label><input id="cb_mmrBill" type="number">
+        ${DB.utilityRates.govtElectricityRate? `<button type="button" class="btn btn-outline btn-sm" style="margin-top:6px;" onclick="suggestMMRBill(true)">Use Govt Rate (₹${DB.utilityRates.govtElectricityRate}/unit)</button>` : `<p style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Set a Govt./Utility rate under Setup to auto-suggest this.</p>`}
+      </div>
+      <p style="font-size:11px;color:var(--ink-soft);">Total Amount above will be replaced automatically with the computed common-area cost, and apportionment is set to built-up area. The suggested bill amount is units × your standard rate — override it to match the actual bill (which may include fixed charges, slabs or taxes).</p>
+    </div>
+    <hr class="divider">
+    <div class="field"><label>Expense Account (what RWA paid)</label><select id="cb_exp">${expAccs.map(a=>`<option ${a==='Electricity Expense'?'selected':''}>${a}</option>`).join('')}</select></div>
+    <div class="field"><label>Paid Via</label><select id="cb_mode">${PAYMENT_MODES.map(m=>`<option>${m}</option>`).join('')}</select></div>
+    <p style="font-size:11px;color:var(--ink-soft);">This records the RWA's actual payment (posted for checker approval) and makes the apportionment available the next time you generate bills for this charge & period.</p>
+    <button class="btn btn-primary btn-block" onclick="saveConsolidatedBill()">Save & Post Payment</button>
+  `);
+}
+function toggleConsolidatedScope(){
+  document.getElementById('cb_towerField').style.display = document.getElementById('cb_scope').value==='tower'? 'block':'none';
+}
+function toggleConsolidatedMMR(){
+  const on = document.getElementById('cb_mmr').checked;
+  document.getElementById('cb_mmrFields').style.display = on? 'block':'none';
+}
+function suggestMMRBill(force){
+  const prev = Number(document.getElementById('cb_mmrPrev')?.value)||0;
+  const curr = Number(document.getElementById('cb_mmrCurr')?.value)||0;
+  const rate = DB.utilityRates.govtElectricityRate||0;
+  const billField = document.getElementById('cb_mmrBill');
+  if(!billField || !rate || curr<=prev) return;
+  if(force || !billField.value) billField.value = Math.round((curr-prev)*rate);
+}
+function saveConsolidatedBill(){
+  if(!canEdit()) return;
+  const chargeHeadId = Number(document.getElementById('cb_head').value);
+  const period = document.getElementById('cb_period').value;
+  const authority = document.getElementById('cb_authority').value.trim();
+  const billNumber = document.getElementById('cb_billno').value.trim();
+  const billDate = document.getElementById('cb_date').value;
+  const scope = document.getElementById('cb_scope').value;
+  const tower = scope==='tower'? document.getElementById('cb_tower').value.trim() : '';
+  let apportionMethod = document.getElementById('cb_method').value;
+  const expAcc = document.getElementById('cb_exp').value;
+  const mode = document.getElementById('cb_mode').value;
+  const useMMR = document.getElementById('cb_mmr').checked;
+  if(scope==='tower' && !tower){ toast('Enter the tower name'); return; }
+
+  let totalAmount = Number(document.getElementById('cb_amt').value);
+  let mmrMeta = null;
+  if(useMMR){
+    const prev = Number(document.getElementById('cb_mmrPrev').value)||0;
+    const curr = Number(document.getElementById('cb_mmrCurr').value)||0;
+    const billAmt = Number(document.getElementById('cb_mmrBill').value)||0;
+    const mainUnits = Math.max(0, curr-prev);
+    if(mainUnits<=0 || billAmt<=0){ toast('Enter valid main meter readings and bill amount'); return; }
+    const pool = scope==='tower'? DB.flats.filter(f=>f.tower===tower) : DB.flats;
+    const subUnits = pool.reduce((s,f)=>{ const r=DB.meterReadings.find(r=>r.flatId===f.id&&r.meterType==='Electricity'&&r.period===period); return s+(r?Math.max(0,r.current-r.previous):0); },0);
+    const commonUnits = Math.max(0, mainUnits-subUnits);
+    const effectiveRate = billAmt/mainUnits;
+    totalAmount = Math.round(commonUnits*effectiveRate);
+    apportionMethod = 'area';
+    mmrMeta = {mainUnits, subUnits, commonUnits, effectiveRate, billAmount:billAmt};
+    DB.mainMeterReadings.push({id:'MMR'+nextId('mmr'), period, previous:prev, current:curr, billAmount:billAmt, scope, tower});
+  }
+  if(!totalAmount||totalAmount<=0){ toast('Enter a valid total amount'); return; }
+  if(DB.consolidatedBills.some(c=>c.chargeHeadId===chargeHeadId && c.period===period && c.scope===scope && (scope!=='tower'||c.tower===tower))){
+    toast('A consolidated bill already exists for this charge, period & scope'); return;
+  }
+  const cbill = {id:'CB'+nextId('cbill'), chargeHeadId, period, authority, billNumber, billDate, totalAmount, apportionMethod, scope, tower, mainMeterCalc:!!useMMR, mmrMeta};
+  DB.consolidatedBills.push(cbill);
+  addVoucher({type:'Payment', date:billDate, narration:`Consolidated bill — ${authority||'utility'}${billNumber?' #'+billNumber:''}${scope==='tower'?' — Tower '+tower:''} — ${period}`,
+    entries:[{account:expAcc,debit:totalAmount,credit:0},{account:modeToAccount(mode),debit:0,credit:totalAmount}]});
+  save(); closeModal(); toast('Consolidated bill logged — payment awaits approval'); go('billing','consolidated');
+}
+function viewConsolidatedBill(id){
+  const c = DB.consolidatedBills.find(x=>x.id===id); if(!c) return;
+  const h = DB.chargeHeads.find(x=>x.id===c.chargeHeadId);
+  const pool = c.scope==='tower'&&c.tower? DB.flats.filter(f=>f.tower===c.tower) : DB.flats;
+  const rows = pool.map(f=>{ const ap = apportionShare(c, f, c.period); return ap? `<tr><td>${flatLabel(f)}</td><td style="font-size:11px;">${ap.basis}</td><td class="num-cell">₹${fmt(ap.share)}</td></tr>`:''; }).join('');
+  const mmrBlock = c.mainMeterCalc && c.mmrMeta? `<div class="tbl-wrap" style="margin:8px 0;"><table>
+    <tr><td>Main Meter Units</td><td class="num-cell">${c.mmrMeta.mainUnits}</td></tr>
+    <tr><td>Sum of Individual Sub-Meters</td><td class="num-cell">${c.mmrMeta.subUnits}</td></tr>
+    <tr><td>Common (Society) Units</td><td class="num-cell">${c.mmrMeta.commonUnits}</td></tr>
+    <tr><td>Effective Rate ₹/unit</td><td class="num-cell">₹${c.mmrMeta.effectiveRate.toFixed(2)}</td></tr>
+    <tr style="font-weight:700;"><td>Common Electricity Cost</td><td class="num-cell">₹${fmt(c.totalAmount)}</td></tr>
+    </table></div>` : '';
+  openModal(`<div class="modal-head"><h2>${h?h.name:''} — ${c.period}</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12px;color:var(--ink-soft);">${c.authority||'Utility'}${c.billNumber?' · Bill #'+c.billNumber:''} · ${c.billDate} · ${c.scope==='tower'?'Tower '+c.tower+' only':'Whole Society'} · Total <b>₹${fmt(c.totalAmount)}</b> · split ${c.apportionMethod==='area'?'by built-up area':c.apportionMethod==='equal'?'equally per flat':'by meter reading'}</p>
+    ${mmrBlock}
+    <div class="tbl-wrap" style="margin-top:8px;"><table><tr><th>Flat</th><th>Basis</th><th class="num-cell">Share</th></tr>${rows}</table></div>`);
+}
 function viewBill(id){
   const b = DB.bills.find(x=>x.id===id); if(!b) return;
-  const f = getFlat(b.flatId);
-  const rows = b.items.map(i=>`<tr><td>${i.head}${i.units!==undefined?' <span style="color:var(--ink-soft);font-size:11px;">('+i.units+' units)</span>':''}</td><td class="num-cell">₹${fmt(i.amount)}</td><td class="num-cell">${i.gst?'₹'+fmt(i.gst):'—'}</td></tr>`).join('');
-  openModal(`<div class="modal-head"><h2>${f?flatLabel(f):''} — ${b.period}</h2><button class="close-x" onclick="closeModal()">×</button></div>
+  const f = getFlat(b.flatId); if(!f) return;
+  const rows = b.items.map(i=>`<tr><td>${i.head}${i.units!==undefined?' <span style="color:var(--ink-soft);font-size:11px;">('+i.units+' units)</span>':''}
+      ${i.consolidated? `<div style="font-size:10.5px;color:var(--ink-soft);margin-top:2px;">Society-wide bill ₹${fmt(i.consolidated.totalAmount)} (${i.consolidated.authority||'utility'}${i.consolidated.billNumber?' · Bill #'+i.consolidated.billNumber:''}${i.consolidated.billDate?' · '+i.consolidated.billDate:''})<br>Your share: ${i.consolidated.basis} ≈ ${i.consolidated.percent.toFixed(2)}%</div>`:''}
+    </td><td class="num-cell">₹${fmt(i.amount)}</td><td class="num-cell">${i.gst?'₹'+fmt(i.gst):'—'}</td></tr>`).join('');
+  const msg = billShareText(b, f);
+  const phone = (f.owner?.phone||f.tenant?.phone||'').replace(/\D/g,'');
+  const email = f.owner?.email||f.tenant?.email||'';
+  openModal(`<div class="modal-head"><h2>${flatLabel(f)} — ${b.period.startsWith('ONE-')?b.dueDate:b.period}</h2><button class="close-x" onclick="closeModal()">×</button></div>
     <div class="tbl-wrap"><table><tr><th>Charge</th><th class="num-cell">Amount</th><th class="num-cell">GST</th></tr>${rows}
     <tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total</td><td class="num-cell" colspan="2">₹${fmt(b.total)}</td></tr></table></div>
-    <p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">Due ${b.dueDate} · Paid so far ₹${fmt(b.paid)} · Balance ₹${fmt(billOutstanding(b))}</p>`);
+    <p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">Due ${b.dueDate} · Paid so far ₹${fmt(b.paid)} · Balance ₹${fmt(billOutstanding(b))}</p>
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button class="btn btn-outline" style="flex:1" ${phone?'':'disabled style="opacity:.4"'} onclick="shareBillWhatsApp('${b.id}')">📱 WhatsApp</button>
+      <button class="btn btn-outline" style="flex:1" ${email?'':'disabled style="opacity:.4"'} onclick="shareBillEmail('${b.id}')">✉️ Email</button>
+    </div>
+    ${!phone&&!email?'<p style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Add an owner/tenant phone or email on the Flat record to enable sharing.</p>':''}`);
+}
+function billShareText(b, f){
+  const lines = [`*${DB.society.name}*`, `Maintenance Bill — ${flatLabel(f)} — ${b.period.startsWith('ONE-')?b.dueDate:b.period}`, ''];
+  b.items.forEach(i=>{
+    lines.push(`${i.head}: ₹${fmt(i.amount)}${i.gst?' (+GST ₹'+fmt(i.gst)+')':''}`);
+    if(i.consolidated) lines.push(`  ↳ Society bill ₹${fmt(i.consolidated.totalAmount)} (${i.consolidated.authority||'utility'}) · your share ${i.consolidated.basis} ≈ ${i.consolidated.percent.toFixed(2)}%`);
+  });
+  lines.push('', `Total: ₹${fmt(b.total)}`, `Due Date: ${b.dueDate}`, `Balance Payable: ₹${fmt(billOutstanding(b))}`);
+  return lines.join('\n');
+}
+function shareBillWhatsApp(billId){
+  const b = DB.bills.find(x=>x.id===billId); const f = getFlat(b.flatId);
+  const phone = (f.owner?.phone||f.tenant?.phone||'').replace(/\D/g,'');
+  if(!phone){ toast('No phone number on file for this flat'); return; }
+  const num = phone.length===10? '91'+phone : phone;
+  window.open(`https://wa.me/${num}?text=${encodeURIComponent(billShareText(b,f))}`, '_blank');
+}
+function shareBillEmail(billId){
+  const b = DB.bills.find(x=>x.id===billId); const f = getFlat(b.flatId);
+  const email = f.owner?.email||f.tenant?.email;
+  if(!email){ toast('No email on file for this flat'); return; }
+  const subject = `${DB.society.name} — Maintenance Bill ${b.period.startsWith('ONE-')?b.dueDate:b.period} — ${flatLabel(f)}`;
+  window.location.href = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(billShareText(b,f))}`;
+}
+
+/* ============ DUE REMINDERS ============ */
+function reminderText(f){
+  const out = flatOutstanding(f.id);
+  const bills = DB.bills.filter(b=>b.flatId===f.id && billOutstanding(b)>0).sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
+  const lines = [`*${DB.society.name}*`, `Dear ${f.owner?.name||f.tenant?.name||'Resident'},`, '',
+    `This is a gentle reminder that your maintenance account for *${flatLabel(f)}* shows an outstanding balance.`, ''];
+  bills.forEach(b=> lines.push(`${b.period.startsWith('ONE-')?b.items[0]?.head||'Charge':b.period}: ₹${fmt(billOutstanding(b))} (due ${b.dueDate})`));
+  lines.push('', `*Total Outstanding: ₹${fmt(out)}*`, '', 'Kindly arrange payment at the earliest. If already paid, please share the payment confirmation so we can update our records.', '', `Thank you,`, `${DB.society.name} Management`);
+  return lines.join('\n');
+}
+function sendReminderWhatsApp(flatId){
+  const f = getFlat(flatId); if(!f) return;
+  const phone = (f.owner?.phone||f.tenant?.phone||'').replace(/\D/g,'');
+  if(!phone){ toast('No phone number on file for this flat'); return; }
+  const num = phone.length===10? '91'+phone : phone;
+  window.open(`https://wa.me/${num}?text=${encodeURIComponent(reminderText(f))}`, '_blank');
+  logAction('Reminder', `WhatsApp due-reminder sent to ${flatLabel(f)} (₹${fmt(flatOutstanding(flatId))})`);
+  save();
+}
+function sendReminderEmail(flatId){
+  const f = getFlat(flatId); if(!f) return;
+  const email = f.owner?.email||f.tenant?.email;
+  if(!email){ toast('No email on file for this flat'); return; }
+  const subject = `${DB.society.name} — Payment Reminder — ${flatLabel(f)}`;
+  window.location.href = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(reminderText(f))}`;
+  logAction('Reminder', `Email due-reminder sent to ${flatLabel(f)} (₹${fmt(flatOutstanding(flatId))})`);
+  save();
+}
+function openReminderQueue(){
+  window.__reminderQueue = DB.flats.map(f=>({f,out:flatOutstanding(f.id)})).filter(x=>x.out>0).sort((a,b)=>b.out-a.out).map(x=>x.f.id);
+  window.__reminderIndex = 0;
+  window.__reminderSent = 0;
+  drawReminderQueue();
+}
+function drawReminderQueue(){
+  const queue = window.__reminderQueue||[];
+  const i = window.__reminderIndex||0;
+  if(i>=queue.length){
+    openModal(`<div class="modal-head"><h2>Reminders Done</h2><button class="close-x" onclick="closeModal()">×</button></div>
+      <div class="empty"><div class="ic">✓</div>${window.__reminderSent} reminder(s) sent this session.<br>Review timestamps anytime in Audit → Audit Trail.</div>`);
+    return;
+  }
+  const f = getFlat(queue[i]); const out = flatOutstanding(f.id);
+  const phone = f.owner?.phone||f.tenant?.phone, email = f.owner?.email||f.tenant?.email;
+  openModal(`<div class="modal-head"><h2>Reminder ${i+1} of ${queue.length}</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="card" style="box-shadow:none;border:1px solid var(--border);">
+      <div style="font-weight:700;">${flatLabel(f)} — ${f.owner?.name||f.tenant?.name||'—'}</div>
+      <div style="font-size:12px;color:var(--ink-soft);margin-top:2px;">${phone||'no phone'} · ${email||'no email'}</div>
+      <div class="num-cell" style="font-size:20px;font-weight:700;margin-top:8px;color:var(--brick);">₹${fmt(out)} due</div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px;">
+      <button class="btn btn-primary" style="flex:1" ${phone?'':'disabled style="opacity:.4"'} onclick="queueSend('whatsapp')">📱 Send WhatsApp</button>
+      <button class="btn btn-primary" style="flex:1" ${email?'':'disabled style="opacity:.4"'} onclick="queueSend('email')">✉️ Send Email</button>
+    </div>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="advanceReminderQueue()">Skip this resident</button>
+    <p style="font-size:11px;color:var(--ink-soft);margin-top:10px;">Each send opens WhatsApp/Mail for you to review and hit send — nothing goes out silently in the background.</p>`);
+}
+function queueSend(channel){
+  const f = getFlat(window.__reminderQueue[window.__reminderIndex]);
+  if(channel==='whatsapp') sendReminderWhatsApp(f.id); else sendReminderEmail(f.id);
+  window.__reminderSent = (window.__reminderSent||0)+1;
+  advanceReminderQueue();
+}
+function advanceReminderQueue(){
+  window.__reminderIndex = (window.__reminderIndex||0)+1;
+  drawReminderQueue();
 }
 function renderMeterEntry(){
   if(!DB.flats.length) return `<div class="empty"><div class="ic">⊙</div>Add flats first.</div>`;
@@ -866,19 +1289,35 @@ function computeBillItems(f, period, heads){
   let missingMeter=0;
   const category = getFlatCategory(f);
   const items = heads.map(h=>{
-    let amt=0, units;
-    const rate = categoryRate(h, category);
-    if(h.mode==='perArea') amt = (f.area||0)*rate;
-    else if(h.mode==='perParking') amt = (f.parkingSlots||0)*rate;
-    else if(h.mode==='meterReading'){
-      const reading = DB.meterReadings.find(r=>r.flatId===f.id && r.meterType===h.meterType && r.period===period);
-      if(!reading){ missingMeter++; return null; }
-      units = Math.max(0, reading.current-reading.previous); amt = units*rate;
+    if(h.applicableCategories && h.applicableCategories.length){
+      if(!category || !h.applicableCategories.includes(category.id)) return null;
     }
-    else amt = rate;
+    let amt=0, units, consolidated=null;
+    const cbill = DB.consolidatedBills.find(c=>c.chargeHeadId===h.id && c.period===period && (c.scope!=='tower' || c.tower===f.tower));
+    if(cbill){
+      if(h.mode==='meterReading' || cbill.apportionMethod==='meterReading'){
+        const reading = DB.meterReadings.find(r=>r.flatId===f.id && r.meterType===h.meterType && r.period===period);
+        if(!reading){ missingMeter++; return null; }
+        units = Math.max(0, reading.current-reading.previous);
+      }
+      const ap = apportionShare(cbill, f, period);
+      if(!ap) return null;
+      amt = ap.share;
+      consolidated = {billNumber:cbill.billNumber, authority:cbill.authority, billDate:cbill.billDate, totalAmount:cbill.totalAmount, apportionMethod:cbill.apportionMethod, basis:ap.basis, percent:ap.percent};
+    } else {
+      const rate = categoryRate(h, category);
+      if(h.mode==='perArea') amt = (f.area||0)*rate;
+      else if(h.mode==='perParking') amt = (f.parkingSlots||0)*rate;
+      else if(h.mode==='meterReading'){
+        const reading = DB.meterReadings.find(r=>r.flatId===f.id && r.meterType===h.meterType && r.period===period);
+        if(!reading){ missingMeter++; return null; }
+        units = Math.max(0, reading.current-reading.previous); amt = units*rate;
+      }
+      else amt = rate;
+    }
     const base = Math.round(amt);
     const gst = h.gstApplicable? Math.round(base*(h.gstRate||0)/100) : 0;
-    return {head:h.name, account:h.account, amount:base, gst, units};
+    return {head:h.name, account:h.account, amount:base, gst, units, consolidated};
   }).filter(i=>i && (i.amount>0||i.gst>0));
   return {items, missingMeter};
 }
@@ -1010,8 +1449,17 @@ function renderAccounts(){
   let body='';
   if(sr==='vouchers'){
     const vs = DB.vouchers.slice().sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
-    body = vs.length? `<div class="tbl-wrap"><table><tr><th>Date</th><th>Type</th><th>Narration</th><th class="num-cell">Amount</th><th>Status</th></tr>
-      ${vs.map(v=>`<tr onclick="${v.status==='pending'?`go('approvals')`:''}"><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${v.maker}</div></td><td>${v.type}</td><td>${v.narration||''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')}
+    body = vs.length? `<div class="tbl-wrap"><table><tr><th>Date</th><th>Type</th><th>Narration</th><th class="num-cell">Amount</th><th>Status</th><th></th></tr>
+      ${vs.map(v=>{
+        let action='';
+        if(!isReadOnly()){
+          if(v.status==='pending' && v.maker===window.__currentRole) action = `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();withdrawVoucher(${v.id})">Withdraw</button>`;
+          else if(v.status==='rejected') action = `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();withdrawVoucher(${v.id})">Remove</button>`;
+          else if(v.status==='approved' && v.deleteRequested) action = v.deleteRequestedBy===window.__currentRole? `<span class="stamp pending" style="font-size:9.5px;">delete pending</span>` : `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();confirmDeleteVoucher(${v.id})">Confirm Delete</button>`;
+          else if(v.status==='approved') action = `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();requestDeleteVoucher(${v.id})">Request Deletion</button>`;
+        }
+        return `<tr onclick="${v.status==='pending'?`go('approvals')`:''}"><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${v.maker}</div></td><td>${v.type}</td><td>${v.narration||''}${v.deleteRequested?'<div style="font-size:10.5px;color:var(--brick);margin-top:2px;">Deletion requested by '+v.deleteRequestedBy+': '+v.deleteReason+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td><td>${action}</td></tr>`;
+      }).join('')}
       </table></div>` : `<div class="empty"><div class="ic">§</div>No vouchers yet.</div>`;
   } else if(sr==='ledger'){
     const accNames = Object.keys(ACCOUNTS);
@@ -1164,8 +1612,14 @@ function openVendorBillModal(){
     <div class="modal-head"><h2>Log Vendor Bill</h2><button class="close-x" onclick="closeModal()">×</button></div>
     <div class="field"><label>Vendor</label><select id="vb_vendor">${DB.vendors.map(v=>`<option value="${v.id}">${v.name}${v.gstin?' ('+v.gstin+')':''}</option>`).join('')}</select></div>
     <div class="field"><label>Description</label><input id="vb_desc" placeholder="e.g. Housekeeping - June"></div>
-    <div class="row2"><div class="field"><label>Taxable Amount ₹</label><input id="vb_amt" type="number"></div><div class="field"><label>Date</label><input id="vb_date" type="date" value="${todayISO()}"></div></div>
-    <div class="field"><label>Expense Account</label><select id="vb_acc">${expAccs.map(a=>`<option ${a==='Repairs & Maintenance'?'selected':''}>${a}</option>`).join('')}</select></div>
+    <div class="row2"><div class="field"><label>Taxable Amount ₹</label><input id="vb_amt" type="number" onchange="updateVBStockAmount()"></div><div class="field"><label>Date</label><input id="vb_date" type="date" value="${todayISO()}"></div></div>
+    <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="vb_isStock" onchange="toggleVBStock()" style="width:auto"> This is a stock/inventory purchase</label></div>
+    <div class="field" id="vb_accField"><label>Expense Account</label><select id="vb_acc">${expAccs.map(a=>`<option ${a==='Repairs & Maintenance'?'selected':''}>${a}</option>`).join('')}</select></div>
+    <div id="vb_stockFields" style="display:none">
+      <div class="field"><label>Item</label><select id="vb_item">${DB.inventoryItems.map(i=>`<option value="${i.id}">${i.name} (${stockOnHand(i.id)} ${i.unit} in stock)</option>`).join('')}</select></div>
+      <div class="row2"><div class="field"><label>Quantity</label><input id="vb_qty" type="number" onchange="updateVBStockAmount()"></div><div class="field"><label>Rate ₹/unit</label><input id="vb_rate" type="number" onchange="updateVBStockAmount()"></div></div>
+      ${!DB.inventoryItems.length?'<p style="font-size:11px;color:var(--brick);">No stock items registered yet — add one under Stock → Items first.</p>':''}
+    </div>
     <hr class="divider">
     <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="vb_gst" onchange="document.getElementById('vb_gstField').style.display=this.checked?'block':'none'" style="width:auto"> Vendor has charged GST (claim as Input Tax Credit)</label></div>
     <div class="field" id="vb_gstField" style="display:none"><label>GST Rate %</label><input id="vb_gstRate" type="number" value="18"></div>
@@ -1174,23 +1628,44 @@ function openVendorBillModal(){
     <button class="btn btn-primary btn-block" onclick="saveVendorBill()">Save Bill</button>
   `);
 }
+function toggleVBStock(){
+  const on = document.getElementById('vb_isStock').checked;
+  document.getElementById('vb_stockFields').style.display = on? 'block':'none';
+  document.getElementById('vb_accField').style.display = on? 'none':'block';
+}
+function updateVBStockAmount(){
+  if(!document.getElementById('vb_isStock').checked) return;
+  const qty = Number(document.getElementById('vb_qty')?.value)||0, rate = Number(document.getElementById('vb_rate')?.value)||0;
+  if(qty && rate) document.getElementById('vb_amt').value = Math.round(qty*rate);
+}
 function saveVendorBill(){
   if(!canEdit()) return;
   const vendorId=document.getElementById('vb_vendor').value, description=document.getElementById('vb_desc').value.trim();
   const amount=Number(document.getElementById('vb_amt').value), date=document.getElementById('vb_date').value;
-  const expenseAccount=document.getElementById('vb_acc').value, tdsSection=document.getElementById('vb_tds').value;
+  const isStock = document.getElementById('vb_isStock').checked;
+  const expenseAccount = isStock? 'Inventory Stock' : document.getElementById('vb_acc').value;
+  const tdsSection=document.getElementById('vb_tds').value;
   const gstOn = document.getElementById('vb_gst').checked, gstRate = gstOn? Number(document.getElementById('vb_gstRate').value)||0 : 0;
   if(!amount||amount<=0){ toast('Enter valid amount'); return; }
+  let itemId=null, qty=0;
+  if(isStock){
+    itemId = document.getElementById('vb_item')?.value; qty = Number(document.getElementById('vb_qty').value)||0;
+    if(!itemId || !qty){ toast('Select an item and quantity for this stock purchase'); return; }
+  }
   const tdsRate = TDS_SECTIONS[tdsSection]; const tdsAmount = Math.round(amount*tdsRate/100);
   const gstAmount = gstOn? Math.round(amount*gstRate/100) : 0;
   const netPayable = amount+gstAmount-tdsAmount;
-  const bill = {id:'VB'+nextId('vbill'), vendorId, date, description, amount, tdsSection, tdsRate, tdsAmount, gstAmount, gstRate, netPayable, paid:0, status:'unpaid'};
+  const finalDesc = isStock? (description || `Stock purchase — ${DB.inventoryItems.find(i=>i.id===itemId)?.name||'item'}`) : description;
+  const bill = {id:'VB'+nextId('vbill'), vendorId, date, description:finalDesc, amount, tdsSection, tdsRate, tdsAmount, gstAmount, gstRate, netPayable, paid:0, status:'unpaid'};
   DB.vendorBills.push(bill);
   const entries=[{account:expenseAccount,debit:amount,credit:0}];
   if(gstAmount>0) entries.push({account:'GST Input Credit',debit:gstAmount,credit:0});
   entries.push({account:'Vendor Creditors',debit:0,credit:amount+gstAmount-tdsAmount});
   if(tdsAmount>0) entries.push({account:'TDS Payable',debit:0,credit:tdsAmount});
-  addVoucher({type:'Journal', vendorId, date, narration:`Vendor bill — ${getVendor(vendorId).name} — ${description||expenseAccount}`, entries, ref:bill.id});
+  addVoucher({type:'Journal', vendorId, date, narration:`Vendor bill — ${getVendor(vendorId).name} — ${finalDesc}`, entries, ref:bill.id});
+  if(isStock){
+    DB.inventoryTx.push({id:'ITX'+nextId('itx'), itemId, date, type:'purchase', qty, rate:Math.round(amount/qty), amount, note:`Vendor: ${getVendor(vendorId).name}`, vendorId});
+  }
   save(); closeModal(); toast('Bill logged — posting awaits approval'); go('vendors','bills');
 }
 function openVendorPaymentModal(){
@@ -1469,11 +1944,71 @@ function saveInventoryTx(){
 }
 
 /* ============ APPROVALS (MAKER-CHECKER) ============ */
+function renderAudit(){
+  const sr = subroute || 'overview';
+  const tabs=[['overview','Overview'],['statements','Statements'],['trail','Audit Trail']];
+  let body='';
+  if(sr==='overview'){
+    const checks = runHealthChecks();
+    const passCount = checks.filter(c=>c.ok).length;
+    const score = Math.round(passCount/checks.length*100);
+    const pending = DB.vouchers.filter(v=>v.status==='pending').length;
+    const rejected = DB.vouchers.filter(v=>v.status==='rejected').length;
+    body = `<div class="stat-grid" style="margin-bottom:12px;">
+      <div class="stat ${score===100?'good':score>=70?'':'alert'}"><div class="lbl">Data Health</div><div class="val">${score}%</div></div>
+      <div class="stat ${pending?'':''}"><div class="lbl">Pending Approval</div><div class="val">${pending}</div></div>
+      <div class="stat ${rejected?'alert':''}"><div class="lbl">Rejected Entries</div><div class="val">${rejected}</div></div>
+      <div class="stat"><div class="lbl">Total Vouchers</div><div class="val">${DB.vouchers.length}</div></div>
+    </div>
+    <div class="card"><div class="section-title">Health Check Results</div>
+    ${checks.map(c=>`<div style="display:flex;gap:8px;align-items:start;padding:6px 0;border-bottom:1px solid var(--border);"><span>${c.ok?'✅':'⚠️'}</span><div><div style="font-weight:600;font-size:13px;">${c.label}</div><div style="font-size:11.5px;color:var(--ink-soft);">${c.detail}</div></div></div>`).join('')}
+    </div>
+    <div class="card"><div class="section-title">Ledger Totals (all approved entries)</div>
+    <div class="tbl-wrap"><table><tr><th>Group</th><th class="num-cell">Amount</th></tr>
+      ${['Current Assets','Fixed Assets','Reserves & Funds','Current Liabilities','Operating Income','Other Income','Establishment Expenses','Operating Expenses','Non-Cash Expenses'].map(g=>{
+        const accs = Object.keys(ACCOUNT_GROUPS).filter(a=>ACCOUNT_GROUPS[a]===g);
+        const total = accs.reduce((s,a)=>{ const b=accBalance(a); return s+(ACCOUNTS[a]==='Income'?b.cr:ACCOUNTS[a]==='Expense'?b.dr:Math.abs(b.net)); },0);
+        return total? `<tr><td>${g}</td><td class="num-cell">₹${fmt(total)}</td></tr>`:'';
+      }).join('')}
+    </table></div></div>`;
+  } else if(sr==='statements'){
+    const links = [
+      ['Trial Balance','reports','trial'], ['Income & Expenditure','reports','ie'], ['Receipts & Payments','reports','rp'],
+      ['Balance Sheet','reports','bs'], ['Defaulters List','reports','defaulters'], ['Flat Ledger','reports','flatledger'],
+      ['GST Return Summary','gst','summary'], ['GST Outward (GSTR-1)','gst','outward'], ['GST Input Credit','gst','itc'],
+    ];
+    body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Jump straight to any statement for verification. Use the period selector on each screen to pull figures for the year under audit.</p>
+    <div class="card">${links.map(([label,r,sr2])=>`<button class="btn btn-outline btn-block" style="margin-bottom:8px;text-align:left;" onclick="go('${r}','${sr2}')">${label} →</button>`).join('')}</div>`;
+  } else if(sr==='trail'){
+    const done = DB.vouchers.filter(v=>v.status==='approved'||v.status==='rejected').sort((a,b)=>b.id-a.id).slice(0,150);
+    const log = (DB.auditLog||[]).slice().reverse().slice(0,150);
+    body = `<div class="card"><div class="section-title">Approval Decisions</div><div class="tbl-wrap"><table><tr><th>Type</th><th>Maker → Checker</th><th class="num-cell">Amount</th><th>Status</th></tr>
+      ${done.map(v=>`<tr><td>${v.type}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''}</div></td><td style="font-size:12px;">${v.maker} → ${v.checker}${v.checkerNote?'<div style="font-size:11px;color:var(--ink-soft)">'+v.checkerNote+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')||'<tr><td colspan=4 style="color:var(--ink-soft)">None yet</td></tr>'}
+      </table></div></div>
+      <div class="card"><div class="section-title">Full Audit Log</div><div class="tbl-wrap"><table><tr><th>Time</th><th>Role</th><th>Action</th><th>Detail</th></tr>
+      ${log.map(l=>`<tr><td style="font-size:11.5px;white-space:nowrap;">${new Date(l.ts).toLocaleString('en-IN')}</td><td><span class="role-badge" style="font-size:9.5px;">${l.role}</span></td><td>${l.action}</td><td style="font-size:12px;">${l.detail}</td></tr>`).join('')||'<tr><td colspan=4 style="color:var(--ink-soft)">None yet</td></tr>'}
+      </table></div></div>`;
+  }
+  return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('audit','${t[0]}')">${t[1]}</button>`).join('')}</div>${body}
+  <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">This workspace is read-only for every role — nothing here can be edited, matching what an Auditor should see.</p>`;
+}
 function renderApprovals(){
   const sr = subroute || 'pending';
-  const tabs=[['pending','Pending'],['history','Decision History'],['audit','Audit Log']];
+  const delReqCount = DB.vouchers.filter(v=>v.deleteRequested).length;
+  const tabs=[['pending','Pending'],['deletions',`Deletions${delReqCount?' ('+delReqCount+')':''}`],['history','Decision History'],['audit','Audit Log']];
   let body='';
-  if(sr==='pending'){
+  if(sr==='deletions'){
+    const reqs = DB.vouchers.filter(v=>v.deleteRequested).sort((a,b)=>b.id-a.id);
+    body = reqs.length? reqs.map(v=>`
+      <div class="approval-row">
+        <div style="display:flex;justify-content:space-between;align-items:start;">
+          <div><b>${v.type}</b> · ${v.date}<div style="font-size:12px;color:var(--ink-soft)">${v.narration||''}</div></div>
+          <div class="num-cell" style="font-weight:700;">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</div>
+        </div>
+        <div style="font-size:11px;color:var(--brick);margin-top:6px;">Deletion requested by <b>${v.deleteRequestedBy}</b> on ${new Date(v.deleteRequestedAt).toLocaleString('en-IN')}<br>Reason: ${v.deleteReason}</div>
+        ${isReadOnly()? '' : v.deleteRequestedBy===window.__currentRole? `<div class="readonly-note" style="margin-top:8px;">A different role must confirm this — you raised the request.</div><button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="cancelDeleteRequest(${v.id})">Withdraw Request</button>` : `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-danger btn-sm" style="flex:1" onclick="confirmDeleteVoucher(${v.id})">Confirm Delete</button><button class="btn btn-outline btn-sm" style="flex:1" onclick="cancelDeleteRequest(${v.id})">Decline</button></div>`}
+      </div>`).join('') : `<div class="empty"><div class="ic">✓</div>No deletion requests pending.</div>`;
+  } else if(sr==='pending'){
     const pend = DB.vouchers.filter(v=>v.status==='pending').sort((a,b)=>b.id-a.id);
     const actionable = pend.filter(v=>canApprove(v));
     const locked = pend.filter(v=>!canApprove(v));
@@ -1530,7 +2065,7 @@ function promptReject(id){
 /* ============ REPORTS ============ */
 function renderReports(){
   const sr = subroute || 'trial';
-  const tabs=[['trial','Trial Balance'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['defaulters','Defaulters'],['flatledger','Flat Ledger']];
+  const tabs=[['trial','Trial Balance'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['defaulters','Defaulters'],['advances','Advance Balances'],['flatledger','Flat Ledger']];
   const isFinancialStatement = ['trial','ie','rp','bs'].includes(sr);
   if(!window.__reportFrom) window.__reportFrom = fyStart();
   if(!window.__reportTo) window.__reportTo = todayISO();
@@ -1597,9 +2132,22 @@ function renderReports(){
     <h3 style="font-size:13px;margin-top:14px">Assets</h3><div class="tbl-wrap"><table>${renderGroupTable(assetGroups)}<tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total Assets</td><td class="num-cell">₹${fmt(totAssets)}</td></tr></table></div>
     <p style="font-size:11.5px;color:var(--ink-soft);margin-top:10px;">${Math.abs(totAssets-totLiab)<1?'✓ Balance Sheet tallies.':'⚠ Difference ₹'+fmt(Math.abs(totAssets-totLiab))+' — check for unbalanced or unapproved entries.'} Figures assume no opening balances were carried forward beyond what has been entered as opening journal(s).</p>` + statementFooter();
   } else if(sr==='defaulters'){
-    const rows = DB.flats.map(f=>({f,out:flatOutstanding(f.id)})).filter(x=>x.out>0).sort((a,b)=>b.out-a.out)
-      .map(x=>`<tr><td>${flatLabel(x.f)}</td><td>${x.f.owner?.name||'—'}</td><td>${x.f.owner?.phone||'—'}</td><td class="num-cell" style="color:var(--brick)">₹${fmt(x.out)}</td></tr>`).join('');
-    body = `<div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th>Phone</th><th class="num-cell">Due</th></tr>${rows||'<tr><td colspan=4 style="color:var(--ink-soft)">No defaulters 🎉</td></tr>'}</table></div>`;
+    const defaulters = DB.flats.map(f=>({f,out:flatOutstanding(f.id)})).filter(x=>x.out>0).sort((a,b)=>b.out-a.out);
+    const rows = defaulters.map(x=>`<tr><td>${flatLabel(x.f)}</td><td>${x.f.owner?.name||'—'}</td><td>${x.f.owner?.phone||'—'}</td><td class="num-cell" style="color:var(--brick)">₹${fmt(x.out)}</td>
+      <td><div style="display:flex;gap:4px;"><button class="btn btn-outline btn-sm" ${(x.f.owner?.phone||x.f.tenant?.phone)?'':'disabled style="opacity:.3"'} onclick="sendReminderWhatsApp('${x.f.id}')" title="WhatsApp">📱</button><button class="btn btn-outline btn-sm" ${(x.f.owner?.email||x.f.tenant?.email)?'':'disabled style="opacity:.3"'} onclick="sendReminderEmail('${x.f.id}')" title="Email">✉️</button></div></td></tr>`).join('');
+    body = (defaulters.length&&!isReadOnly()? `<button class="btn btn-primary btn-block" style="margin-bottom:12px;" onclick="openReminderQueue()">Send Reminders to All (${defaulters.length})</button>`:'') +
+      `<div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th>Phone</th><th class="num-cell">Due</th><th>Remind</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No defaulters 🎉</td></tr>'}</table></div>`;
+  } else if(sr==='advances'){
+    if(!window.__advDate) window.__advDate = todayISO();
+    body = `<div class="field"><label>As At Date</label><input id="adv_date" type="date" value="${window.__advDate}" onchange="window.__advDate=this.value;render();"></div>`;
+    const asAt = window.__advDate;
+    const rows = DB.flats.map(f=>({f, bal:flatLedgerBalance(f.id, asAt)})).filter(x=>x.bal<0).sort((a,b)=>a.bal-b.bal);
+    const total = rows.reduce((s,x)=>s+Math.abs(x.bal),0);
+    body += `<div class="stat good" style="margin-bottom:12px;"><div class="lbl">Total Advances Outstanding — as at ${asAt}</div><div class="val">₹${fmt(total)}</div></div>`;
+    body += `<div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th>Phone</th><th class="num-cell">Advance Balance</th></tr>
+      ${rows.map(x=>`<tr><td>${flatLabel(x.f)}</td><td>${x.f.owner?.name||'—'}</td><td>${x.f.owner?.phone||'—'}</td><td class="num-cell" style="color:var(--moss)">₹${fmt(Math.abs(x.bal))}</td></tr>`).join('')||'<tr><td colspan=4 style="color:var(--ink-soft)">No flats in advance as at this date</td></tr>'}
+      </table></div>
+      <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Based on each flat's running Maintenance Receivable ledger — a negative balance means the flat has paid ahead of what's been billed so far.</p>`;
   } else if(sr==='flatledger'){
     body = `<div class="field"><label>Flat</label><select id="fl_sel">${DB.flats.map(f=>`<option value="${f.id}">${flatLabel(f)}</option>`).join('')}</select></div><div id="fl_body"></div>`;
     setTimeout(()=>{
@@ -1696,25 +2244,59 @@ function renderGST(){
 
 /* ============ SETTINGS ============ */
 function renderSettings(){
-  const heads = DB.chargeHeads.map(h=>`<tr onclick="openChargeHeadModal(${h.id})">
-    <td><b>${h.name}</b>${h.gstApplicable?'<span class="pill" style="margin-left:6px;">GST '+h.gstRate+'%</span>':''}</td>
+  const heads = DB.chargeHeads.map(h=>{
+    const scopeLabel = (h.applicableCategories&&h.applicableCategories.length)? h.applicableCategories.map(id=>DB.flatTypes.find(t=>t.id===id)?.name||'?').join(', ') : 'All categories';
+    return `<tr onclick="openChargeHeadModal(${h.id})">
+    <td><b>${h.name}</b>${h.gstApplicable?'<span class="pill" style="margin-left:6px;">GST '+h.gstRate+'%</span>':''}<div style="font-size:10.5px;color:var(--ink-soft);margin-top:2px;">${scopeLabel}</div></td>
     <td style="font-size:12px;">${h.mode==='perArea'?'₹'+h.rate+'/sqft':h.mode==='perParking'?'₹'+h.rate+'/slot':h.mode==='meterReading'?'₹'+h.rate+'/unit · '+h.meterType:'₹'+h.rate+' flat'}</td>
-    <td>${h.account}</td></tr>`).join('');
+    <td>${h.account}</td></tr>`;
+  }).join('');
   const types = DB.flatTypes.map(t=>{
     const n = DB.flats.filter(f=>getFlatCategory(f)?.id===t.id).length;
     return `<tr onclick="openFlatTypeModal('${t.id}')"><td>${t.name}${t.mode==='sqft'?'<span class="pill" style="margin-left:6px;">'+t.minArea+'–'+t.maxArea+' sqft</span>':''}</td><td class="num-cell">${n} flat${n===1?'':'s'}</td></tr>`;
+  }).join('');
+  const towerRows = DB.towers.map(t=>{
+    const n = DB.flats.filter(f=>f.tower===t.name).length;
+    return `<tr onclick="openTowerModal('${t.id}')"><td>${t.name}</td><td class="num-cell">${n} flat${n===1?'':'s'}</td></tr>`;
   }).join('');
   return `
   <div class="card"><div class="section-title">Society Name</div>
     <div class="field"><input id="st_name" value="${DB.society.name}"></div>
     <button class="btn btn-primary btn-sm" onclick="saveSocietyName()">Save</button>
   </div>
+  <div class="card"><div class="section-title">Opening Balances</div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">If you're switching to SmartRWA mid-year, bring forward what people already owed/were owed and your account balances as on your cut-over date. Each of these posts a normal voucher through the usual checker approval, same as any other entry.</p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button class="btn btn-outline" onclick="openFlatOpeningModal()">Flat Opening Dues</button>
+      <button class="btn btn-outline" onclick="openVendorOpeningModal()">Vendor Opening Dues</button>
+      <button class="btn btn-outline" onclick="openTBOpeningModal()">Opening Trial Balance (Bank, Cash, Assets, Funds…)</button>
+    </div>
+  </div>
+  <div class="card"><div class="section-title"><span>Bank & FD Accounts</span>${isReadOnly()?'':'<button class="btn btn-outline btn-sm" onclick="openBankAccountModal()">+ Add Account</button>'}</div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Register each Savings, Current, or Fixed Deposit account you hold — including which fund it belongs to (General, Sinking, Corpus). This is a reference register you keep up to date manually; it doesn't yet drive the actual receipt/payment entries — see the note below.</p>
+    ${DB.bankAccounts.length? `<div class="tbl-wrap"><table><tr><th>Account</th><th>Fund</th><th class="num-cell">Balance</th></tr>
+      ${DB.bankAccounts.map(b=>`<tr onclick="openBankAccountModal('${b.id}')"><td><b>${b.bankName}</b><div style="font-size:11px;color:var(--ink-soft)">${b.type}${b.accountNumber?' · '+b.accountNumber:''}${b.type==='FD'&&b.maturityDate?' · matures '+b.maturityDate:''}</div></td><td style="font-size:12px;">${b.fund}</td><td class="num-cell">₹${fmt(b.amount)}</td></tr>`).join('')}
+      <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="2">Total</td><td class="num-cell">₹${fmt(DB.bankAccounts.reduce((s,b)=>s+(b.amount||0),0))}</td></tr>
+      </table></div>` : `<p style="font-size:12.5px;color:var(--ink-soft)">No bank/FD accounts registered yet.</p>`}
+  </div>
+  <div class="card"><div class="section-title">Utility Reference Rates</div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Your standard per-unit tariffs — used to auto-suggest bill amounts in Main Meter Reconciliation and as a quick-fill when setting the DG Charges rate. These don't bill anyone directly; the actual amounts you enter on each bill still win.</p>
+    <div class="row2">
+      <div class="field"><label>Govt./Utility Electricity Rate (₹/unit)</label><input id="ur_govt" type="number" step="0.01" value="${DB.utilityRates.govtElectricityRate||''}"></div>
+      <div class="field"><label>DG Supply Rate (₹/unit)</label><input id="ur_dg" type="number" step="0.01" value="${DB.utilityRates.dgSupplyRate||''}"></div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="saveUtilityRates()">Save Rates</button>
+  </div>
+  <div class="card"><div class="section-title"><span>Towers</span>${isReadOnly()?'':'<button class="btn btn-outline btn-sm" onclick="openTowerModal()">+ Add Tower</button>'}</div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Register each tower/block once — this feeds the tower dropdown on the Flat form and lets charges like lift maintenance be split only among that tower's flats.</p>
+    ${DB.towers.length? `<div class="tbl-wrap"><table><tr><th>Tower</th><th class="num-cell">Flats</th></tr>${towerRows}</table></div>` : `<p style="font-size:12.5px;color:var(--ink-soft)">No towers registered yet — flats can still use a free-text tower label until you add some here.</p>`}
+  </div>
   <div class="card"><div class="section-title"><span>Flat Categories</span>${isReadOnly()?'':'<button class="btn btn-outline btn-sm" onclick="openFlatTypeModal()">+ Add Category</button>'}</div>
-    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Group your flats/villas either by a named size (e.g. "2 BHK") or automatically by a square-foot range. Every flat in a category can then get its own maintenance rate per charge — see Category Rates below.</p>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Group your flats/villas either by a named size (e.g. "2 BHK", "Penthouse", "Duplex" — each with its own area) or automatically by a square-foot range. Every category can then get its own maintenance rate per charge — see Category Rates below.</p>
     ${DB.flatTypes.length? `<div class="tbl-wrap"><table><tr><th>Category</th><th class="num-cell">Flats</th></tr>${types}</table></div>` : `<p style="font-size:12.5px;color:var(--ink-soft)">No categories defined yet.</p>`}
     ${isReadOnly()?'':'<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="openCategoryRatesModal()">Set Rates by Category</button>'}
   </div>
-  <div class="card"><div class="section-title"><span>Charge Heads</span><span style="display:flex;gap:6px;">${isReadOnly()?'':'<button class="btn btn-outline btn-sm" onclick="openGSTRatesModal()">GST Rates</button><button class="btn btn-outline btn-sm" onclick="openChargeHeadModal()">+ Add Head</button>'}</span></div>
+  <div class="card"><div class="section-title"><span>Charge Heads</span><span style="display:flex;gap:6px;flex-wrap:wrap;">${isReadOnly()?'':'<button class="btn btn-outline btn-sm" onclick="openGlobalRatesModal()">Global Rates</button><button class="btn btn-outline btn-sm" onclick="openGSTRatesModal()">GST Rates</button><button class="btn btn-outline btn-sm" onclick="openChargeHeadModal()">+ Add Head</button>'}</span></div>
     <p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Add, edit or remove any nature of charge — per sqft, flat rate, per parking slot, or billed by individual meter reading (water, DG, electricity), with optional GST. The rate shown here is the default; override it per category above.</p>
     <div class="tbl-wrap"><table><tr><th>Charge</th><th>Basis</th><th>Account</th></tr>${heads}</table></div>
   </div>
@@ -1734,6 +2316,166 @@ function renderSettings(){
   </div>`;
 }
 function saveSocietyName(){ DB.society.name=document.getElementById('st_name').value.trim()||'My Housing Society'; save(); toast('Saved'); render(); }
+function saveUtilityRates(){
+  if(!canEdit()) return;
+  DB.utilityRates.govtElectricityRate = Number(document.getElementById('ur_govt').value)||0;
+  DB.utilityRates.dgSupplyRate = Number(document.getElementById('ur_dg').value)||0;
+  save(); toast('Utility rates saved'); render();
+}
+function openBankAccountModal(id){
+  const b = id? DB.bankAccounts.find(x=>x.id===id) : {id:'BA'+nextId('bank'), type:'Savings', bankName:'', accountNumber:'', fund:'General', amount:0, interestRate:'', maturityDate:''};
+  if(!id) DB.seq.bank--;
+  openModal(`<div class="modal-head"><h2>${id?'Edit':'Add'} Bank / FD Account</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Account Type</label><select id="ba_type" onchange="toggleBAFields()">
+      <option value="Savings" ${b.type==='Savings'?'selected':''}>Savings</option>
+      <option value="Current" ${b.type==='Current'?'selected':''}>Current</option>
+      <option value="FD" ${b.type==='FD'?'selected':''}>Fixed Deposit</option>
+    </select></div>
+    <div class="row2"><div class="field"><label>Bank Name</label><input id="ba_name" value="${b.bankName}" placeholder="e.g. HDFC Bank"></div>
+    <div class="field"><label>Account / FD Number</label><input id="ba_num" value="${b.accountNumber||''}"></div></div>
+    <div class="field"><label>Fund</label><select id="ba_fund">
+      ${['General','Sinking Fund','Corpus Fund','Other'].map(f=>`<option ${b.fund===f||(b.fund==='General'&&f==='General')?'selected':''}>${f}</option>`).join('')}
+    </select></div>
+    <div class="field"><label>Current Amount / Balance ₹</label><input id="ba_amt" type="number" value="${b.amount||''}"></div>
+    <div id="ba_fdFields" style="display:${b.type==='FD'?'block':'none'}">
+      <div class="row2"><div class="field"><label>Interest Rate %</label><input id="ba_rate" type="number" step="0.01" value="${b.interestRate||''}"></div>
+      <div class="field"><label>Maturity Date</label><input id="ba_maturity" type="date" value="${b.maturityDate||''}"></div></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      ${isReadOnly()?'':`<button class="btn btn-primary" style="flex:1" onclick="saveBankAccount('${b.id}')">Save</button>`}
+      ${id&&!isReadOnly()?`<button class="btn btn-danger" onclick="deleteBankAccount('${b.id}')">Delete</button>`:''}
+    </div>`);
+}
+function toggleBAFields(){
+  document.getElementById('ba_fdFields').style.display = document.getElementById('ba_type').value==='FD'?'block':'none';
+}
+function saveBankAccount(id){
+  if(!canEdit()) return;
+  const data = {
+    id, type: document.getElementById('ba_type').value, bankName: document.getElementById('ba_name').value.trim(),
+    accountNumber: document.getElementById('ba_num').value.trim(), fund: document.getElementById('ba_fund').value,
+    amount: Number(document.getElementById('ba_amt').value)||0,
+    interestRate: document.getElementById('ba_rate')? Number(document.getElementById('ba_rate').value)||'' : '',
+    maturityDate: document.getElementById('ba_maturity')? document.getElementById('ba_maturity').value : ''
+  };
+  if(!data.bankName){ toast('Bank name required'); return; }
+  const idx = DB.bankAccounts.findIndex(x=>x.id===id);
+  if(idx>=0) DB.bankAccounts[idx]=data; else { DB.seq.bank++; DB.bankAccounts.push(data); }
+  save(); closeModal(); toast('Account saved'); render();
+}
+function deleteBankAccount(id){
+  if(!canEdit()) return;
+  DB.bankAccounts = DB.bankAccounts.filter(b=>b.id!==id); save(); closeModal(); render();
+}
+
+/* ============ OPENING BALANCES ============ */
+function openFlatOpeningModal(){
+  if(!DB.flats.length){ toast('Add flats first'); go('flats'); return; }
+  openModal(`<div class="modal-head"><h2>Flat Opening Dues</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Enter what each flat already owed as on your cut-over date (leave blank for flats with nothing owing). This shows up immediately in Defaulters, Flat Ledger, and their next bill's balance — it does not create a monthly recurring charge.</p>
+    <div class="field"><label>As On Date</label><input id="fo_date" type="date" value="${todayISO()}"></div>
+    <div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th class="num-cell">Opening Due ₹</th></tr>
+    ${DB.flats.map(f=>`<tr><td>${flatLabel(f)}</td><td style="font-size:12px;">${f.owner?.name||'—'}</td><td class="num-cell"><input type="number" class="fo_amt" data-flat="${f.id}" style="width:90px;text-align:right;"></td></tr>`).join('')}
+    </table></div>
+    <button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="saveFlatOpening()">Post Opening Dues</button>`);
+}
+function saveFlatOpening(){
+  if(!canEdit()) return;
+  const date = document.getElementById('fo_date').value || todayISO();
+  let count=0, total=0;
+  document.querySelectorAll('.fo_amt').forEach(inp=>{
+    const amt = Number(inp.value); if(!amt||amt<=0) return;
+    const flatId = inp.dataset.flat; const f = getFlat(flatId);
+    const bill = {id:'B'+nextId('bill'), flatId, period:'OPENING-'+flatId, dueDate:date, items:[{head:'Opening Balance b/f', account:'Opening Balance Equity', amount:amt, gst:0}], subTotal:amt, gstTotal:0, total:amt, paid:0, status:'unpaid'};
+    DB.bills.push(bill);
+    addVoucher({type:'Journal', flatId, date, narration:`Opening balance b/f — ${flatLabel(f)}`,
+      entries:[{account:'Maintenance Receivable',debit:amt,credit:0},{account:'Opening Balance Equity',debit:0,credit:amt}], ref:bill.id});
+    count++; total+=amt;
+  });
+  if(!count){ toast('Enter at least one opening due'); return; }
+  save(); closeModal(); toast(`${count} flat(s) posted — ₹${fmt(total)} total, awaiting approval`); render();
+}
+function openVendorOpeningModal(){
+  if(!DB.vendors.length){ toast('Add vendors first'); go('vendors','list'); return; }
+  openModal(`<div class="modal-head"><h2>Vendor Opening Dues</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Enter what the RWA already owed each vendor as on your cut-over date.</p>
+    <div class="field"><label>As On Date</label><input id="vo_date" type="date" value="${todayISO()}"></div>
+    <div class="tbl-wrap"><table><tr><th>Vendor</th><th class="num-cell">Opening Payable ₹</th></tr>
+    ${DB.vendors.map(v=>`<tr><td style="font-size:12px;">${v.name}</td><td class="num-cell"><input type="number" class="vo_amt" data-vendor="${v.id}" style="width:90px;text-align:right;"></td></tr>`).join('')}
+    </table></div>
+    <button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="saveVendorOpening()">Post Opening Dues</button>`);
+}
+function saveVendorOpening(){
+  if(!canEdit()) return;
+  const date = document.getElementById('vo_date').value || todayISO();
+  let count=0, total=0;
+  document.querySelectorAll('.vo_amt').forEach(inp=>{
+    const amt = Number(inp.value); if(!amt||amt<=0) return;
+    const vendorId = inp.dataset.vendor; const v = getVendor(vendorId);
+    const bid = 'VB'+nextId('vbill');
+    DB.vendorBills.push({id:bid, vendorId, date, description:'Opening balance b/f', amount:amt, tdsSection:'None', tdsRate:0, tdsAmount:0, gstAmount:0, gstRate:0, netPayable:amt, paid:0, status:'unpaid'});
+    addVoucher({type:'Journal', vendorId, date, narration:`Opening balance b/f — ${v.name}`,
+      entries:[{account:'Opening Balance Equity',debit:amt,credit:0},{account:'Vendor Creditors',debit:0,credit:amt}], ref:bid});
+    count++; total+=amt;
+  });
+  if(!count){ toast('Enter at least one opening due'); return; }
+  save(); closeModal(); toast(`${count} vendor(s) posted — ₹${fmt(total)} total, awaiting approval`); render();
+}
+function openTBOpeningModal(){
+  const accs = Object.keys(ACCOUNTS).filter(a=>a!=='Opening Balance Equity' && a!=='Maintenance Receivable' && a!=='Vendor Creditors');
+  openModal(`<div class="modal-head"><h2>Opening Trial Balance</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Enter your Bank/Cash/Assets/Funds balances as on your cut-over date. Whatever doesn't naturally balance is plugged against Opening Balance Equity so this always posts as a clean double entry — review that figure before approving.</p>
+    <div class="field"><label>As On Date</label><input id="tb_date" type="date" value="${todayISO()}"></div>
+    <div class="tbl-wrap"><table><tr><th>Account</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th></tr>
+    ${accs.map(a=>`<tr><td style="font-size:12px;">${a}</td><td class="num-cell"><input type="number" class="tb_dr" data-acc="${a}" style="width:80px;text-align:right;" onchange="updateTBOpeningTotals()"></td><td class="num-cell"><input type="number" class="tb_cr" data-acc="${a}" style="width:80px;text-align:right;" onchange="updateTBOpeningTotals()"></td></tr>`).join('')}
+    </table></div>
+    <div id="tb_totals" style="margin-top:10px;font-size:12.5px;color:var(--ink-soft);"></div>
+    <button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="saveTBOpening()">Post Opening Trial Balance</button>`);
+  setTimeout(updateTBOpeningTotals,0);
+}
+function updateTBOpeningTotals(){
+  const dr = Array.from(document.querySelectorAll('.tb_dr')).reduce((s,i)=>s+(Number(i.value)||0),0);
+  const cr = Array.from(document.querySelectorAll('.tb_cr')).reduce((s,i)=>s+(Number(i.value)||0),0);
+  const diff = dr-cr;
+  const el = document.getElementById('tb_totals'); if(!el) return;
+  el.innerHTML = `Debit ₹${fmt(dr)} · Credit ₹${fmt(cr)} · ${diff===0? 'Balanced ✓' : `Difference ₹${fmt(Math.abs(diff))} will be plugged to Opening Balance Equity (${diff>0?'credit':'debit'} side)`}`;
+}
+function saveTBOpening(){
+  if(!canEdit()) return;
+  const date = document.getElementById('tb_date').value || todayISO();
+  const entries = [];
+  let dr=0, cr=0;
+  document.querySelectorAll('.tb_dr').forEach(i=>{ const v=Number(i.value)||0; if(v>0){ entries.push({account:i.dataset.acc, debit:v, credit:0}); dr+=v; } });
+  document.querySelectorAll('.tb_cr').forEach(i=>{ const v=Number(i.value)||0; if(v>0){ entries.push({account:i.dataset.acc, debit:0, credit:v}); cr+=v; } });
+  if(!entries.length){ toast('Enter at least one opening balance'); return; }
+  const diff = dr-cr;
+  if(diff>0) entries.push({account:'Opening Balance Equity', debit:0, credit:diff});
+  else if(diff<0) entries.push({account:'Opening Balance Equity', debit:-diff, credit:0});
+  addVoucher({type:'Journal', date, narration:`Opening Trial Balance as at ${date}`, entries});
+  save(); closeModal(); toast('Opening Trial Balance posted — awaiting approval'); render();
+}
+function openTowerModal(id){
+  const t = id? DB.towers.find(x=>x.id===id) : {id:'TW'+nextId('tower'), name:''};
+  if(!id) DB.seq.tower--;
+  openModal(`<div class="modal-head"><h2>${id?'Edit':'Add'} Tower</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Tower / Block Name</label><input id="tw_name" value="${t.name}" placeholder="e.g. A, B, Palm Wing"></div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      ${isReadOnly()?'':`<button class="btn btn-primary" style="flex:1" onclick="saveTower('${t.id}')">Save</button>`}
+      ${id&&!isReadOnly()?`<button class="btn btn-danger" onclick="deleteTower('${t.id}')">Delete</button>`:''}
+    </div>`);
+}
+function saveTower(id){
+  if(!canEdit()) return;
+  const name = document.getElementById('tw_name').value.trim();
+  if(!name){ toast('Name required'); return; }
+  const idx = DB.towers.findIndex(x=>x.id===id);
+  if(idx>=0) DB.towers[idx].name=name; else { DB.seq.tower++; DB.towers.push({id, name}); }
+  save(); closeModal(); toast('Tower saved'); render();
+}
+function deleteTower(id){
+  if(!canEdit()) return;
+  DB.towers = DB.towers.filter(t=>t.id!==id); save(); closeModal(); render();
+}
 function openFlatTypeModal(id){
   const t = id? DB.flatTypes.find(x=>x.id===id) : {id:'FT'+nextId('ftype'), name:'', mode:'name', defaultArea:0, minArea:0, maxArea:0};
   if(!id) DB.seq.ftype--;
@@ -1811,8 +2553,9 @@ function saveCategoryRates(){
   save(); closeModal(); toast('Category rates saved'); render();
 }
 function openChargeHeadModal(id){
-  const h = id? DB.chargeHeads.find(x=>x.id===id) : {id:0, name:'', mode:'perArea', rate:'', account:'Maintenance Income', meterType:'Water', gstApplicable:false, gstRate:18};
+  const h = id? DB.chargeHeads.find(x=>x.id===id) : {id:0, name:'', mode:'perArea', rate:'', account:'Maintenance Income', meterType:'Water', gstApplicable:false, gstRate:18, applicableCategories:[]};
   const accOptions = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income'||ACCOUNTS[a]==='Liability');
+  const applic = h.applicableCategories||[];
   openModal(`<div class="modal-head"><h2>${id?'Edit':'Add'} Charge Head</h2><button class="close-x" onclick="closeModal()">×</button></div>
     <div class="field"><label>Name</label><input id="ch_name" value="${h.name}" placeholder="e.g. Water Charges"></div>
     <div class="field"><label>Billing Basis</label><select id="ch_mode" onchange="toggleChargeModeFields()">
@@ -1821,10 +2564,23 @@ function openChargeHeadModal(id){
       <option value="perParking" ${h.mode==='perParking'?'selected':''}>Per parking slot</option>
       <option value="meterReading" ${h.mode==='meterReading'?'selected':''}>By individual meter reading</option>
     </select></div>
-    <div class="field" id="ch_meterField" style="display:${h.mode==='meterReading'?'block':'none'}"><label>Meter Type</label><select id="ch_meterType">
+    <div class="field" id="ch_meterField" style="display:${h.mode==='meterReading'?'block':'none'}"><label>Meter Type</label><select id="ch_meterType" onchange="toggleChargeModeFields()">
       ${['Water','DG','Electricity'].map(m=>`<option ${h.meterType===m?'selected':''}>${m}</option>`).join('')}</select></div>
     <div class="row2"><div class="field"><label id="ch_rateLabel">Rate ₹</label><input id="ch_rate" type="number" value="${h.rate}"></div>
     <div class="field"><label>Account</label><select id="ch_acc">${accOptions.map(a=>`<option ${h.account===a?'selected':''}>${a}</option>`).join('')}</select></div></div>
+    <div id="ch_refRate" style="margin-top:-8px;margin-bottom:10px;"></div>
+    <hr class="divider">
+    <div class="field"><label>Applies To</label>
+      <div class="tag-row">
+        <button type="button" class="tag-btn ${!applic.length?'active':''}" onclick="setChargeScopeAll(this)">All Categories</button>
+        <button type="button" class="tag-btn ${applic.length?'active':''}" onclick="setChargeScopeSome(this)">Only Selected Categories</button>
+      </div>
+      <input type="hidden" id="ch_scopeMode" value="${applic.length?'some':'all'}">
+    </div>
+    <div id="ch_catList" style="display:${applic.length?'block':'none'};margin-bottom:10px;">
+      ${DB.flatTypes.length? DB.flatTypes.map(t=>`<label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;font-size:13.5px;margin-bottom:6px;"><input type="checkbox" class="ch_cat" value="${t.id}" ${applic.includes(t.id)?'checked':''} style="width:auto"> ${t.name}</label>`).join('') : `<p style="font-size:12px;color:var(--ink-soft);">No categories defined yet — add some under Flat Categories first.</p>`}
+    </div>
+    <p style="font-size:11px;color:var(--ink-soft);margin-top:-6px;margin-bottom:10px;">e.g. an EWS-only fixed charge, or excluding EWS from a per-sqft charge (set that category's rate to 0 instead, in Category Rates).</p>
     <hr class="divider">
     <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="ch_gst" ${h.gstApplicable?'checked':''} onchange="toggleChargeModeFields()" style="width:auto"> GST Applicable</label></div>
     <div class="field" id="ch_gstField" style="display:${h.gstApplicable?'block':'none'}"><label>GST Rate %</label><input id="ch_gstRate" type="number" value="${h.gstRate||18}"></div>
@@ -1833,12 +2589,31 @@ function openChargeHeadModal(id){
       ${isReadOnly()?'':`<button class="btn btn-primary" style="flex:1" onclick="saveChargeHead(${h.id})">Save</button>`}
       ${id&&!isReadOnly()?`<button class="btn btn-danger" onclick="deleteHead(${h.id})">Delete</button>`:''}
     </div>`);
+  setTimeout(toggleChargeModeFields,0);
+}
+function setChargeScopeAll(btn){
+  document.getElementById('ch_scopeMode').value='all';
+  btn.parentElement.querySelectorAll('.tag-btn').forEach(b=>b.classList.remove('active')); btn.classList.add('active');
+  document.getElementById('ch_catList').style.display='none';
+  document.querySelectorAll('.ch_cat').forEach(c=>c.checked=false);
+}
+function setChargeScopeSome(btn){
+  document.getElementById('ch_scopeMode').value='some';
+  btn.parentElement.querySelectorAll('.tag-btn').forEach(b=>b.classList.remove('active')); btn.classList.add('active');
+  document.getElementById('ch_catList').style.display='block';
 }
 function toggleChargeModeFields(){
   const mode = document.getElementById('ch_mode').value;
   document.getElementById('ch_meterField').style.display = mode==='meterReading'?'block':'none';
   document.getElementById('ch_rateLabel').textContent = mode==='meterReading'?'Rate ₹/unit':mode==='perArea'?'Rate ₹/sqft':mode==='perParking'?'Rate ₹/slot':'Rate ₹';
   document.getElementById('ch_gstField').style.display = document.getElementById('ch_gst').checked?'block':'none';
+  const refEl = document.getElementById('ch_refRate');
+  if(refEl){
+    const meterType = mode==='meterReading'? document.getElementById('ch_meterType').value : null;
+    const refRate = meterType==='DG'? DB.utilityRates.dgSupplyRate : meterType==='Electricity'? DB.utilityRates.govtElectricityRate : 0;
+    const refLabel = meterType==='DG'? 'DG Supply Rate' : 'Govt./Utility Rate';
+    refEl.innerHTML = refRate? `<button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('ch_rate').value=${refRate}">Use ${refLabel} (₹${refRate}/unit)</button>` : (meterType? `<p style="font-size:11px;color:var(--ink-soft);">Set a ${refLabel} under Setup → Utility Reference Rates to quick-fill this.</p>` : '');
+  }
 }
 function saveChargeHead(id){
   if(!canEdit()) return;
@@ -1846,8 +2621,9 @@ function saveChargeHead(id){
   const mode=document.getElementById('ch_mode').value, account=document.getElementById('ch_acc').value;
   const gstApplicable=document.getElementById('ch_gst').checked, gstRate=Number(document.getElementById('ch_gstRate').value)||0;
   const meterType = mode==='meterReading'? document.getElementById('ch_meterType').value : undefined;
+  const applicableCategories = document.getElementById('ch_scopeMode').value==='some'? Array.from(document.querySelectorAll('.ch_cat:checked')).map(c=>c.value) : [];
   if(!name||!rate){ toast('Enter name & rate'); return; }
-  const data={id: id||nextId('head'), name, rate, mode, account, gstApplicable, gstRate, meterType};
+  const data={id: id||nextId('head'), name, rate, mode, account, gstApplicable, gstRate, meterType, applicableCategories};
   const idx = DB.chargeHeads.findIndex(x=>x.id===id);
   if(idx>=0) DB.chargeHeads[idx]=data; else DB.chargeHeads.push(data);
   save(); closeModal(); toast('Charge head saved'); render();
@@ -1873,6 +2649,22 @@ function importData(ev){
 }
 
 /* ============ GST RATES WINDOW ============ */
+function openGlobalRatesModal(){
+  openModal(`<div class="modal-head"><h2>Global Charge Rates</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">The default rate used for every flat, unless a category override is set (Setup → Flat Categories → Set Rates by Category) or a consolidated bill applies for that period.</p>
+    <div class="tbl-wrap"><table><tr><th>Charge</th><th class="num-cell">Rate</th></tr>
+    ${DB.chargeHeads.map(h=>`<tr><td style="font-size:12px;">${h.name}<div style="font-size:10.5px;color:var(--ink-soft);">${h.mode==='perArea'?'per sqft':h.mode==='perParking'?'per slot':h.mode==='meterReading'?'per unit ('+h.meterType+')':'flat rate'}</div></td><td class="num-cell"><input type="number" class="gr2_rate" data-head="${h.id}" value="${h.rate}" style="width:80px;text-align:right;"></td></tr>`).join('')}
+    </table></div>
+    ${isReadOnly()?'':'<button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="saveGlobalRates()">Save Global Rates</button>'}`);
+}
+function saveGlobalRates(){
+  if(!canEdit()) return;
+  document.querySelectorAll('.gr2_rate').forEach(inp=>{
+    const id = Number(inp.dataset.head); const h = DB.chargeHeads.find(x=>x.id===id); if(!h) return;
+    h.rate = Number(inp.value)||0;
+  });
+  save(); closeModal(); toast('Global rates updated'); render();
+}
 function openGSTRatesModal(){
   openModal(`<div class="modal-head"><h2>GST Rates by Charge Type</h2><button class="close-x" onclick="closeModal()">×</button></div>
     <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Set the GST rate to collect for each nature of charge. Untick "Apply" to bill that charge without GST.</p>
@@ -2022,6 +2814,7 @@ function enterApp(role){
 }
 
 /* ============ INIT ============ */
+syncBankLedgerAccounts();
 const savedRole = sessionStorage.getItem('smartrwa_role');
 if(savedRole && ALLOWED_ROLES.includes(savedRole)){
   enterApp(savedRole);
