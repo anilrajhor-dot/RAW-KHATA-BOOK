@@ -216,6 +216,7 @@ body.dark .readonly-note{background:var(--paper-dark); border-color:var(--border
     <div class="lock-err" id="lockErr"></div>
     <button class="btn btn-primary btn-block" onclick="attemptLogin()">Unlock</button>
     <p style="font-size:10.5px;color:var(--ink-soft);margin-top:12px;">Default PIN is <b>1234</b> for each role on first use — change it under Setup → Access after logging in.</p>
+    <p style="font-size:10px;color:var(--ink-soft);margin-top:10px;text-align:center;">Developed by Anil Sharma, Former General Manager, Central Bank of India.</p>
   </div>
 </div>
 <div id="app" style="display:none">
@@ -699,8 +700,16 @@ function renderDashboard(){
   const maxColl = Math.max(1,...collByMonth);
 
   const defaulters = DB.flats.map(f=>({f,out:flatOutstanding(f.id)})).filter(x=>x.out>0).sort((a,b)=>b.out-a.out).slice(0,5);
+  const backupDays = DB.lastBackupAt? Math.floor((new Date()-new Date(DB.lastBackupAt))/86400000) : null;
+  const backupBanner = (backupDays===null || backupDays>=7)? `<div class="card" style="border-color:var(--brick);cursor:pointer;" onclick="go('settings')">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div><b style="color:var(--brick);">Backup reminder</b><div style="font-size:12px;color:var(--ink-soft);margin-top:2px;">${backupDays===null?'No backup taken yet.':'Last backup was '+backupDays+' days ago.'} Tap to export one now.</div></div>
+        <span style="font-size:20px;">⚠</span>
+      </div>
+    </div>` : '';
 
   return `
+  ${backupBanner}
   <div class="stat-grid">
     <div class="stat"><div class="lbl">Total Flats</div><div class="val">${totalFlats}</div></div>
     <div class="stat"><div class="lbl">Occupied</div><div class="val">${occupied}</div></div>
@@ -2012,6 +2021,10 @@ function renderApprovals(){
     const pend = DB.vouchers.filter(v=>v.status==='pending').sort((a,b)=>b.id-a.id);
     const actionable = pend.filter(v=>canApprove(v));
     const locked = pend.filter(v=>!canApprove(v));
+    const queryBlock = v=> v.queried? `<div style="font-size:11px;background:var(--amber-soft);border-radius:6px;padding:6px 8px;margin-top:8px;">
+        <b style="color:var(--gold);">Explanation requested</b> by ${v.queriedBy} on ${new Date(v.queriedAt).toLocaleString('en-IN')}: ${v.queryNote}
+        ${v.responseNote? `<div style="margin-top:4px;"><b style="color:var(--moss);">Response</b> from ${v.respondedBy} on ${new Date(v.respondedAt).toLocaleString('en-IN')}: ${v.responseNote}</div>` : ''}
+      </div>` : '';
     const rows = actionable.map(v=>`
       <label class="approval-row" style="display:flex;gap:10px;align-items:start;cursor:pointer;">
         <input type="checkbox" class="pend_ck" data-id="${v.id}" onchange="updatePendingCount()" style="width:18px;height:18px;margin-top:2px;flex:0 0 auto;">
@@ -2021,17 +2034,23 @@ function renderApprovals(){
             <div class="num-cell" style="font-weight:700;">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</div>
           </div>
           <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Raised by <b>${v.maker}</b> on ${new Date(v.makerAt).toLocaleString('en-IN')}</div>
-          <button class="btn btn-danger btn-sm" style="margin-top:8px;" onclick="event.preventDefault();promptReject(${v.id})">Reject this entry</button>
+          ${queryBlock(v)}
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button class="btn btn-outline btn-sm" style="flex:1" onclick="event.preventDefault();promptQuery(${v.id})">${v.queried?'Query Again':'Call for Explanation'}</button>
+            <button class="btn btn-danger btn-sm" style="flex:1" onclick="event.preventDefault();promptReject(${v.id})">Reject</button>
+          </div>
         </div>
       </label>`).join('');
     const lockedRows = locked.map(v=>`
-      <div class="approval-row" style="opacity:.7;">
+      <div class="approval-row" style="opacity:.85;">
         <div style="display:flex;justify-content:space-between;align-items:start;">
           <div><b>${v.type}</b> · ${v.date}<div style="font-size:12px;color:var(--ink-soft)">${v.narration||''}</div></div>
           <div class="num-cell" style="font-weight:700;">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</div>
         </div>
         <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Raised by <b>${v.maker}</b> on ${new Date(v.makerAt).toLocaleString('en-IN')}</div>
+        ${queryBlock(v)}
         <div class="readonly-note" style="margin-top:8px;">${isReadOnly()?'Auditors cannot approve — view only.':'You raised this entry — a different role must authorise it.'}</div>
+        ${v.queried && v.maker===window.__currentRole && !isReadOnly()? `<button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="promptRespond(${v.id})">Respond to Query</button>` : ''}
       </div>`).join('');
     body = '';
     if(actionable.length){
@@ -2060,6 +2079,25 @@ function promptReject(id){
   const note = prompt('Reason for rejection (required):');
   if(note===null) return;
   rejectVoucher(id, note.trim());
+}
+function promptQuery(id){
+  const v = DB.vouchers.find(x=>x.id===id); if(!v) return;
+  if(!canApprove(v)){ toast('Not permitted'); return; }
+  const note = prompt('What needs explaining? (visible to the maker)');
+  if(!note || !note.trim()) return;
+  v.queried = true; v.queriedBy = window.__currentRole; v.queriedAt = nowTS(); v.queryNote = note.trim();
+  v.responseNote=''; v.respondedBy=null; v.respondedAt=null;
+  logAction('Query', `${v.type} voucher #${v.id} — explanation requested: ${note.trim()}`);
+  save(); render(); toast('Explanation requested from the maker');
+}
+function promptRespond(id){
+  const v = DB.vouchers.find(x=>x.id===id); if(!v) return;
+  if(v.maker!==window.__currentRole){ toast('Only the maker can respond to this query'); return; }
+  const note = prompt('Your response to the query:');
+  if(!note || !note.trim()) return;
+  v.responseNote = note.trim(); v.respondedBy = window.__currentRole; v.respondedAt = nowTS();
+  logAction('Query Response', `${v.type} voucher #${v.id} — response: ${note.trim()}`);
+  save(); render(); toast('Response sent — the checker will review it');
 }
 
 /* ============ REPORTS ============ */
@@ -2310,9 +2348,22 @@ function renderSettings(){
   </div>
   <div class="card"><div class="section-title">Data</div>
     <p style="font-size:12.5px;color:var(--ink-soft)">All data is stored offline on this device (localStorage). Export a backup regularly.</p>
+    ${(()=>{ const days = DB.lastBackupAt? Math.floor((new Date()-new Date(DB.lastBackupAt))/86400000) : null;
+      if(days===null) return `<div class="readonly-note" style="margin-bottom:10px;">No backup taken yet in this app — export one now.</div>`;
+      if(days>=7) return `<div class="readonly-note" style="margin-bottom:10px;color:var(--brick);border-color:var(--brick);">⚠ Last backup was ${days} days ago — export a fresh one.</div>`;
+      return `<p style="font-size:11.5px;color:var(--moss);margin-bottom:8px;">✓ Last backed up ${days===0?'today':days+' day'+(days===1?'':'s')+' ago'}.</p>`;
+    })()}
     <div style="display:flex;gap:8px;"><button class="btn btn-outline" style="flex:1" onclick="exportData()">Export Backup</button>
     <button class="btn btn-outline" style="flex:1" onclick="document.getElementById('importFile').click()">Import Backup</button></div>
     <input type="file" id="importFile" style="display:none" accept=".json" onchange="importData(event)">
+  </div>
+  <div class="card" style="border-color:var(--brick);"><div class="section-title" style="color:var(--brick);">Danger Zone — Full Data Wipe</div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Erases every flat, bill, voucher, vendor, employee, asset and record on this device — your login PINs are kept so you can still sign in afterward. Requires a different role to confirm, and automatically saves one restore point.</p>
+    ${DB.wipeRequest? `
+      <div class="readonly-note" style="border-color:var(--brick);color:var(--brick);margin-bottom:10px;">Wipe requested by <b>${DB.wipeRequest.requestedBy}</b> on ${new Date(DB.wipeRequest.requestedAt).toLocaleString('en-IN')}<br>Reason: ${DB.wipeRequest.reason}</div>
+      ${isReadOnly()?'':DB.wipeRequest.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" onclick="cancelWipeRequest()">Withdraw Request</button>` : `<div style="display:flex;gap:8px;"><button class="btn btn-danger" style="flex:1" onclick="confirmWipeAll()">Confirm Wipe</button><button class="btn btn-outline" style="flex:1" onclick="cancelWipeRequest()">Decline</button></div>`}
+    ` : isReadOnly()? '' : `<button class="btn btn-danger btn-block" onclick="requestWipeAll()">Request Full Data Wipe</button>`}
+    ${DB.wipeBackupAt? `<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="restoreWipeBackup()">Restore Last Wipe (from ${new Date(DB.wipeBackupAt).toLocaleString('en-IN')})</button>` : ''}
   </div>`;
 }
 function saveSocietyName(){ DB.society.name=document.getElementById('st_name').value.trim()||'My Housing Society'; save(); toast('Saved'); render(); }
@@ -2636,9 +2687,11 @@ function changePin(role){
   DB.security.pins[role]=val; save(); document.getElementById('pin_'+role).value=''; toast(role+' PIN updated');
 }
 function exportData(){
+  DB.lastBackupAt = nowTS(); save();
   const blob = new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});
   const url = URL.createObjectURL(blob); const a=document.createElement('a');
   a.href=url; a.download=`smartrwa-backup-${todayISO()}.json`; a.click();
+  toast('Backup downloaded'); render();
 }
 function importData(ev){
   if(!canEdit()) return;
@@ -2646,6 +2699,48 @@ function importData(ev){
   const reader = new FileReader();
   reader.onload = e=>{ try{ DB = JSON.parse(e.target.result); save(); toast('Backup restored'); go('dashboard'); }catch(err){ toast('Invalid file'); } };
   reader.readAsText(file);
+}
+
+/* ============ FULL DATA WIPE (MAKER-CHECKER) ============ */
+function requestWipeAll(){
+  if(!canEdit()) return;
+  const reason = prompt('Reason for requesting a full data wipe (required):');
+  if(!reason || !reason.trim()) return;
+  DB.wipeRequest = {requestedBy: window.__currentRole, requestedAt: nowTS(), reason: reason.trim()};
+  logAction('Wipe Requested', `Full data wipe requested — reason: ${reason.trim()}`);
+  save(); render(); toast('Wipe requested — a different role must confirm');
+}
+function cancelWipeRequest(){
+  if(!canEdit()) return;
+  logAction('Wipe Request Cancelled', DB.wipeRequest? `Requested by ${DB.wipeRequest.requestedBy}` : '');
+  DB.wipeRequest = null; save(); render(); toast('Wipe request cancelled');
+}
+function confirmWipeAll(){
+  if(isReadOnly()){ toast('Auditors cannot confirm a wipe.'); return; }
+  if(!DB.wipeRequest){ toast('No wipe request pending'); return; }
+  if(DB.wipeRequest.requestedBy===window.__currentRole){ toast('A different role must confirm this.'); return; }
+  if(!confirm('This will erase all data on this device (a restore point will be saved). Continue?')) return;
+  const security = DB.security, society = DB.society, utilityRates = DB.utilityRates;
+  try{ localStorage.setItem('smartrwa_v1_wipe_backup', JSON.stringify(DB)); }catch(e){}
+  const wipeBackupAt = nowTS();
+  DB = {
+    society, security, utilityRates,
+    flats:[], chargeHeads:defaultCharges(), vouchers:[], bills:[], complaints:[],
+    vendors:[], vendorBills:[], employees:[], payrollRuns:[], assets:[], inventoryItems:[], inventoryTx:[],
+    flatTypes:[], meterReadings:[], categoryRates:{}, consolidatedBills:[], towers:[], mainMeterReadings:[], bankAccounts:[],
+    seq:{flat:1,bill:1,voucher:1,complaint:1,head:100,vendor:1,vbill:1,emp:1,payroll:1,asset:1,item:1,itx:1,ftype:1,meter:1,tower:1,mmr:1,cbill:1,bank:1},
+    auditLog:[{id:1, ts:wipeBackupAt, role:window.__currentRole, action:'Full Wipe', detail:'All data wiped after maker-checker confirmation'}],
+    wipeRequest:null, wipeBackupAt, lastBackupAt:null
+  };
+  save(); toast('All data wiped — restore point saved'); go('dashboard');
+}
+function restoreWipeBackup(){
+  if(!canEdit()) return;
+  const raw = localStorage.getItem('smartrwa_v1_wipe_backup');
+  if(!raw){ toast('No wipe backup found'); return; }
+  if(!confirm('Restore the data from before the last wipe? This replaces everything currently in the app.')) return;
+  try{ DB = JSON.parse(raw); DB.wipeRequest=null; save(); toast('Restored from wipe backup'); go('dashboard'); }
+  catch(e){ toast('Could not read backup'); }
 }
 
 /* ============ GST RATES WINDOW ============ */
