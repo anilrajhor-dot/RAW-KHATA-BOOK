@@ -1,0 +1,2033 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>SmartRWA — Society Register</title>
+<link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoiU21hcnRSV0EiLCJzaG9ydF9uYW1lIjoiU21hcnRSV0EiLCJzdGFydF91cmwiOiIuIiwiZGlzcGxheSI6InN0YW5kYWxvbmUiLCJiYWNrZ3JvdW5kX2NvbG9yIjoiI0VERUJFMyIsInRoZW1lX2NvbG9yIjoiIzBFNUM1NiJ9">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#EDEBE3; --paper-dark:#1B1F1C;
+  --surface:#FFFFFF; --surface-dark:#242923;
+  --border:#D8D3C4; --border-dark:#3A4038;
+  --ink:#232A25; --ink-dark:#E7E5DC;
+  --ink-soft:#6B6A5F; --ink-soft-dark:#9B9C90;
+  --teal:#0E5C56; --teal-dark:#3EA89B;
+  --brick:#9C3B2E; --brick-soft:#F3E1DC;
+  --moss:#4B6B3A; --moss-soft:#E3EBDB;
+  --gold:#B08D2F;
+  --amber-soft:#F6EBD2;
+  --radius:10px;
+  --shadow:0 1px 2px rgba(35,42,37,0.06), 0 2px 8px rgba(35,42,37,0.05);
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+body{margin:0; font-family:'Inter',sans-serif; background:var(--paper); color:var(--ink); transition:background .25s,color .25s;}
+body.dark{background:var(--paper-dark); color:var(--ink-dark);}
+h1,h2,h3,.disp{font-family:'Zilla Slab',serif;}
+.mono{font-family:'IBM Plex Mono',monospace;}
+button{font-family:inherit; cursor:pointer;}
+::selection{background:var(--gold); color:#fff;}
+
+/* App shell */
+#app{display:flex; min-height:100vh;}
+#sidebar{
+  width:84px; flex:0 0 84px; background:var(--teal); color:#F2F0E6;
+  display:flex; flex-direction:column; align-items:center; padding:14px 0; gap:2px;
+  position:sticky; top:0; height:100vh; overflow-y:auto;
+}
+.side-logo{font-family:'Zilla Slab',serif; font-weight:700; font-size:20px; letter-spacing:.5px; margin-bottom:14px; writing-mode:horizontal-tb;}
+.tab{
+  width:100%; padding:11px 4px; text-align:center; font-size:10.5px; font-weight:600;
+  color:#CFE3DF; border:none; background:transparent; position:relative; letter-spacing:.3px;
+  border-left:3px solid transparent; line-height:1.25;
+}
+.tab .ic{display:block; font-size:18px; margin-bottom:3px;}
+.tab.active{background:rgba(255,255,255,0.1); color:#fff; border-left:3px solid var(--gold);}
+.tab:active{background:rgba(255,255,255,0.18);}
+
+#main{flex:1; min-width:0; display:flex; flex-direction:column;}
+#topbar{
+  background:var(--surface); border-bottom:1px solid var(--border); padding:14px 18px;
+  display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:5;
+}
+body.dark #topbar{background:var(--surface-dark); border-color:var(--border-dark);}
+#topbar h1{font-size:18px; margin:0; font-weight:600;}
+#topbar .soc{font-size:11.5px; color:var(--ink-soft); font-family:'Inter';}
+.top-actions{display:flex; gap:8px; align-items:center;}
+.icon-btn{background:none; border:1px solid var(--border); border-radius:8px; padding:7px 9px; font-size:15px; color:var(--ink);}
+body.dark .icon-btn{border-color:var(--border-dark); color:var(--ink-dark);}
+
+#content{padding:16px; padding-bottom:70px; max-width:980px; margin:0 auto; width:100%;}
+
+/* Cards & sections */
+.card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px; margin-bottom:14px; box-shadow:var(--shadow);}
+body.dark .card{background:var(--surface-dark); border-color:var(--border-dark);}
+.section-title{font-size:15px; font-weight:700; margin:0 0 12px; display:flex; align-items:center; justify-content:space-between;}
+.section-title .num{color:var(--gold); font-family:'IBM Plex Mono'; font-size:12px; margin-right:6px;}
+
+/* Dashboard grid */
+.stat-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:14px;}
+.stat{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; box-shadow:var(--shadow);}
+body.dark .stat{background:var(--surface-dark); border-color:var(--border-dark);}
+.stat .lbl{font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.5px; font-weight:600;}
+.stat .val{font-family:'IBM Plex Mono'; font-size:22px; font-weight:600; margin-top:4px;}
+.stat.alert .val{color:var(--brick);}
+.stat.good .val{color:var(--moss);}
+
+/* Tables - ledger ruled style */
+table{width:100%; border-collapse:collapse; font-size:13px;}
+th{text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.4px; color:var(--ink-soft); padding:7px 8px; border-bottom:2px solid var(--ink); font-weight:700;}
+td{padding:8px; border-bottom:1px solid var(--border); vertical-align:top;}
+body.dark td{border-color:var(--border-dark);}
+tr:hover td{background:rgba(14,92,86,0.04);}
+.num-cell{font-family:'IBM Plex Mono'; text-align:right; white-space:nowrap;}
+.tbl-wrap{overflow-x:auto; -webkit-overflow-scrolling:touch;}
+
+/* Stamps */
+.stamp{
+  display:inline-block; padding:2px 9px; border-radius:3px; font-size:10.5px; font-weight:700;
+  letter-spacing:.6px; text-transform:uppercase; border:1.5px solid currentColor; transform:rotate(-2deg);
+  font-family:'IBM Plex Mono';
+}
+.stamp.paid{color:var(--moss); background:var(--moss-soft);}
+.stamp.due{color:var(--gold); background:var(--amber-soft);}
+.stamp.overdue{color:var(--brick); background:var(--brick-soft);}
+.stamp.open{color:var(--brick); background:var(--brick-soft);}
+.stamp.progress{color:var(--gold); background:var(--amber-soft);}
+.stamp.closed{color:var(--moss); background:var(--moss-soft);}
+
+/* Buttons */
+.btn{border-radius:8px; padding:10px 16px; font-weight:600; font-size:13.5px; border:1px solid transparent;}
+.btn-primary{background:var(--teal); color:#fff;}
+.btn-primary:active{background:#0a4642;}
+.btn-outline{background:transparent; border:1px solid var(--border); color:var(--ink);}
+body.dark .btn-outline{border-color:var(--border-dark); color:var(--ink-dark);}
+.btn-danger{background:transparent; color:var(--brick); border:1px solid var(--brick);}
+.btn-block{width:100%;}
+.btn-sm{padding:6px 10px; font-size:12px; border-radius:6px;}
+.fab{
+  position:fixed; right:18px; bottom:22px; width:54px; height:54px; border-radius:50%;
+  background:var(--teal); color:#fff; font-size:26px; border:none; box-shadow:0 4px 14px rgba(0,0,0,0.25); z-index:20;
+}
+
+/* Forms */
+.field{margin-bottom:12px;}
+.field label{display:block; font-size:11.5px; font-weight:600; color:var(--ink-soft); margin-bottom:5px; text-transform:uppercase; letter-spacing:.3px;}
+input,select,textarea{
+  width:100%; padding:10px 11px; border:1px solid var(--border); border-radius:8px; font-size:14.5px;
+  font-family:'Inter'; background:var(--surface); color:var(--ink);
+}
+body.dark input, body.dark select, body.dark textarea{background:var(--surface-dark); border-color:var(--border-dark); color:var(--ink-dark);}
+.row2{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+.tag-row{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;}
+.tag-btn{border:1px solid var(--border); background:transparent; border-radius:20px; padding:7px 13px; font-size:12.5px; color:var(--ink-soft); font-weight:600;}
+.tag-btn.active{background:var(--teal); color:#fff; border-color:var(--teal);}
+body.dark .tag-btn{border-color:var(--border-dark); color:var(--ink-soft-dark);}
+
+/* Modal */
+.modal-bg{position:fixed; inset:0; background:rgba(20,20,15,0.5); z-index:50; display:none; align-items:flex-end; justify-content:center;}
+.modal-bg.show{display:flex;}
+.modal{background:var(--surface); width:100%; max-width:560px; max-height:90vh; overflow-y:auto; border-radius:16px 16px 0 0; padding:18px; animation:slideup .22s ease;}
+body.dark .modal{background:var(--surface-dark);}
+@media(min-width:640px){ .modal-bg{align-items:center;} .modal{border-radius:14px;} }
+@keyframes slideup{from{transform:translateY(30px); opacity:0;} to{transform:translateY(0); opacity:1;}}
+.modal-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;}
+.modal-head h2{font-size:17px; margin:0;}
+.close-x{background:none; border:none; font-size:22px; color:var(--ink-soft); line-height:1;}
+
+.empty{text-align:center; padding:36px 14px; color:var(--ink-soft);}
+.empty .ic{font-size:34px; margin-bottom:8px;}
+
+.divider{border:none; border-top:1px dashed var(--border); margin:14px 0;}
+body.dark .divider{border-color:var(--border-dark);}
+
+.pill-list{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;}
+.pill{background:var(--paper); border:1px solid var(--border); border-radius:6px; padding:3px 8px; font-size:11.5px; font-family:'IBM Plex Mono';}
+body.dark .pill{background:var(--paper-dark); border-color:var(--border-dark);}
+
+.toast{position:fixed; bottom:90px; left:50%; transform:translateX(-50%); background:var(--ink); color:#fff; padding:10px 18px; border-radius:20px; font-size:13px; z-index:80; opacity:0; transition:opacity .25s; pointer-events:none;}
+.toast.show{opacity:1;}
+
+.bar-chart{display:flex; align-items:flex-end; gap:8px; height:120px; padding-top:10px;}
+.bar-col{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%;}
+.bar{width:100%; background:var(--teal); border-radius:4px 4px 0 0; min-height:2px;}
+.bar-label{font-size:9.5px; color:var(--ink-soft); margin-top:5px; font-family:'IBM Plex Mono';}
+
+.subtabs{display:flex; gap:6px; overflow-x:auto; margin-bottom:14px; padding-bottom:2px;}
+.subtab{flex:0 0 auto; padding:8px 14px; border-radius:8px; border:1px solid var(--border); background:var(--surface); font-size:12.5px; font-weight:600; color:var(--ink-soft);}
+.subtab.active{background:var(--ink); color:#fff; border-color:var(--ink);}
+body.dark .subtab{background:var(--surface-dark); border-color:var(--border-dark);}
+body.dark .subtab.active{background:var(--teal-dark); color:#111; border-color:var(--teal-dark);}
+
+@media(max-width:640px){
+  #sidebar{width:60px; flex-basis:60px;}
+  .tab{font-size:9px; padding:9px 2px;}
+  .tab .ic{font-size:16px;}
+  .stat-grid{grid-template-columns:1fr 1fr;}
+  #content{padding:12px;}
+}
+
+/* Lock screen */
+#lockscreen{
+  min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;
+  background:var(--paper);
+}
+body.dark #lockscreen{background:var(--paper-dark);}
+.lock-card{background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:26px 22px; max-width:380px; width:100%; box-shadow:var(--shadow);}
+body.dark .lock-card{background:var(--surface-dark); border-color:var(--border-dark);}
+.lock-card h1{font-size:20px; margin:0 0 3px;}
+.lock-sub{font-size:12.5px; color:var(--ink-soft); margin-bottom:18px;}
+.role-grid{display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:16px;}
+.role-opt{border:1.5px solid var(--border); background:var(--paper); border-radius:9px; padding:12px 4px; text-align:center; font-size:12px; font-weight:600; color:var(--ink);}
+body.dark .role-opt{border-color:var(--border-dark); background:var(--paper-dark); color:var(--ink-dark);}
+.role-opt.active{border-color:var(--teal); background:var(--teal); color:#fff;}
+.lock-err{color:var(--brick); font-size:12.5px; margin-top:8px; min-height:16px;}
+.role-badge{
+  font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:var(--teal);
+  border:1px solid var(--teal); border-radius:20px; padding:3px 10px; font-family:'IBM Plex Mono';
+}
+body.dark .role-badge{color:var(--teal-dark); border-color:var(--teal-dark);}
+.tab-badge{
+  position:absolute; top:4px; right:8px; background:var(--brick); color:#fff; font-size:9px; font-weight:700;
+  min-width:15px; height:15px; border-radius:8px; display:flex; align-items:center; justify-content:center; padding:0 3px;
+}
+.stamp.pending{color:var(--gold); background:var(--amber-soft);}
+.stamp.approved{color:var(--moss); background:var(--moss-soft);}
+.stamp.rejected{color:var(--brick); background:var(--brick-soft);}
+.approval-row{border:1px solid var(--border); border-radius:10px; padding:12px; margin-bottom:10px;}
+body.dark .approval-row{border-color:var(--border-dark);}
+.readonly-note{font-size:11.5px; color:var(--ink-soft); background:var(--paper); border:1px dashed var(--border); border-radius:8px; padding:8px 10px; margin-top:10px;}
+body.dark .readonly-note{background:var(--paper-dark); border-color:var(--border-dark);}
+</style>
+</head>
+<body>
+<div id="lockscreen" style="display:none">
+  <div class="lock-card">
+    <h1>SmartRWA — Society Register</h1>
+    <div class="lock-sub">Restricted to Accountant, Treasurer & Auditor only.</div>
+    <div class="role-grid" id="roleGrid">
+      <button class="role-opt active" data-role="Accountant" onclick="selectRole(this)">Accountant</button>
+      <button class="role-opt" data-role="Treasurer" onclick="selectRole(this)">Treasurer</button>
+      <button class="role-opt" data-role="Auditor" onclick="selectRole(this)">Auditor</button>
+    </div>
+    <div class="field"><label>PIN</label><input id="lockPin" type="password" inputmode="numeric" placeholder="Enter PIN" onkeydown="if(event.key==='Enter')attemptLogin()"></div>
+    <div class="lock-err" id="lockErr"></div>
+    <button class="btn btn-primary btn-block" onclick="attemptLogin()">Unlock</button>
+    <p style="font-size:10.5px;color:var(--ink-soft);margin-top:12px;">Default PIN is <b>1234</b> for each role on first use — change it under Setup → Access after logging in.</p>
+  </div>
+</div>
+<div id="app" style="display:none">
+  <nav id="sidebar"></nav>
+  <div id="main">
+    <div id="topbar">
+      <div>
+        <h1 id="pageTitle">Dashboard</h1>
+        <div class="soc" id="socName">Society Register</div>
+      </div>
+      <div class="top-actions">
+        <span class="role-badge" id="roleBadge"></span>
+        <button class="icon-btn" onclick="openHealthCheckModal()" title="Health Check">♡</button>
+        <button class="icon-btn" onclick="toggleTheme()">◐</button>
+        <button class="icon-btn" onclick="logout()">⏻</button>
+      </div>
+    </div>
+    <div id="content"></div>
+  </div>
+</div>
+<button class="fab" id="fabBtn" onclick="handleFab()">+</button>
+<div class="modal-bg" id="modalBg"><div class="modal" id="modalBody"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============ STORE ============ */
+const DB_KEY='smartrwa_v1';
+let DB = load();
+function load(){
+  try{ const raw = localStorage.getItem(DB_KEY); if(raw) return JSON.parse(raw); }catch(e){}
+  return {
+    society:{name:'My Housing Society', flatsCount:0},
+    flats:[], chargeHeads:defaultCharges(), vouchers:[], bills:[], complaints:[],
+    vendors:[], vendorBills:[], employees:[], payrollRuns:[], assets:[], inventoryItems:[], inventoryTx:[],
+    seq:{flat:1,bill:1,voucher:1,complaint:1,head:100,vendor:1,vbill:1,emp:1,payroll:1,asset:1,item:1,itx:1},
+    security:{pins:{Accountant:'1234',Treasurer:'1234',Auditor:'1234'}}
+  };
+}
+if(!DB.security) DB.security = {pins:{Accountant:'1234',Treasurer:'1234',Auditor:'1234'}};
+['vendors','vendorBills','employees','payrollRuns','assets','inventoryItems','inventoryTx','flatTypes','meterReadings'].forEach(k=>{ if(!DB[k]) DB[k]=[]; });
+if(!DB.categoryRates) DB.categoryRates = {};
+DB.flatTypes.forEach(t=>{ if(!t.mode) t.mode='name'; if(t.minArea===undefined) t.minArea=0; if(t.maxArea===undefined) t.maxArea=0; });
+Object.assign(DB.seq, {vendor:DB.seq.vendor||1, vbill:DB.seq.vbill||1, emp:DB.seq.emp||1, payroll:DB.seq.payroll||1, asset:DB.seq.asset||1, item:DB.seq.item||1, itx:DB.seq.itx||1, ftype:DB.seq.ftype||1, meter:DB.seq.meter||1});
+DB.chargeHeads.forEach(h=>{ if(h.gstApplicable===undefined) h.gstApplicable=false; if(h.gstRate===undefined) h.gstRate=18; });
+DB.seq.head = Math.max(DB.seq.head||1, ...DB.chargeHeads.map(h=>h.id), 0) + 1;
+DB.flats.forEach(f=>{ if(f.flatTypeId===undefined) f.flatTypeId=''; });
+function save(){ localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
+function nextId(k){ DB.seq[k]=(DB.seq[k]||0)+1; return DB.seq[k]; }
+function defaultCharges(){
+  return [
+    {id:1,name:'Maintenance',mode:'perArea',rate:3,account:'Maintenance Income',gstApplicable:false,gstRate:18},
+    {id:2,name:'Sinking Fund',mode:'perArea',rate:0.5,account:'Sinking Fund',gstApplicable:false,gstRate:18},
+    {id:3,name:'Common Area Electricity',mode:'perArea',rate:1,account:'Common Electricity Income',gstApplicable:false,gstRate:18},
+    {id:4,name:'Lift Maintenance',mode:'perArea',rate:1,account:'Lift Maintenance Income',gstApplicable:false,gstRate:18},
+    {id:5,name:'Water Charges',mode:'meterReading',meterType:'Water',rate:25,account:'Water Income',gstApplicable:false,gstRate:18},
+    {id:6,name:'DG Charges',mode:'meterReading',meterType:'DG',rate:18,account:'DG Income',gstApplicable:false,gstRate:18},
+    {id:7,name:'Electricity Charges',mode:'meterReading',meterType:'Electricity',rate:9,account:'Electricity Income',gstApplicable:false,gstRate:18},
+    {id:8,name:'Parking Charges',mode:'perParking',rate:200,account:'Parking Income',gstApplicable:false,gstRate:18},
+  ];
+}
+const ACCOUNTS = {
+  'Cash in Hand':'Asset','Bank Account':'Asset','Maintenance Receivable':'Asset',
+  'Fixed Assets':'Asset','Accumulated Depreciation':'Asset','Inventory Stock':'Asset','GST Input Credit':'Asset',
+  'Sinking Fund':'Liability','Corpus Fund':'Liability','Security Deposits':'Liability','Vendor Creditors':'Liability','GST Payable':'Liability',
+  'PF Payable':'Liability','ESI Payable':'Liability','TDS Payable':'Liability',
+  'Maintenance Income':'Income','Water Income':'Income','Parking Income':'Income','Penalty Income':'Income','Other Income':'Income',
+  'Common Electricity Income':'Income','Lift Maintenance Income':'Income','DG Income':'Income','Electricity Income':'Income',
+  'Housekeeping Expense':'Expense','Security Expense':'Expense','Electricity Expense':'Expense','Repairs & Maintenance':'Expense',
+  'Administrative Expense':'Expense','Salaries Expense':'Expense','Water Expense':'Expense',
+  'Professional Fees Expense':'Expense','Contractor Payments Expense':'Expense','Rent Expense':'Expense',
+  'Employer PF & ESI Expense':'Expense','Depreciation Expense':'Expense'
+};
+const TDS_SECTIONS = {
+  '194C — Contractor':1, '194J — Professional/Technical Fees':10, '194I — Rent':10, '194H — Commission':5, 'None':0
+};
+const PAYMENT_MODES = ['Cash','UPI','Bank Transfer (NEFT/RTGS/IMPS)','Cheque'];
+function modeToAccount(mode){ return mode==='Cash'?'Cash in Hand':'Bank Account'; }
+const ACCOUNT_GROUPS = {
+  'Cash in Hand':'Current Assets','Bank Account':'Current Assets','Maintenance Receivable':'Current Assets','Inventory Stock':'Current Assets','GST Input Credit':'Current Assets',
+  'Fixed Assets':'Fixed Assets','Accumulated Depreciation':'Fixed Assets',
+  'Sinking Fund':'Reserves & Funds','Corpus Fund':'Reserves & Funds',
+  'Security Deposits':'Current Liabilities','Vendor Creditors':'Current Liabilities','GST Payable':'Current Liabilities','PF Payable':'Current Liabilities','ESI Payable':'Current Liabilities','TDS Payable':'Current Liabilities',
+  'Maintenance Income':'Operating Income','Water Income':'Operating Income','Parking Income':'Operating Income','Common Electricity Income':'Operating Income','Lift Maintenance Income':'Operating Income','DG Income':'Operating Income','Electricity Income':'Operating Income',
+  'Penalty Income':'Other Income','Other Income':'Other Income',
+  'Salaries Expense':'Establishment Expenses','Employer PF & ESI Expense':'Establishment Expenses','Administrative Expense':'Establishment Expenses',
+  'Housekeeping Expense':'Operating Expenses','Security Expense':'Operating Expenses','Electricity Expense':'Operating Expenses','Repairs & Maintenance':'Operating Expenses','Water Expense':'Operating Expenses','Professional Fees Expense':'Operating Expenses','Contractor Payments Expense':'Operating Expenses','Rent Expense':'Operating Expenses',
+  'Depreciation Expense':'Non-Cash Expenses'
+};
+function groupedRows(accNames, valueFn){
+  const groups={};
+  accNames.forEach(a=>{ const g=ACCOUNT_GROUPS[a]||'Other'; (groups[g]=groups[g]||[]).push(a); });
+  return Object.entries(groups).map(([g,accs])=>{
+    const rows = accs.map(a=>({a,v:valueFn(a)})).filter(x=>x.v);
+    const subtotal = rows.reduce((s,x)=>s+x.v,0);
+    return {group:g, rows, subtotal};
+  }).filter(g=>g.rows.length);
+}
+
+/* ============ ROUTER ============ */
+const TABS = [
+  {id:'dashboard', label:'Dash', ic:'⌂'},
+  {id:'flats', label:'Flats', ic:'⌘'},
+  {id:'billing', label:'Billing', ic:'▤'},
+  {id:'receipts', label:'Receipts', ic:'⊙'},
+  {id:'vendors', label:'Vendors', ic:'⎔'},
+  {id:'payroll', label:'Payroll', ic:'☰'},
+  {id:'assets', label:'Assets', ic:'▣'},
+  {id:'inventory', label:'Stock', ic:'▥'},
+  {id:'accounts', label:'Accounts', ic:'§'},
+  {id:'approvals', label:'Approve', ic:'✓'},
+  {id:'complaints', label:'Issues', ic:'⚑'},
+  {id:'reports', label:'Reports', ic:'▦'},
+  {id:'gst', label:'GST', ic:'%'},
+  {id:'settings', label:'Setup', ic:'⚙'},
+  {id:'help', label:'Help', ic:'?'},
+];
+let route = 'dashboard';
+let subroute = '';
+
+function renderSidebar(){
+  const el = document.getElementById('sidebar');
+  const pendingCount = DB.vouchers.filter(v=>v.status==='pending').length;
+  el.innerHTML = '<div class="side-logo">RWA</div>' + TABS.map(t=>
+    `<button class="tab ${route===t.id?'active':''}" onclick="go('${t.id}')" style="position:relative"><span class="ic">${t.ic}</span>${t.label}${t.id==='approvals'&&pendingCount?`<span class="tab-badge">${pendingCount}</span>`:''}</button>`
+  ).join('');
+}
+function go(r, sr){
+  route=r; subroute = sr||'';
+  renderSidebar();
+  document.getElementById('pageTitle').textContent = TABS.find(t=>t.id===r).label==='Dash'?'Dashboard':TABS.find(t=>t.id===r).label;
+  render();
+  document.getElementById('content').scrollTop=0;
+  window.scrollTo(0,0);
+}
+function render(){
+  document.getElementById('socName').textContent = DB.society.name + (DB.flats.length? ' · '+DB.flats.length+' flats':'');
+  const c = document.getElementById('content');
+  const fab = document.getElementById('fabBtn');
+  fab.style.display='flex';
+  if(route==='dashboard'){ c.innerHTML = renderDashboard(); fab.style.display='none'; }
+  else if(route==='flats'){ c.innerHTML = renderFlats(); fab.onclick=()=>openFlatModal(); }
+  else if(route==='billing'){ c.innerHTML = renderBilling(); if(subroute==='meters'){ fab.style.display='none'; } else { fab.onclick=()=>openGenerateBillModal(); } }
+  else if(route==='receipts'){ c.innerHTML = renderReceipts(); fab.onclick=()=>openReceiptModal(); }
+  else if(route==='vendors'){ c.innerHTML = renderVendors(); fab.onclick=()=>(subroute==='bills'?openVendorBillModal():subroute==='payments'?openVendorPaymentModal():openVendorModal()); }
+  else if(route==='payroll'){ c.innerHTML = renderPayroll(); fab.onclick=()=>(subroute==='runs'?openPayrollRunModal():openEmployeeModal()); }
+  else if(route==='assets'){ c.innerHTML = renderAssets(); fab.onclick=()=>openAssetModal(); }
+  else if(route==='inventory'){ c.innerHTML = renderInventory(); fab.onclick=()=>(subroute==='tx'?openInventoryTxModal():openInventoryItemModal()); }
+  else if(route==='accounts'){ c.innerHTML = renderAccounts(); fab.onclick=()=>openVoucherModal(); }
+  else if(route==='approvals'){ c.innerHTML = renderApprovals(); fab.style.display='none'; }
+  else if(route==='complaints'){ c.innerHTML = renderComplaints(); fab.onclick=()=>openComplaintModal(); }
+  else if(route==='reports'){ c.innerHTML = renderReports(); fab.style.display='none'; }
+  else if(route==='gst'){ c.innerHTML = renderGST(); fab.style.display='none'; }
+  else if(route==='settings'){ c.innerHTML = renderSettings(); fab.style.display='none'; }
+  else if(route==='help'){ c.innerHTML = renderHelp(); fab.style.display='none'; }
+  if(isReadOnly() && ['flats','billing','receipts','vendors','payroll','assets','inventory','accounts','complaints'].includes(route)) fab.style.display='none';
+}
+function handleFab(){}
+
+/* ============ HELPERS ============ */
+function fmt(n){ n=Number(n)||0; return n.toLocaleString('en-IN',{maximumFractionDigits:0}); }
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); }
+function closeModal(){ document.getElementById('modalBg').classList.remove('show'); document.getElementById('modalBody').innerHTML=''; }
+function openModal(html){ document.getElementById('modalBody').innerHTML=html; document.getElementById('modalBg').classList.add('show'); }
+function flatLabel(f){ return (f.tower?f.tower+'-':'')+f.flatNo; }
+function getFlat(id){ return DB.flats.find(f=>f.id===id); }
+function getFlatCategory(f){
+  if(f.flatTypeId){ const t=DB.flatTypes.find(x=>x.id===f.flatTypeId); if(t) return t; }
+  return DB.flatTypes.find(t=>t.mode==='sqft' && f.area>0 && f.area>=(t.minArea||0) && f.area<=(t.maxArea||999999999)) || null;
+}
+function categoryRate(head, category){
+  if(category && DB.categoryRates[head.id] && DB.categoryRates[head.id][category.id]!==undefined && DB.categoryRates[head.id][category.id]!==null && DB.categoryRates[head.id][category.id]!==''){
+    return Number(DB.categoryRates[head.id][category.id]);
+  }
+  return head.rate;
+}
+function billOutstanding(b){ return b.total - b.paid; }
+function flatOutstanding(flatId){
+  return DB.bills.filter(b=>b.flatId===flatId).reduce((s,b)=>s+billOutstanding(b),0);
+}
+function addVoucher(v){
+  v.id = nextId('voucher'); v.date = v.date||todayISO();
+  v.status = 'pending'; v.maker = window.__currentRole; v.makerAt = nowTS();
+  v.checker = null; v.checkerAt = null; v.checkerNote = '';
+  DB.vouchers.push(v);
+  logAction('Create', `${v.type} voucher #${v.id} — ${v.narration||''} (₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))})`);
+  return v;
+}
+function accBalance(name, opts){
+  let dr=0,cr=0; const upto = opts?.upto, from = opts?.from;
+  DB.vouchers.forEach(v=>{
+    if(v.status!=='approved') return;
+    if(upto && v.date>upto) return;
+    if(from && v.date<from) return;
+    v.entries.forEach(e=>{ if(e.account===name){ dr+=e.debit||0; cr+=e.credit||0; } });
+  });
+  return {dr,cr,net:dr-cr};
+}
+function dayBefore(iso){ const d=new Date(iso); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10); }
+function fyStart(){ const d=new Date(); const y = d.getMonth()>=3? d.getFullYear() : d.getFullYear()-1; return `${y}-04-01`; }
+function receiptsPaymentsStatement(from, to){
+  const cashAccs = ['Cash in Hand','Bank Account'];
+  const opening = cashAccs.reduce((s,a)=> s+accBalance(a,{upto:dayBefore(from)}).net, 0);
+  const receipts = {}; const payments = {};
+  DB.vouchers.filter(v=>v.status==='approved' && v.date>=from && v.date<=to).forEach(v=>{
+    cashAccs.forEach(cashAcc=>{
+      const e = v.entries.find(x=>x.account===cashAcc); if(!e) return;
+      const others = v.entries.filter(x=>x.account!==cashAcc);
+      const label = others.length===1? others[0].account : (others.length? `Multiple (${v.type})` : '—');
+      if(e.debit>0) receipts[label]=(receipts[label]||0)+e.debit;
+      if(e.credit>0) payments[label]=(payments[label]||0)+e.credit;
+    });
+  });
+  const totalReceipts = Object.values(receipts).reduce((s,v)=>s+v,0);
+  const totalPayments = Object.values(payments).reduce((s,v)=>s+v,0);
+  return {opening, receipts, payments, totalReceipts, totalPayments, closing: opening+totalReceipts-totalPayments};
+}
+function statementHeader(title, periodLabel){
+  return `<div style="text-align:center;margin-bottom:14px;">
+    <div style="font-family:'Zilla Slab',serif;font-weight:700;font-size:16px;">${DB.society.name}</div>
+    <div style="font-size:12.5px;font-weight:600;margin-top:2px;">${title}</div>
+    <div style="font-size:11.5px;color:var(--ink-soft);margin-top:1px;">${periodLabel}</div>
+    <div style="font-size:9.5px;color:var(--ink-soft);margin-top:3px;">(All figures in ₹ · unaudited draft generated ${todayISO()})</div>
+  </div>`;
+}
+function statementFooter(){
+  const roles = ['Treasurer','Secretary','Chairman/President','Auditor'];
+  return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px 10px;margin-top:26px;">
+    ${roles.map(r=>`<div style="border-top:1px solid var(--ink);padding-top:5px;font-size:11px;color:var(--ink-soft);">${r}</div>`).join('')}
+  </div>`;
+}
+function nowTS(){ return new Date().toISOString(); }
+function isReadOnly(){ return window.__currentRole==='Auditor'; }
+function canEdit(){ if(isReadOnly()){ toast('Auditor role is read-only'); return false; } return true; }
+function canApprove(v){ return !isReadOnly() && v.status==='pending' && v.maker!==window.__currentRole; }
+function logAction(action, detail){
+  if(!DB.auditLog) DB.auditLog=[];
+  DB.auditLog.push({id:DB.auditLog.length+1, ts:nowTS(), role:window.__currentRole, action, detail});
+  if(DB.auditLog.length>2000) DB.auditLog.splice(0, DB.auditLog.length-2000);
+}
+function approveVoucherCore(id, note){
+  const v = DB.vouchers.find(x=>x.id===id); if(!v) return false;
+  if(!canApprove(v)) return false;
+  v.status='approved'; v.checker=window.__currentRole; v.checkerAt=nowTS(); v.checkerNote=note||'';
+  applyApprovalSideEffects(v);
+  logAction('Approve', `${v.type} voucher #${v.id} — ${v.narration||''}`);
+  return true;
+}
+function approveVoucher(id, note){
+  const v = DB.vouchers.find(x=>x.id===id); if(!v) return;
+  if(!canApprove(v)){ toast(v.maker===window.__currentRole? 'You cannot approve your own entry — needs a different role.' : 'Not permitted'); return; }
+  approveVoucherCore(id, note);
+  save(); render(); toast('Approved & posted to ledger');
+}
+function authoriseTicked(){
+  const boxes = Array.from(document.querySelectorAll('.pend_ck:checked'));
+  if(!boxes.length){ toast('Tick at least one entry to authorise'); return; }
+  let count=0;
+  boxes.forEach(b=>{ if(approveVoucherCore(Number(b.dataset.id))) count++; });
+  save(); render();
+  toast(`${count} entr${count===1?'y':'ies'} authorised & posted to ledger`);
+}
+function toggleSelectAllPending(master){
+  document.querySelectorAll('.pend_ck').forEach(b=>{ b.checked = master.checked; });
+  updatePendingCount();
+}
+function updatePendingCount(){
+  const n = document.querySelectorAll('.pend_ck:checked').length;
+  const btn = document.getElementById('authoriseBtn');
+  if(btn){ btn.textContent = `Authorise Ticked (${n})`; btn.disabled = n===0; btn.style.opacity = n===0?'.5':'1'; }
+}
+function rejectVoucher(id, note){
+  const v = DB.vouchers.find(x=>x.id===id); if(!v) return;
+  if(!canApprove(v)){ toast(v.maker===window.__currentRole? 'You cannot decide on your own entry — needs a different role.' : 'Not permitted'); return; }
+  if(!note){ toast('Please add a reason for rejection'); return; }
+  v.status='rejected'; v.checker=window.__currentRole; v.checkerAt=nowTS(); v.checkerNote=note;
+  logAction('Reject', `${v.type} voucher #${v.id} — ${v.narration||''} — reason: ${note}`);
+  save(); render(); toast('Rejected');
+}
+function applyApprovalSideEffects(v){
+  if(v.type==='Receipt' && v.flatId){
+    let remaining = v.entries.find(e=>e.debit>0)?.debit||0;
+    DB.bills.filter(b=>b.flatId===v.flatId && billOutstanding(b)>0).sort((a,b)=>a.period.localeCompare(b.period)).forEach(b=>{
+      if(remaining<=0) return;
+      const due = billOutstanding(b); const alloc = Math.min(due,remaining);
+      b.paid += alloc; remaining -= alloc; b.status = billOutstanding(b)<=0?'paid':'partial';
+    });
+  }
+  if(v.type==='VendorPayment' && v.vendorId){
+    let remaining = v.entries.find(e=>e.debit>0)?.debit||0;
+    DB.vendorBills.filter(b=>b.vendorId===v.vendorId && (b.netPayable-b.paid)>0).sort((a,b)=>a.date.localeCompare(b.date)).forEach(b=>{
+      if(remaining<=0) return;
+      const due = b.netPayable-b.paid; const alloc=Math.min(due,remaining);
+      b.paid += alloc; remaining -= alloc; b.status = (b.netPayable-b.paid)<=0?'paid':'partial';
+    });
+  }
+  if(v.type==='Payroll' && v.ref){
+    const run = DB.payrollRuns.find(r=>r.id===v.ref); if(run) run.status='Processed';
+  }
+  if(v.type==='Journal' && v.assetRef){
+    const a = DB.assets.find(x=>x.id===v.assetRef); if(a) a.posted=true;
+  }
+}
+
+/* ============ DASHBOARD ============ */
+function renderDashboard(){
+  const totalFlats = DB.flats.length;
+  const occupied = DB.flats.filter(f=>f.occupancy!=='vacant').length;
+  const totalOutstanding = DB.bills.reduce((s,b)=>s+billOutstanding(b),0);
+  const thisMonth = todayISO().slice(0,7);
+  const collectedThisMonth = DB.vouchers.filter(v=>v.type==='Receipt' && v.date.slice(0,7)===thisMonth)
+    .reduce((s,v)=> s+ v.entries.reduce((s2,e)=> s2+(e.debit||0),0)/2 ,0);
+  const openComplaints = DB.complaints.filter(c=>c.status!=='Closed').length;
+  const billedThisMonth = DB.bills.filter(b=>b.period===thisMonth).reduce((s,b)=>s+b.total,0);
+
+  // last 6 months collection
+  const months=[]; const d=new Date();
+  for(let i=5;i>=0;i--){ const dt=new Date(d.getFullYear(),d.getMonth()-i,1); months.push(dt.toISOString().slice(0,7)); }
+  const collByMonth = months.map(m=> DB.vouchers.filter(v=>v.type==='Receipt'&&v.date.slice(0,7)===m).reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0)/2,0) );
+  const maxColl = Math.max(1,...collByMonth);
+
+  const defaulters = DB.flats.map(f=>({f,out:flatOutstanding(f.id)})).filter(x=>x.out>0).sort((a,b)=>b.out-a.out).slice(0,5);
+
+  return `
+  <div class="stat-grid">
+    <div class="stat"><div class="lbl">Total Flats</div><div class="val">${totalFlats}</div></div>
+    <div class="stat"><div class="lbl">Occupied</div><div class="val">${occupied}</div></div>
+    <div class="stat alert"><div class="lbl">Outstanding Dues</div><div class="val">₹${fmt(totalOutstanding)}</div></div>
+    <div class="stat good"><div class="lbl">Collected · ${thisMonth}</div><div class="val">₹${fmt(collectedThisMonth)}</div></div>
+    <div class="stat"><div class="lbl">Billed · ${thisMonth}</div><div class="val">₹${fmt(billedThisMonth)}</div></div>
+    <div class="stat ${openComplaints>0?'alert':''}"><div class="lbl">Open Issues</div><div class="val">${openComplaints}</div></div>
+  </div>
+  <div class="card">
+    <div class="section-title"><span><span class="num">01</span>Collections — Last 6 Months</span></div>
+    <div class="bar-chart">
+      ${months.map((m,i)=>`<div class="bar-col"><div class="bar" style="height:${(collByMonth[i]/maxColl*100)||2}%"></div><div class="bar-label">${m.slice(5)}</div></div>`).join('')}
+    </div>
+  </div>
+  <div class="card">
+    <div class="section-title"><span><span class="num">02</span>Top Defaulters</span><button class="btn btn-outline btn-sm" onclick="go('reports','defaulters')">View all</button></div>
+    ${defaulters.length? `<div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th class="num-cell">Due</th></tr>
+      ${defaulters.map(x=>`<tr><td>${flatLabel(x.f)}</td><td>${x.f.owner?.name||'—'}</td><td class="num-cell" style="color:var(--brick)">₹${fmt(x.out)}</td></tr>`).join('')}
+    </table></div>` : `<div class="empty"><div class="ic">✓</div>No outstanding dues.</div>`}
+  </div>
+  ${totalFlats===0? `<div class="card"><div class="section-title">Get Started</div><p style="color:var(--ink-soft); font-size:13.5px; line-height:1.5;">Add your flats under <b>Flats</b>, review charge heads under <b>Setup</b>, then generate your first maintenance bills under <b>Billing</b>.</p><button class="btn btn-primary" onclick="go('flats')">Add First Flat</button></div>`:''}
+  `;
+}
+
+/* ============ FLATS ============ */
+function renderFlats(){
+  const sr = subroute || 'list';
+  const tabs=[['list','All Flats'],['category','By Category']];
+  const importBar = isReadOnly()? '' : `<div style="display:flex; gap:8px; margin-bottom:12px;">
+      <button class="btn btn-outline btn-sm" style="flex:1" onclick="downloadFlatCSVTemplate()">⬇ CSV Template</button>
+      <button class="btn btn-outline btn-sm" style="flex:1" onclick="document.getElementById('flatCsvFile').click()">⬆ Import CSV</button>
+      <input type="file" id="flatCsvFile" accept=".csv" style="display:none" onchange="importFlatsCSV(event)">
+    </div>`;
+  if(!DB.flats.length) return importBar + `<div class="empty"><div class="ic">⌘</div>No flats added yet.<br><br>${isReadOnly()?'':'<button class="btn btn-primary" onclick="openFlatModal()">Add Flat</button>'}</div>`;
+  let body;
+  if(sr==='category'){
+    const groups={}; const unassigned=[];
+    DB.flats.forEach(f=>{ const cat=getFlatCategory(f); if(cat){ (groups[cat.id]=groups[cat.id]||{cat,flats:[]}).flats.push(f); } else unassigned.push(f); });
+    body = Object.values(groups).sort((a,b)=>a.cat.name.localeCompare(b.cat.name)).map(g=>{
+      const totalArea = g.flats.reduce((s,f)=>s+(f.area||0),0);
+      return `<div class="card"><div class="section-title"><span>${g.cat.name}${g.cat.mode==='sqft'?' <span class="pill">'+g.cat.minArea+'–'+g.cat.maxArea+' sqft</span>':''}</span><span style="font-size:11.5px;color:var(--ink-soft);font-weight:600;">${g.flats.length} flat${g.flats.length===1?'':'s'} · ${fmt(totalArea)} sqft total</span></div>
+        <div class="tbl-wrap"><table><tr><th>Flat</th><th class="num-cell">Area</th><th>Owner</th></tr>
+        ${g.flats.sort((a,b)=>(a.tower+a.flatNo).localeCompare(b.tower+b.flatNo)).map(f=>`<tr onclick="openFlatModal('${f.id}')"><td>${flatLabel(f)}</td><td class="num-cell">${f.area||'—'} sqft</td><td>${f.owner?.name||'—'}</td></tr>`).join('')}
+        </table></div></div>`;
+    }).join('');
+    if(unassigned.length) body += `<div class="card"><div class="section-title"><span>Uncategorized</span><span style="font-size:11.5px;color:var(--ink-soft);font-weight:600;">${unassigned.length} flat${unassigned.length===1?'':'s'}</span></div>
+      <div class="tbl-wrap"><table><tr><th>Flat</th><th class="num-cell">Area</th><th>Owner</th></tr>
+      ${unassigned.sort((a,b)=>(a.tower+a.flatNo).localeCompare(b.tower+b.flatNo)).map(f=>`<tr onclick="openFlatModal('${f.id}')"><td>${flatLabel(f)}</td><td class="num-cell">${f.area||'—'} sqft</td><td>${f.owner?.name||'—'}</td></tr>`).join('')}
+      </table></div></div>`;
+    if(!body) body = `<div class="empty"><div class="ic">⌘</div>No categories defined yet — add one under Setup → Flat Categories.</div>`;
+  } else {
+    const rows = DB.flats.slice().sort((a,b)=> (a.tower+a.flatNo).localeCompare(b.tower+b.flatNo)).map(f=>{
+      const out = flatOutstanding(f.id);
+      const cat = getFlatCategory(f);
+      return `<tr onclick="openFlatModal('${f.id}')">
+        <td><b>${flatLabel(f)}</b><div style="font-size:11px;color:var(--ink-soft)">${cat?cat.name+' · ':''}${f.area||'—'} sqft · ${f.occupancy}</div></td>
+        <td>${f.owner?.name||'—'}<div style="font-size:11px;color:var(--ink-soft)">${f.owner?.phone||''}</div></td>
+        <td class="num-cell" style="${out>0?'color:var(--brick)':''}">${out>0?'₹'+fmt(out):'—'}</td>
+      </tr>`;
+    }).join('');
+    body = `<div class="card"><div class="section-title"><span><span class="num">${String(DB.flats.length).padStart(2,'0')}</span>Flats & Owners</span></div>
+    <div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th class="num-cell">Due</th></tr>${rows}</table></div></div>`;
+  }
+  return importBar + `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('flats','${t[0]}')">${t[1]}</button>`).join('')}</div>${body}`;
+}
+function csvEscape(v){ v=String(v??''); return /[,"\n]/.test(v)? '"'+v.replace(/"/g,'""')+'"' : v; }
+function parseCSVLine(line){
+  const out=[]; let cur='', inQ=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(inQ){ if(ch==='"'){ if(line[i+1]==='"'){ cur+='"'; i++; } else inQ=false; } else cur+=ch; }
+    else { if(ch==='"') inQ=true; else if(ch===','){ out.push(cur); cur=''; } else cur+=ch; }
+  }
+  out.push(cur);
+  return out;
+}
+function downloadFlatCSVTemplate(){
+  const header = ['Tower','FlatNo','FlatType','Area','ParkingSlots','Occupancy','OwnerName','OwnerPhone','OwnerEmail','TenantName'];
+  const sampleType = DB.flatTypes[0]?.name || '2 BHK';
+  const sample = [
+    ['A','101',sampleType,'950','1','owner','Ramesh Kumar','9876543210','ramesh@example.com',''],
+    ['A','102',sampleType,'950','1','tenant','Sunita Rao','9876500000','sunita@example.com','Vikram Shah'],
+    ['B','201','Villa Type A','2400','2','owner','Anil Mehta','9822011122','anil@example.com',''],
+  ];
+  const csv = [header, ...sample].map(r=>r.map(csvEscape).join(',')).join('\n');
+  const blob = new Blob([csv],{type:'text/csv'}); const url=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download='smartrwa-flats-template.csv'; a.click();
+  toast('Template downloaded — fill it in Excel/Sheets and re-upload via Import CSV');
+}
+function importFlatsCSV(ev){
+  if(!canEdit()) return;
+  const file = ev.target.files[0]; if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e=>{
+    const lines = e.target.result.split(/\r?\n/).filter(l=>l.trim().length);
+    if(!lines.length){ toast('Empty file'); return; }
+    const header = parseCSVLine(lines[0]).map(h=>h.trim().toLowerCase());
+    const col = name=>header.indexOf(name.toLowerCase());
+    const idx = {tower:col('Tower'), flatNo:col('FlatNo'), type:col('FlatType'), area:col('Area'), parking:col('ParkingSlots'), occ:col('Occupancy'), oName:col('OwnerName'), oPhone:col('OwnerPhone'), oEmail:col('OwnerEmail'), tName:col('TenantName')};
+    if(idx.flatNo<0){ toast('CSV missing required "FlatNo" column — use the template'); return; }
+    let added=0, skipped=0; const errors=[]; const seenInFile=new Set();
+    for(let i=1;i<lines.length;i++){
+      const cells = parseCSVLine(lines[i]);
+      const flatNo = (cells[idx.flatNo]||'').trim();
+      const tower = idx.tower>=0? (cells[idx.tower]||'').trim() : '';
+      if(!flatNo){ errors.push(`Row ${i+1}: missing FlatNo`); skipped++; continue; }
+      const key = tower+'|'+flatNo;
+      if(seenInFile.has(key)){ errors.push(`Row ${i+1}: duplicate ${key} within file`); skipped++; continue; }
+      if(DB.flats.some(f=>f.tower===tower && f.flatNo===flatNo)){ errors.push(`Row ${i+1}: ${key} already exists — skipped`); skipped++; continue; }
+      const area = idx.area>=0? Number(cells[idx.area])||0 : 0;
+      if(idx.area>=0 && cells[idx.area] && isNaN(Number(cells[idx.area]))){ errors.push(`Row ${i+1}: invalid Area "${cells[idx.area]}"`); skipped++; continue; }
+      const typeName = idx.type>=0? (cells[idx.type]||'').trim() : '';
+      const flatType = typeName? DB.flatTypes.find(t=>t.name.toLowerCase()===typeName.toLowerCase()) : null;
+      const occRaw = idx.occ>=0? (cells[idx.occ]||'owner').trim().toLowerCase() : 'owner';
+      const occupancy = ['owner','tenant','vacant'].includes(occRaw)? occRaw : 'owner';
+      seenInFile.add(key);
+      DB.seq.flat++;
+      DB.flats.push({
+        id:'F'+DB.seq.flat, tower, flatNo, flatTypeId: flatType?flatType.id:'', area: area||flatType?.defaultArea||0,
+        parkingSlots: idx.parking>=0? Number(cells[idx.parking])||0 : 0, occupancy,
+        owner:{name: idx.oName>=0?(cells[idx.oName]||'').trim():'', phone: idx.oPhone>=0?(cells[idx.oPhone]||'').trim():'', email: idx.oEmail>=0?(cells[idx.oEmail]||'').trim():''},
+        tenant: idx.tName>=0 && (cells[idx.tName]||'').trim()? {name:(cells[idx.tName]||'').trim()} : null
+      });
+      added++;
+    }
+    save();
+    logAction('Import', `Flats CSV import — ${added} added, ${skipped} skipped`);
+    openModal(`<div class="modal-head"><h2>Import Results</h2><button class="close-x" onclick="closeModal()">×</button></div>
+      <div class="stat-grid"><div class="stat good"><div class="lbl">Added</div><div class="val">${added}</div></div><div class="stat ${skipped?'alert':''}"><div class="lbl">Skipped</div><div class="val">${skipped}</div></div></div>
+      ${errors.length? `<div class="tbl-wrap"><table><tr><th>Issue</th></tr>${errors.map(e=>`<tr><td style="font-size:12px;">${e}</td></tr>`).join('')}</table></div>` : '<p style="color:var(--moss);font-size:13px;">All rows imported cleanly.</p>'}`);
+    render();
+  };
+  reader.readAsText(file);
+  ev.target.value='';
+}
+function openFlatModal(id){
+  const f = id? getFlat(id) : {id:'F'+nextId('flat'), tower:'', flatNo:'', flatTypeId:'', area:'', owner:{name:'',phone:'',email:''}, tenant:null, occupancy:'owner', parkingSlots:0, vehicles:''};
+  if(!id) DB.seq.flat--; // don't burn id until saved
+  openModal(`
+    <div class="modal-head"><h2>${id?'Edit Flat':'Add Flat'}</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="row2"><div class="field"><label>Tower/Block</label><input id="f_tower" value="${f.tower||''}" placeholder="A"></div>
+    <div class="field"><label>Flat No.</label><input id="f_flatNo" value="${f.flatNo||''}" placeholder="101"></div></div>
+    <div class="field"><label>Category</label><select id="f_type" onchange="applyFlatType()"><option value="">— No fixed category —</option>${DB.flatTypes.filter(t=>t.mode!=='sqft').map(t=>`<option value="${t.id}" ${f.flatTypeId===t.id?'selected':''}>${t.name} (${t.defaultArea} sqft)</option>`).join('')}</select></div>
+    <div class="row2"><div class="field"><label>Area (sqft)</label><input id="f_area" type="number" value="${f.area||''}" onchange="showAutoCategory()"></div>
+    <div class="field"><label>Parking Slots</label><input id="f_parking" type="number" value="${f.parkingSlots||0}"></div></div>
+    <div id="f_autoCat" style="font-size:11.5px;color:var(--ink-soft);margin:-8px 0 12px;"></div>
+    <div class="field"><label>Occupancy</label>
+      <div class="tag-row">
+        ${['owner','tenant','vacant'].map(o=>`<button type="button" class="tag-btn ${f.occupancy===o?'active':''}" onclick="selectOcc('${o}',this)">${o}</button>`).join('')}
+      </div>
+      <input type="hidden" id="f_occ" value="${f.occupancy}">
+    </div>
+    <hr class="divider">
+    <div class="field"><label>Owner Name</label><input id="f_ownerName" value="${f.owner?.name||''}"></div>
+    <div class="row2"><div class="field"><label>Owner Phone</label><input id="f_ownerPhone" value="${f.owner?.phone||''}"></div>
+    <div class="field"><label>Owner Email</label><input id="f_ownerEmail" value="${f.owner?.email||''}"></div></div>
+    <div class="field"><label>Tenant Name (if any)</label><input id="f_tenantName" value="${f.tenant?.name||''}"></div>
+    <div style="display:flex; gap:10px; margin-top:16px;">
+      <button class="btn btn-primary" style="flex:1" onclick="saveFlat('${f.id}')">Save Flat</button>
+      ${id?`<button class="btn btn-danger" onclick="deleteFlat('${f.id}')">Delete</button>`:''}
+    </div>
+  `);
+  window.__editingFlat = f;
+  setTimeout(showAutoCategory,0);
+}
+function showAutoCategory(){
+  const el = document.getElementById('f_autoCat'); if(!el) return;
+  const area = Number(document.getElementById('f_area').value)||0;
+  const typeSel = document.getElementById('f_type').value;
+  if(typeSel){ el.textContent=''; return; }
+  const match = DB.flatTypes.find(t=>t.mode==='sqft' && area>0 && area>=(t.minArea||0) && area<=(t.maxArea||999999999));
+  el.textContent = match? `Auto-detected category: ${match.name} (${match.minArea}–${match.maxArea} sqft)` : (area>0? 'No matching sqft-range category — will bill at default rates.' : '');
+}
+function applyFlatType(){
+  const typeId = document.getElementById('f_type').value;
+  const t = DB.flatTypes.find(x=>x.id===typeId);
+  if(t) document.getElementById('f_area').value = t.defaultArea;
+  showAutoCategory();
+}
+function selectOcc(o,btn){ document.getElementById('f_occ').value=o; btn.parentElement.querySelectorAll('.tag-btn').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); }
+function saveFlat(id){
+  if(!canEdit()) return;
+  const data = {
+    id, tower:document.getElementById('f_tower').value.trim(), flatNo:document.getElementById('f_flatNo').value.trim(),
+    flatTypeId:document.getElementById('f_type').value,
+    area:Number(document.getElementById('f_area').value)||0, parkingSlots:Number(document.getElementById('f_parking').value)||0,
+    occupancy:document.getElementById('f_occ').value,
+    owner:{name:document.getElementById('f_ownerName').value.trim(),phone:document.getElementById('f_ownerPhone').value.trim(),email:document.getElementById('f_ownerEmail').value.trim()},
+    tenant: document.getElementById('f_tenantName').value.trim()? {name:document.getElementById('f_tenantName').value.trim()} : null
+  };
+  if(!data.flatNo){ toast('Flat No. is required'); return; }
+  const existing = DB.flats.findIndex(x=>x.id===id);
+  if(existing>=0) DB.flats[existing]=data; else { DB.seq.flat++; DB.flats.push(data); }
+  save(); closeModal(); toast('Flat saved'); render();
+}
+function deleteFlat(id){
+  if(!canEdit()) return;
+  if(!confirm('Delete this flat and all its records reference will remain in ledger. Continue?')) return;
+  DB.flats = DB.flats.filter(f=>f.id!==id); save(); closeModal(); render();
+}
+
+/* ============ BILLING ============ */
+function renderBilling(){
+  const sr = subroute || 'bills';
+  const tabs=[['bills','Bills'],['meters','Meter Readings']];
+  let body='';
+  const actionBar = isReadOnly()? '' : `<div style="display:flex; gap:8px; margin-bottom:12px;">
+      <button class="btn btn-outline btn-sm" style="flex:1" onclick="openIndividualBillModal()">Bill One Flat</button>
+      <button class="btn btn-outline btn-sm" style="flex:1" onclick="openOneTimeChargeModal()">+ One-Time Charge</button>
+    </div>`;
+  if(sr==='bills'){
+    const bills = DB.bills.slice().sort((a,b)=> b.period.localeCompare(a.period) || flatLabel(getFlat(a.flatId)||{}).localeCompare(flatLabel(getFlat(b.flatId)||{})) );
+    if(!bills.length) body = actionBar + `<div class="empty"><div class="ic">▤</div>No bills generated yet.<br><br>${isReadOnly()?'':'<button class="btn btn-primary" onclick="openGenerateBillModal()">Generate Bills</button>'}</div>`;
+    else {
+      const rows = bills.map(b=>{
+        const f = getFlat(b.flatId); const out = billOutstanding(b);
+        const status = out<=0?'paid': (b.dueDate && b.dueDate<todayISO()? 'overdue':'due');
+        return `<tr onclick="viewBill('${b.id}')"><td><b>${f?flatLabel(f):'—'}</b><div style="font-size:11px;color:var(--ink-soft)">${b.oneTime?'One-time · ':''}${b.period.startsWith('ONE-')?b.dueDate:b.period}${b.gstTotal?' · incl. GST ₹'+fmt(b.gstTotal):''}</div></td>
+          <td class="num-cell">₹${fmt(b.total)}</td>
+          <td><span class="stamp ${status}">${status}</span></td></tr>`;
+      }).join('');
+      body = actionBar + `<div class="card"><div class="section-title"><span><span class="num">${String(bills.length).padStart(2,'0')}</span>Bills</span></div>
+      <div class="tbl-wrap"><table><tr><th>Flat / Period</th><th class="num-cell">Amount</th><th>Status</th></tr>${rows}</table></div></div>`;
+    }
+  } else if(sr==='meters'){
+    body = renderMeterEntry();
+  }
+  return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('billing','${t[0]}')">${t[1]}</button>`).join('')}</div>${body}`;
+}
+function viewBill(id){
+  const b = DB.bills.find(x=>x.id===id); if(!b) return;
+  const f = getFlat(b.flatId);
+  const rows = b.items.map(i=>`<tr><td>${i.head}${i.units!==undefined?' <span style="color:var(--ink-soft);font-size:11px;">('+i.units+' units)</span>':''}</td><td class="num-cell">₹${fmt(i.amount)}</td><td class="num-cell">${i.gst?'₹'+fmt(i.gst):'—'}</td></tr>`).join('');
+  openModal(`<div class="modal-head"><h2>${f?flatLabel(f):''} — ${b.period}</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="tbl-wrap"><table><tr><th>Charge</th><th class="num-cell">Amount</th><th class="num-cell">GST</th></tr>${rows}
+    <tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total</td><td class="num-cell" colspan="2">₹${fmt(b.total)}</td></tr></table></div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">Due ${b.dueDate} · Paid so far ₹${fmt(b.paid)} · Balance ₹${fmt(billOutstanding(b))}</p>`);
+}
+function renderMeterEntry(){
+  if(!DB.flats.length) return `<div class="empty"><div class="ic">⊙</div>Add flats first.</div>`;
+  const meterHeads = DB.chargeHeads.filter(h=>h.mode==='meterReading');
+  if(!meterHeads.length) return `<div class="empty"><div class="ic">⊙</div>No meter-billed charge heads configured. Add one under Setup → Charge Heads (mode: "By meter reading").</div>`;
+  const meterTypes = [...new Set(meterHeads.map(h=>h.meterType))];
+  setTimeout(drawMeterTable,0);
+  return `<div class="card">
+    <div class="row2"><div class="field"><label>Meter</label><select id="mt_type" onchange="drawMeterTable()">${meterTypes.map(m=>`<option>${m}</option>`).join('')}</select></div>
+    <div class="field"><label>Period</label><input id="mt_period" type="month" value="${todayISO().slice(0,7)}" onchange="drawMeterTable()"></div></div>
+    <div id="mt_table"></div>
+    ${isReadOnly()?'':'<button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="saveMeterReadings()">Save Readings</button>'}
+  </div>`;
+}
+function getPrevReading(flatId, meterType, beforePeriod){
+  const past = DB.meterReadings.filter(r=>r.flatId===flatId && r.meterType===meterType && r.period<beforePeriod).sort((a,b)=>b.period.localeCompare(a.period));
+  return past.length? past[0].current : 0;
+}
+function drawMeterTable(){
+  const type = document.getElementById('mt_type')?.value; const period = document.getElementById('mt_period')?.value;
+  if(!type||!period) return;
+  const rows = DB.flats.map(f=>{
+    const existing = DB.meterReadings.find(r=>r.flatId===f.id && r.meterType===type && r.period===period);
+    const prev = existing? existing.previous : getPrevReading(f.id, type, period);
+    return `<tr><td>${flatLabel(f)}</td><td class="num-cell">${prev}</td><td><input type="number" class="mt_reading" data-flat="${f.id}" data-prev="${prev}" value="${existing?existing.current:''}" style="width:90px;" ${isReadOnly()?'disabled':''}></td></tr>`;
+  }).join('');
+  document.getElementById('mt_table').innerHTML = `<div class="tbl-wrap"><table><tr><th>Flat</th><th class="num-cell">Previous</th><th>Current</th></tr>${rows}</table></div>`;
+}
+function saveMeterReadings(){
+  if(!canEdit()) return;
+  const type = document.getElementById('mt_type').value, period = document.getElementById('mt_period').value;
+  let count=0;
+  document.querySelectorAll('.mt_reading').forEach(inp=>{
+    const flatId = inp.dataset.flat, prev = Number(inp.dataset.prev)||0, current = Number(inp.value);
+    if(inp.value===''||isNaN(current)) return;
+    if(current<prev){ return; }
+    const idx = DB.meterReadings.findIndex(r=>r.flatId===flatId && r.meterType===type && r.period===period);
+    const rec = {id: idx>=0?DB.meterReadings[idx].id:'MR'+nextId('meter'), flatId, meterType:type, period, previous:prev, current};
+    if(idx>=0) DB.meterReadings[idx]=rec; else DB.meterReadings.push(rec);
+    count++;
+  });
+  save(); toast(`${count} reading(s) saved`); logAction('Meter Readings', `${type} readings saved for ${period} (${count} flats)`);
+}
+function openGenerateBillModal(){
+  if(!DB.flats.length){ toast('Add flats first'); go('flats'); return; }
+  const period = todayISO().slice(0,7);
+  openModal(`
+    <div class="modal-head"><h2>Generate Bills</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Billing Period</label><input id="gb_period" type="month" value="${period}"></div>
+    <div class="field"><label>Due Date</label><input id="gb_due" type="date" value="${todayISO()}"></div>
+    <div class="field"><label>Apply Charge Heads</label>
+      ${DB.chargeHeads.map(h=>`<label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;font-size:13.5px;margin-bottom:6px;"><input type="checkbox" class="gb_head" value="${h.id}" checked style="width:auto"> ${h.name} (${h.mode==='perArea'?'₹'+h.rate+'/sqft':h.mode==='perParking'?'₹'+h.rate+'/slot':h.mode==='meterReading'?'₹'+h.rate+'/unit · '+h.meterType+' meter':'₹'+h.rate+' flat'})${h.gstApplicable?' +GST '+h.gstRate+'%':''}</label>`).join('')}
+    </div>
+    <p style="font-size:12px;color:var(--ink-soft)">This will create bills for all ${DB.flats.length} flat(s) for the selected period. Existing bills for the same flat & period will be skipped. Meter-billed heads need readings entered first under Billing → Meter Readings.</p>
+    <button class="btn btn-primary btn-block" onclick="generateBills()">Generate</button>
+  `);
+}
+function generateBills(){
+  if(!canEdit()) return;
+  const period = document.getElementById('gb_period').value;
+  const due = document.getElementById('gb_due').value;
+  const headIds = Array.from(document.querySelectorAll('.gb_head:checked')).map(x=>Number(x.value));
+  const heads = DB.chargeHeads.filter(h=>headIds.includes(h.id));
+  if(!period || !heads.length){ toast('Select period & at least one head'); return; }
+  let created=0, missingMeter=0;
+  DB.flats.forEach(f=>{
+    if(DB.bills.some(b=>b.flatId===f.id && b.period===period)) return;
+    const {items, missingMeter:mm} = computeBillItems(f, period, heads);
+    missingMeter += mm;
+    const subTotal = items.reduce((s,i)=>s+i.amount,0), gstTotal = items.reduce((s,i)=>s+i.gst,0);
+    const total = subTotal+gstTotal;
+    if(total<=0) return;
+    const bill = {id:'B'+nextId('bill'), flatId:f.id, period, dueDate:due, items, subTotal, gstTotal, total, paid:0, status:'unpaid'};
+    DB.bills.push(bill);
+    const entries = [{account:'Maintenance Receivable',debit:total,credit:0}];
+    const byAcc = {}; items.forEach(i=>{ byAcc[i.account]=(byAcc[i.account]||0)+i.amount; });
+    Object.entries(byAcc).forEach(([acc,amt])=> entries.push({account:acc,debit:0,credit:amt}));
+    if(gstTotal>0) entries.push({account:'GST Payable',debit:0,credit:gstTotal});
+    addVoucher({type:'Journal', flatId:f.id, date:due||todayISO(), narration:`Maintenance bill ${flatLabel(f)} — ${period}`, entries, ref:bill.id});
+    created++;
+  });
+  save(); closeModal();
+  toast(`${created} bill(s) generated${missingMeter?' — '+missingMeter+' charge(s) skipped for missing meter readings':''}`);
+  render();
+}
+function computeBillItems(f, period, heads){
+  let missingMeter=0;
+  const category = getFlatCategory(f);
+  const items = heads.map(h=>{
+    let amt=0, units;
+    const rate = categoryRate(h, category);
+    if(h.mode==='perArea') amt = (f.area||0)*rate;
+    else if(h.mode==='perParking') amt = (f.parkingSlots||0)*rate;
+    else if(h.mode==='meterReading'){
+      const reading = DB.meterReadings.find(r=>r.flatId===f.id && r.meterType===h.meterType && r.period===period);
+      if(!reading){ missingMeter++; return null; }
+      units = Math.max(0, reading.current-reading.previous); amt = units*rate;
+    }
+    else amt = rate;
+    const base = Math.round(amt);
+    const gst = h.gstApplicable? Math.round(base*(h.gstRate||0)/100) : 0;
+    return {head:h.name, account:h.account, amount:base, gst, units};
+  }).filter(i=>i && (i.amount>0||i.gst>0));
+  return {items, missingMeter};
+}
+function openIndividualBillModal(){
+  if(!DB.flats.length){ toast('Add flats first'); go('flats'); return; }
+  const period = todayISO().slice(0,7);
+  openModal(`
+    <div class="modal-head"><h2>Bill One Flat</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Flat</label><select id="ib_flat">${DB.flats.map(f=>`<option value="${f.id}">${flatLabel(f)} — ${f.owner?.name||''}</option>`).join('')}</select></div>
+    <div class="field"><label>Billing Period</label><input id="ib_period" type="month" value="${period}"></div>
+    <div class="field"><label>Due Date</label><input id="ib_due" type="date" value="${todayISO()}"></div>
+    <div class="field"><label>Apply Charge Heads</label>
+      ${DB.chargeHeads.map(h=>`<label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;font-size:13.5px;margin-bottom:6px;"><input type="checkbox" class="ib_head" value="${h.id}" checked style="width:auto"> ${h.name}${h.gstApplicable?' +GST '+h.gstRate+'%':''}</label>`).join('')}
+    </div>
+    <p style="font-size:12px;color:var(--ink-soft)">Creates a bill for this flat only, for the selected period. If a bill already exists for that flat & period, this will be skipped — use "Add One-Time Charge" instead for extra charges within the same period.</p>
+    <button class="btn btn-primary btn-block" onclick="generateIndividualBill()">Generate for This Flat</button>
+  `);
+}
+function generateIndividualBill(){
+  if(!canEdit()) return;
+  const flatId = document.getElementById('ib_flat').value;
+  const period = document.getElementById('ib_period').value;
+  const due = document.getElementById('ib_due').value;
+  const headIds = Array.from(document.querySelectorAll('.ib_head:checked')).map(x=>Number(x.value));
+  const heads = DB.chargeHeads.filter(h=>headIds.includes(h.id));
+  const f = getFlat(flatId);
+  if(!period || !heads.length || !f){ toast('Select period & at least one head'); return; }
+  if(DB.bills.some(b=>b.flatId===f.id && b.period===period)){ toast('A bill already exists for this flat & period'); return; }
+  const {items, missingMeter} = computeBillItems(f, period, heads);
+  const subTotal = items.reduce((s,i)=>s+i.amount,0), gstTotal = items.reduce((s,i)=>s+i.gst,0), total = subTotal+gstTotal;
+  if(total<=0){ toast('Nothing to bill — check rates/readings'); return; }
+  const bill = {id:'B'+nextId('bill'), flatId:f.id, period, dueDate:due, items, subTotal, gstTotal, total, paid:0, status:'unpaid'};
+  DB.bills.push(bill);
+  const entries = [{account:'Maintenance Receivable',debit:total,credit:0}];
+  const byAcc = {}; items.forEach(i=>{ byAcc[i.account]=(byAcc[i.account]||0)+i.amount; });
+  Object.entries(byAcc).forEach(([acc,amt])=> entries.push({account:acc,debit:0,credit:amt}));
+  if(gstTotal>0) entries.push({account:'GST Payable',debit:0,credit:gstTotal});
+  addVoucher({type:'Journal', flatId:f.id, date:due||todayISO(), narration:`Individual bill ${flatLabel(f)} — ${period}`, entries, ref:bill.id});
+  save(); closeModal();
+  toast(`Bill generated for ${flatLabel(f)}${missingMeter?' — '+missingMeter+' charge(s) skipped for missing meter readings':''}`);
+  go('billing','bills');
+}
+function openOneTimeChargeModal(){
+  if(!DB.flats.length){ toast('Add flats first'); go('flats'); return; }
+  const incLiabAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income'||ACCOUNTS[a]==='Liability');
+  openModal(`
+    <div class="modal-head"><h2>Add One-Time Charge</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">For penalties, special assessments, or any new nature of charge you need right now — without setting up a recurring charge head.</p>
+    <div class="field"><label>Flat</label><select id="ot_flat">${DB.flats.map(f=>`<option value="${f.id}">${flatLabel(f)} — ${f.owner?.name||''}</option>`).join('')}</select></div>
+    <div class="field"><label>Start From Template (optional)</label><select id="ot_template" onchange="applyOneTimeTemplate()"><option value="">— Custom —</option>${DB.chargeHeads.map(h=>`<option value="${h.id}">${h.name}</option>`).join('')}</select></div>
+    <div class="field"><label>Description</label><input id="ot_desc" placeholder="e.g. Late payment penalty, Festival decoration assessment"></div>
+    <div class="row2"><div class="field"><label>Amount ₹</label><input id="ot_amt" type="number"></div><div class="field"><label>Date</label><input id="ot_date" type="date" value="${todayISO()}"></div></div>
+    <div class="field"><label>Due Date</label><input id="ot_due" type="date" value="${todayISO()}"></div>
+    <div class="field"><label>Credit Account</label><select id="ot_acc">${incLiabAccs.map(a=>`<option ${a==='Penalty Income'?'selected':''}>${a}</option>`).join('')}</select></div>
+    <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="ot_gst" onchange="document.getElementById('ot_gstField').style.display=this.checked?'block':'none'" style="width:auto"> GST Applicable</label></div>
+    <div class="field" id="ot_gstField" style="display:none"><label>GST Rate %</label><input id="ot_gstRate" type="number" value="18"></div>
+    <button class="btn btn-primary btn-block" onclick="saveOneTimeCharge()">Add Charge</button>
+  `);
+}
+function applyOneTimeTemplate(){
+  const id = Number(document.getElementById('ot_template').value);
+  const h = DB.chargeHeads.find(x=>x.id===id);
+  if(!h) return;
+  document.getElementById('ot_desc').value = h.name;
+  document.getElementById('ot_acc').value = h.account;
+  document.getElementById('ot_gst').checked = !!h.gstApplicable;
+  document.getElementById('ot_gstField').style.display = h.gstApplicable?'block':'none';
+  if(h.gstApplicable) document.getElementById('ot_gstRate').value = h.gstRate||18;
+}
+function saveOneTimeCharge(){
+  if(!canEdit()) return;
+  const flatId=document.getElementById('ot_flat').value, desc=document.getElementById('ot_desc').value.trim();
+  const amount=Number(document.getElementById('ot_amt').value), date=document.getElementById('ot_date').value, due=document.getElementById('ot_due').value;
+  const account=document.getElementById('ot_acc').value, gstOn=document.getElementById('ot_gst').checked, gstRate=Number(document.getElementById('ot_gstRate').value)||0;
+  const f = getFlat(flatId);
+  if(!desc||!amount||amount<=0||!f){ toast('Enter description & valid amount'); return; }
+  const gst = gstOn? Math.round(amount*gstRate/100) : 0;
+  const total = amount+gst;
+  const period = 'ONE-'+date+'-'+(DB.seq.bill+1);
+  const bill = {id:'B'+nextId('bill'), flatId:f.id, period, dueDate:due, items:[{head:desc,account,amount,gst}], subTotal:amount, gstTotal:gst, total, paid:0, status:'unpaid', oneTime:true};
+  DB.bills.push(bill);
+  const entries = [{account:'Maintenance Receivable',debit:total,credit:0},{account,debit:0,credit:amount}];
+  if(gst>0) entries.push({account:'GST Payable',debit:0,credit:gst});
+  addVoucher({type:'Journal', flatId:f.id, date, narration:`One-time charge — ${flatLabel(f)} — ${desc}`, entries, ref:bill.id});
+  save(); closeModal(); toast('One-time charge added — posting awaits approval'); go('billing','bills');
+}
+
+/* ============ RECEIPTS ============ */
+function renderReceipts(){
+  const receipts = DB.vouchers.filter(v=>v.type==='Receipt').slice().sort((a,b)=>b.date.localeCompare(a.date));
+  if(!receipts.length) return `<div class="empty"><div class="ic">⊙</div>No receipts recorded yet.<br><br>${isReadOnly()?'':'<button class="btn btn-primary" onclick="openReceiptModal()">Record Receipt</button>'}</div>`;
+  const rows = receipts.map(v=>{
+    const f = getFlat(v.flatId); const amt = v.entries.find(e=>e.debit>0)?.debit||0;
+    return `<tr><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''} · by ${v.maker}</div></td><td>${f?flatLabel(f):'—'}</td><td class="num-cell">₹${fmt(amt)}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`;
+  }).join('');
+  return `<div class="card"><div class="section-title"><span><span class="num">${String(receipts.length).padStart(2,'0')}</span>Receipts</span></div>
+  <div class="tbl-wrap"><table><tr><th>Date</th><th>Flat</th><th class="num-cell">Amount</th><th>Status</th></tr>${rows}</table></div></div>`;
+}
+function openReceiptModal(){
+  if(!DB.flats.length){ toast('Add flats first'); go('flats'); return; }
+  openModal(`
+    <div class="modal-head"><h2>Record Receipt</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Flat</label><select id="rc_flat">${DB.flats.map(f=>`<option value="${f.id}">${flatLabel(f)} — ${f.owner?.name||''} ${flatOutstanding(f.id)>0?'(Due ₹'+fmt(flatOutstanding(f.id))+')':''}</option>`).join('')}</select></div>
+    <div class="row2"><div class="field"><label>Amount</label><input id="rc_amount" type="number"></div>
+    <div class="field"><label>Date</label><input id="rc_date" type="date" value="${todayISO()}"></div></div>
+    <div class="field"><label>Mode</label><select id="rc_mode">${PAYMENT_MODES.map(m=>`<option>${m}</option>`).join('')}</select></div>
+    <div class="field"><label>Narration (optional)</label><input id="rc_narr" placeholder="e.g. Cheque no., UTR"></div>
+    <button class="btn btn-primary btn-block" onclick="saveReceipt()">Save Receipt</button>
+  `);
+}
+function saveReceipt(){
+  if(!canEdit()) return;
+  const flatId = document.getElementById('rc_flat').value;
+  const amount = Number(document.getElementById('rc_amount').value);
+  const date = document.getElementById('rc_date').value;
+  const mode = document.getElementById('rc_mode').value;
+  const narr = document.getElementById('rc_narr').value.trim();
+  if(!amount || amount<=0){ toast('Enter valid amount'); return; }
+  const cashAcc = modeToAccount(mode);
+  addVoucher({type:'Receipt', flatId, date, narration: narr || `Maintenance receipt — ${flatLabel(getFlat(flatId))} (${mode})`,
+    entries:[{account:cashAcc,debit:amount,credit:0},{account:'Maintenance Receivable',debit:0,credit:amount}]});
+  save(); closeModal(); toast('Receipt submitted — awaiting checker approval'); render();
+}
+
+/* ============ ACCOUNTS ============ */
+function renderAccounts(){
+  const sr = subroute || 'vouchers';
+  const tabs = [['vouchers','Vouchers'],['ledger','Ledger']];
+  let body='';
+  if(sr==='vouchers'){
+    const vs = DB.vouchers.slice().sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
+    body = vs.length? `<div class="tbl-wrap"><table><tr><th>Date</th><th>Type</th><th>Narration</th><th class="num-cell">Amount</th><th>Status</th></tr>
+      ${vs.map(v=>`<tr onclick="${v.status==='pending'?`go('approvals')`:''}"><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${v.maker}</div></td><td>${v.type}</td><td>${v.narration||''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')}
+      </table></div>` : `<div class="empty"><div class="ic">§</div>No vouchers yet.</div>`;
+  } else if(sr==='ledger'){
+    const accNames = Object.keys(ACCOUNTS);
+    body = `<p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:10px;">Ledger reflects <b>approved</b> entries only — see Approve tab for items awaiting a checker.</p><div class="field"><label>Account</label><select id="ldg_acc" onchange="go('accounts','ledger')">${accNames.map(a=>`<option ${window.__ldgAcc===a?'selected':''}>${a}</option>`).join('')}</select></div>`;
+    setTimeout(()=>{ document.getElementById('ldg_acc').onchange=(e)=>{ window.__ldgAcc=e.target.value; render(); }; if(!window.__ldgAcc) window.__ldgAcc=accNames[0]; document.getElementById('ldg_acc').value=window.__ldgAcc; },0);
+    const accName = window.__ldgAcc || accNames[0];
+    let bal=0;
+    const rows = DB.vouchers.filter(v=>v.status==='approved' && v.entries.some(e=>e.account===accName)).sort((a,b)=>a.date.localeCompare(b.date))
+      .map(v=>{ const e=v.entries.find(x=>x.account===accName); bal += (e.debit||0)-(e.credit||0);
+        return `<tr><td>${v.date}</td><td>${v.narration||v.type}</td><td class="num-cell">${e.debit?'₹'+fmt(e.debit):''}</td><td class="num-cell">${e.credit?'₹'+fmt(e.credit):''}</td><td class="num-cell">₹${fmt(bal)}</td></tr>`; }).join('');
+    body += `<div class="tbl-wrap"><table><tr><th>Date</th><th>Narration</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th><th class="num-cell">Balance</th></tr>${rows||'<tr><td colspan=5 style="text-align:center;color:var(--ink-soft)">No approved entries</td></tr>'}</table></div>`;
+  }
+  return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('accounts','${t[0]}')">${t[1]}</button>`).join('')}</div>
+  <div class="card">${body}</div>`;
+}
+function openVoucherModal(){
+  openModal(`
+    <div class="modal-head"><h2>New Voucher</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Voucher Type</label><select id="vc_type" onchange="toggleVoucherFields()"><option>Payment</option><option>Journal</option><option>Contra</option><option>Receipt</option></select></div>
+    <div class="field"><label>Date</label><input id="vc_date" type="date" value="${todayISO()}"></div>
+    <div class="field" id="vc_drWrap"><label id="vc_drLabel">Debit Account</label><select id="vc_dr">${Object.keys(ACCOUNTS).map(a=>`<option>${a}</option>`).join('')}</select></div>
+    <div class="field" id="vc_modeWrapDr" style="display:none;"><label>Received Via</label><select id="vc_modeDr">${PAYMENT_MODES.map(m=>`<option>${m}</option>`).join('')}</select></div>
+    <div class="field" id="vc_crWrap"><label id="vc_crLabel">Credit Account</label><select id="vc_cr">${Object.keys(ACCOUNTS).map(a=>`<option>${a}</option>`).join('')}</select></div>
+    <div class="field" id="vc_modeWrapCr" style="display:none;"><label>Paid Via</label><select id="vc_modeCr">${PAYMENT_MODES.map(m=>`<option>${m}</option>`).join('')}</select></div>
+    <div class="field"><label>Amount</label><input id="vc_amt" type="number"></div>
+    <div class="field"><label>Narration</label><input id="vc_narr" placeholder="e.g. Electricity bill paid - June"></div>
+    <button class="btn btn-primary btn-block" onclick="saveVoucher()">Save Voucher</button>
+  `);
+  setTimeout(toggleVoucherFields,0);
+}
+function toggleVoucherFields(){
+  const type = document.getElementById('vc_type').value;
+  const isPayment = type==='Payment', isReceipt = type==='Receipt';
+  document.getElementById('vc_crWrap').style.display = isPayment? 'none':'block';
+  document.getElementById('vc_modeWrapCr').style.display = isPayment? 'block':'none';
+  document.getElementById('vc_drWrap').style.display = isReceipt? 'none':'block';
+  document.getElementById('vc_modeWrapDr').style.display = isReceipt? 'block':'none';
+  document.getElementById('vc_drLabel').textContent = isPayment? 'Debit Account (expense/liability paid)':'Debit Account';
+  document.getElementById('vc_crLabel').textContent = isReceipt? 'Credit Account (income/liability received)':'Credit Account';
+}
+function saveVoucher(){
+  if(!canEdit()) return;
+  const type=document.getElementById('vc_type').value, date=document.getElementById('vc_date').value;
+  const isPayment = type==='Payment', isReceipt = type==='Receipt';
+  const dr = isReceipt? modeToAccount(document.getElementById('vc_modeDr').value) : document.getElementById('vc_dr').value;
+  const cr = isPayment? modeToAccount(document.getElementById('vc_modeCr').value) : document.getElementById('vc_cr').value;
+  const amt=Number(document.getElementById('vc_amt').value); let narr=document.getElementById('vc_narr').value.trim();
+  if(!amt||amt<=0){ toast('Enter valid amount'); return; }
+  if(dr===cr){ toast('Debit & Credit accounts must differ'); return; }
+  if(isPayment && !narr) narr = `Payment via ${document.getElementById('vc_modeCr').value}`;
+  if(isReceipt && !narr) narr = `Receipt via ${document.getElementById('vc_modeDr').value}`;
+  addVoucher({type,date,narration:narr,entries:[{account:dr,debit:amt,credit:0},{account:cr,debit:0,credit:amt}]});
+  save(); closeModal(); toast('Voucher submitted — awaiting checker approval'); go('accounts','vouchers');
+}
+
+/* ============ COMPLAINTS ============ */
+function renderComplaints(){
+  const list = DB.complaints.slice().sort((a,b)=>b.id-a.id);
+  if(!list.length) return `<div class="empty"><div class="ic">⚑</div>No complaints logged.<br><br><button class="btn btn-primary" onclick="openComplaintModal()">Log Complaint</button></div>`;
+  const rows = list.map(c=>{
+    const f=getFlat(c.flatId);
+    const cls = c.status==='Closed'?'closed':(c.status==='Open'?'open':'progress');
+    return `<tr onclick="openComplaintModal('${c.id}')"><td><b>${c.category}</b><div style="font-size:11px;color:var(--ink-soft)">${f?flatLabel(f):'—'} · ${c.date}</div></td><td><span class="stamp ${cls}">${c.status}</span></td></tr>`;
+  }).join('');
+  return `<div class="card"><div class="section-title"><span><span class="num">${String(list.length).padStart(2,'0')}</span>Complaints</span></div>
+  <div class="tbl-wrap"><table><tr><th>Issue</th><th>Status</th></tr>${rows}</table></div></div>`;
+}
+function openComplaintModal(id){
+  const c = id? DB.complaints.find(x=>x.id===id) : {id:'C'+nextId('complaint'), flatId:DB.flats[0]?.id||'', category:'Plumbing', description:'', status:'Open', date:todayISO(), assignedTo:''};
+  if(!id) DB.seq.complaint--;
+  openModal(`
+    <div class="modal-head"><h2>${id?'Update':'Log'} Complaint</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Flat</label><select id="cp_flat">${DB.flats.map(f=>`<option value="${f.id}" ${c.flatId===f.id?'selected':''}>${flatLabel(f)}</option>`).join('')}</select></div>
+    <div class="field"><label>Category</label><select id="cp_cat">${['Plumbing','Electrical','Housekeeping','Security','Lift','Parking','Other'].map(x=>`<option ${c.category===x?'selected':''}>${x}</option>`).join('')}</select></div>
+    <div class="field"><label>Description</label><textarea id="cp_desc" rows="3">${c.description}</textarea></div>
+    <div class="field"><label>Status</label><select id="cp_status">${['Open','Assigned','In Progress','Resolved','Closed'].map(x=>`<option ${c.status===x?'selected':''}>${x}</option>`).join('')}</select></div>
+    <div class="field"><label>Assigned To</label><input id="cp_assign" value="${c.assignedTo||''}"></div>
+    <div style="display:flex;gap:10px;margin-top:14px;"><button class="btn btn-primary" style="flex:1" onclick="saveComplaint('${c.id}')">Save</button>
+    ${id?`<button class="btn btn-danger" onclick="deleteComplaint('${c.id}')">Delete</button>`:''}</div>
+  `);
+}
+function saveComplaint(id){
+  if(!canEdit()) return;
+  const data={id, flatId:document.getElementById('cp_flat').value, category:document.getElementById('cp_cat').value,
+    description:document.getElementById('cp_desc').value.trim(), status:document.getElementById('cp_status').value,
+    assignedTo:document.getElementById('cp_assign').value.trim(), date: todayISO()};
+  const idx = DB.complaints.findIndex(x=>x.id===id);
+  if(idx>=0) DB.complaints[idx]={...DB.complaints[idx],...data}; else { DB.seq.complaint++; data.date=todayISO(); DB.complaints.push(data); }
+  save(); closeModal(); toast('Complaint saved'); render();
+}
+function deleteComplaint(id){ if(!canEdit()) return; DB.complaints=DB.complaints.filter(c=>c.id!==id); save(); closeModal(); render(); }
+
+/* ============ VENDORS & TDS ============ */
+function vendorOutstanding(vendorId){ return DB.vendorBills.filter(b=>b.vendorId===vendorId).reduce((s,b)=>s+(b.netPayable-b.paid),0); }
+function getVendor(id){ return DB.vendors.find(v=>v.id===id); }
+function renderVendors(){
+  const sr = subroute || 'list';
+  const tabs=[['list','Vendors'],['bills','Bills & TDS'],['payments','Payments']];
+  let body='';
+  if(sr==='list'){
+    body = DB.vendors.length? `<div class="tbl-wrap"><table><tr><th>Vendor</th><th>Category</th><th class="num-cell">Due</th></tr>
+      ${DB.vendors.map(v=>`<tr onclick="openVendorModal('${v.id}')"><td><b>${v.name}</b><div style="font-size:11px;color:var(--ink-soft)">${v.gstin||v.pan||'—'}</div></td><td>${v.category||'—'}</td><td class="num-cell" style="${vendorOutstanding(v.id)>0?'color:var(--brick)':''}">${vendorOutstanding(v.id)>0?'₹'+fmt(vendorOutstanding(v.id)):'—'}</td></tr>`).join('')}
+      </table></div>` : `<div class="empty"><div class="ic">⎔</div>No vendors yet.${isReadOnly()?'':' Tap + to add one.'}</div>`;
+  } else if(sr==='bills'){
+    const totalTDS = accBalance('TDS Payable').net*-1;
+    const totalITC = accBalance('GST Input Credit').net;
+    body = `<div class="stat-grid" style="margin-bottom:12px;"><div class="stat"><div class="lbl">TDS Payable (approved)</div><div class="val">₹${fmt(totalTDS)}</div></div>
+      <div class="stat"><div class="lbl">Input Tax Credit (approved)</div><div class="val">₹${fmt(totalITC)}</div></div></div>
+    <p style="font-size:11px;color:var(--ink-soft);margin-bottom:8px;">See the <b>GST</b> tab for return-ready summaries.</p>`;
+    const rows = DB.vendorBills.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(b=>{
+      const vd=getVendor(b.vendorId); const status = (b.netPayable-b.paid)<=0?'paid':'due';
+      return `<tr><td>${b.date}<div style="font-size:11px;color:var(--ink-soft)">${vd?vd.name:'—'} · ${b.description||''}</div></td><td class="num-cell">₹${fmt(b.amount)}</td><td class="num-cell">${b.tdsAmount?'₹'+fmt(b.tdsAmount)+' ('+b.tdsSection.split(' ')[0]+')':'—'}</td><td class="num-cell">${b.gstAmount?'₹'+fmt(b.gstAmount):'—'}</td><td><span class="stamp ${status}">${status}</span></td></tr>`;
+    }).join('');
+    body += `<div class="tbl-wrap"><table><tr><th>Bill</th><th class="num-cell">Amount</th><th class="num-cell">TDS</th><th class="num-cell">GST (ITC)</th><th>Status</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No bills logged</td></tr>'}</table></div>`;
+  } else if(sr==='payments'){
+    const pays = DB.vouchers.filter(v=>v.type==='VendorPayment').slice().sort((a,b)=>b.date.localeCompare(a.date));
+    body = pays.length? `<div class="tbl-wrap"><table><tr><th>Date</th><th>Vendor</th><th class="num-cell">Amount</th><th>Status</th></tr>
+      ${pays.map(v=>{ const vd=getVendor(v.vendorId); return `<tr><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${v.maker}</div></td><td>${vd?vd.name:'—'}</td><td class="num-cell">₹${fmt(v.entries.find(e=>e.debit>0)?.debit||0)}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`; }).join('')}
+      </table></div>` : `<div class="empty"><div class="ic">⎔</div>No vendor payments recorded.</div>`;
+  }
+  return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('vendors','${t[0]}')">${t[1]}</button>`).join('')}</div><div class="card">${body}</div>`;
+}
+function openVendorModal(id){
+  const v = id? getVendor(id) : {id:'V'+nextId('vendor'), name:'', category:'Housekeeping', pan:'', gstin:'', bankAcc:'', contact:''};
+  if(!id) DB.seq.vendor--;
+  openModal(`
+    <div class="modal-head"><h2>${id?'Edit':'Add'} Vendor</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Name</label><input id="vd_name" value="${v.name}"></div>
+    <div class="field"><label>Category</label><select id="vd_cat">${['Housekeeping','Security','Electrical','Plumbing','AMC/Maintenance','Professional Services','Other'].map(c=>`<option ${v.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
+    <div class="row2"><div class="field"><label>PAN</label><input id="vd_pan" value="${v.pan||''}"></div><div class="field"><label>GSTIN</label><input id="vd_gstin" value="${v.gstin||''}"></div></div>
+    <div class="field"><label>Bank Account</label><input id="vd_bank" value="${v.bankAcc||''}"></div>
+    <div class="field"><label>Contact</label><input id="vd_contact" value="${v.contact||''}"></div>
+    ${isReadOnly()?'<div class="readonly-note">View only — Auditor role cannot modify records.</div>':`<button class="btn btn-primary btn-block" onclick="saveVendor('${v.id}')">Save Vendor</button>`}
+  `);
+}
+function saveVendor(id){
+  if(!canEdit()) return;
+  const data={id, name:document.getElementById('vd_name').value.trim(), category:document.getElementById('vd_cat').value,
+    pan:document.getElementById('vd_pan').value.trim(), gstin:document.getElementById('vd_gstin').value.trim(),
+    bankAcc:document.getElementById('vd_bank').value.trim(), contact:document.getElementById('vd_contact').value.trim()};
+  if(!data.name){ toast('Vendor name required'); return; }
+  const idx=DB.vendors.findIndex(x=>x.id===id);
+  if(idx>=0) DB.vendors[idx]=data; else { DB.seq.vendor++; DB.vendors.push(data); }
+  save(); closeModal(); toast('Vendor saved'); render();
+}
+function openVendorBillModal(){
+  if(!DB.vendors.length){ toast('Add a vendor first'); go('vendors','list'); return; }
+  const expAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense');
+  openModal(`
+    <div class="modal-head"><h2>Log Vendor Bill</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Vendor</label><select id="vb_vendor">${DB.vendors.map(v=>`<option value="${v.id}">${v.name}${v.gstin?' ('+v.gstin+')':''}</option>`).join('')}</select></div>
+    <div class="field"><label>Description</label><input id="vb_desc" placeholder="e.g. Housekeeping - June"></div>
+    <div class="row2"><div class="field"><label>Taxable Amount ₹</label><input id="vb_amt" type="number"></div><div class="field"><label>Date</label><input id="vb_date" type="date" value="${todayISO()}"></div></div>
+    <div class="field"><label>Expense Account</label><select id="vb_acc">${expAccs.map(a=>`<option ${a==='Repairs & Maintenance'?'selected':''}>${a}</option>`).join('')}</select></div>
+    <hr class="divider">
+    <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="vb_gst" onchange="document.getElementById('vb_gstField').style.display=this.checked?'block':'none'" style="width:auto"> Vendor has charged GST (claim as Input Tax Credit)</label></div>
+    <div class="field" id="vb_gstField" style="display:none"><label>GST Rate %</label><input id="vb_gstRate" type="number" value="18"></div>
+    <div class="field"><label>TDS Section (deducted from payment)</label><select id="vb_tds">${Object.keys(TDS_SECTIONS).map(s=>`<option>${s}</option>`).join('')}</select></div>
+    <p style="font-size:11px;color:var(--ink-soft);">TDS is withheld on the taxable amount only, not on GST. Input Tax Credit reduces your net GST payable — see the GST tab.</p>
+    <button class="btn btn-primary btn-block" onclick="saveVendorBill()">Save Bill</button>
+  `);
+}
+function saveVendorBill(){
+  if(!canEdit()) return;
+  const vendorId=document.getElementById('vb_vendor').value, description=document.getElementById('vb_desc').value.trim();
+  const amount=Number(document.getElementById('vb_amt').value), date=document.getElementById('vb_date').value;
+  const expenseAccount=document.getElementById('vb_acc').value, tdsSection=document.getElementById('vb_tds').value;
+  const gstOn = document.getElementById('vb_gst').checked, gstRate = gstOn? Number(document.getElementById('vb_gstRate').value)||0 : 0;
+  if(!amount||amount<=0){ toast('Enter valid amount'); return; }
+  const tdsRate = TDS_SECTIONS[tdsSection]; const tdsAmount = Math.round(amount*tdsRate/100);
+  const gstAmount = gstOn? Math.round(amount*gstRate/100) : 0;
+  const netPayable = amount+gstAmount-tdsAmount;
+  const bill = {id:'VB'+nextId('vbill'), vendorId, date, description, amount, tdsSection, tdsRate, tdsAmount, gstAmount, gstRate, netPayable, paid:0, status:'unpaid'};
+  DB.vendorBills.push(bill);
+  const entries=[{account:expenseAccount,debit:amount,credit:0}];
+  if(gstAmount>0) entries.push({account:'GST Input Credit',debit:gstAmount,credit:0});
+  entries.push({account:'Vendor Creditors',debit:0,credit:amount+gstAmount-tdsAmount});
+  if(tdsAmount>0) entries.push({account:'TDS Payable',debit:0,credit:tdsAmount});
+  addVoucher({type:'Journal', vendorId, date, narration:`Vendor bill — ${getVendor(vendorId).name} — ${description||expenseAccount}`, entries, ref:bill.id});
+  save(); closeModal(); toast('Bill logged — posting awaits approval'); go('vendors','bills');
+}
+function openVendorPaymentModal(){
+  if(!DB.vendors.length){ toast('Add a vendor first'); go('vendors','list'); return; }
+  openModal(`
+    <div class="modal-head"><h2>Pay Vendor</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Vendor</label><select id="vp_vendor" onchange="drawVendorOutstanding()">${DB.vendors.map(v=>`<option value="${v.id}">${v.name} ${vendorOutstanding(v.id)>0?'(Due ₹'+fmt(vendorOutstanding(v.id))+')':''}</option>`).join('')}</select></div>
+    <div id="vp_outstanding"></div>
+    <div class="row2"><div class="field"><label>Amount</label><input id="vp_amt" type="number"></div><div class="field"><label>Date</label><input id="vp_date" type="date" value="${todayISO()}"></div></div>
+    <div class="field"><label>Mode</label><select id="vp_mode">${PAYMENT_MODES.map(m=>`<option>${m}</option>`).join('')}</select></div>
+    <p style="font-size:11.5px;color:var(--ink-soft);">A single payment here settles the vendor's oldest outstanding bills first (consolidated payment) — enter the total amount you're paying across bills.</p>
+    <button class="btn btn-primary btn-block" onclick="saveVendorPayment()">Save Payment</button>
+  `);
+  setTimeout(drawVendorOutstanding,0);
+}
+function drawVendorOutstanding(){
+  const vendorId = document.getElementById('vp_vendor')?.value; if(!vendorId) return;
+  const open = DB.vendorBills.filter(b=>b.vendorId===vendorId && (b.netPayable-b.paid)>0).sort((a,b)=>a.date.localeCompare(b.date));
+  const el = document.getElementById('vp_outstanding'); if(!el) return;
+  if(!open.length){ el.innerHTML = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">No outstanding bills for this vendor.</p>`; return; }
+  el.innerHTML = `<div class="tbl-wrap" style="margin-bottom:8px;"><table><tr><th>Bill</th><th class="num-cell">Due</th></tr>
+    ${open.map(b=>`<tr><td style="font-size:12px;">${b.date}${b.description?' · '+b.description:''}</td><td class="num-cell">₹${fmt(b.netPayable-b.paid)}</td></tr>`).join('')}
+    <tr style="font-weight:700;"><td>Total Outstanding</td><td class="num-cell">₹${fmt(open.reduce((s,b)=>s+(b.netPayable-b.paid),0))}</td></tr></table></div>`;
+}
+function saveVendorPayment(){
+  if(!canEdit()) return;
+  const vendorId=document.getElementById('vp_vendor').value, amount=Number(document.getElementById('vp_amt').value);
+  const date=document.getElementById('vp_date').value, mode=document.getElementById('vp_mode').value;
+  if(!amount||amount<=0){ toast('Enter valid amount'); return; }
+  const cashAcc = modeToAccount(mode);
+  addVoucher({type:'VendorPayment', vendorId, date, narration:`Payment to ${getVendor(vendorId).name} (${mode})`,
+    entries:[{account:'Vendor Creditors',debit:amount,credit:0},{account:cashAcc,debit:0,credit:amount}]});
+  save(); closeModal(); toast('Payment submitted — awaiting checker approval'); go('vendors','payments');
+}
+
+/* ============ PAYROLL, PF & ESI ============ */
+function getEmployee(id){ return DB.employees.find(e=>e.id===id); }
+function empGross(e){ return (e.basic||0)+(e.hra||0)+(e.otherAllow||0); }
+function renderPayroll(){
+  const sr = subroute || 'employees';
+  const tabs=[['employees','Employees'],['runs','Salary Runs'],['pf','PF Register'],['esi','ESI Register']];
+  let body='';
+  if(sr==='employees'){
+    body = DB.employees.length? `<div class="tbl-wrap"><table><tr><th>Employee</th><th class="num-cell">Gross</th><th>PF/ESI</th></tr>
+      ${DB.employees.map(e=>`<tr onclick="openEmployeeModal('${e.id}')"><td><b>${e.name}</b><div style="font-size:11px;color:var(--ink-soft)">${e.designation||''}</div></td><td class="num-cell">₹${fmt(empGross(e))}</td><td>${e.pfApplicable?'PF ':''}${e.esiApplicable?'ESI':''}${(!e.pfApplicable&&!e.esiApplicable)?'—':''}</td></tr>`).join('')}
+      </table></div>` : `<div class="empty"><div class="ic">☰</div>No employees added yet.</div>`;
+  } else if(sr==='runs'){
+    body = DB.payrollRuns.length? `<div class="tbl-wrap"><table><tr><th>Period</th><th class="num-cell">Net Pay</th><th>Status</th></tr>
+      ${DB.payrollRuns.slice().sort((a,b)=>b.period.localeCompare(a.period)).map(r=>`<tr onclick="viewPayrollRun('${r.id}')"><td>${r.period}</td><td class="num-cell">₹${fmt(r.items.reduce((s,i)=>s+i.netPay,0))}</td><td><span class="stamp ${r.status==='Processed'?'approved':r.status==='Rejected'?'rejected':'pending'}">${r.status}</span></td></tr>`).join('')}
+      </table></div>` : `<div class="empty"><div class="ic">☰</div>No salary runs yet.</div>`;
+  } else if(sr==='pf'){
+    body = `<div class="field"><label>Period</label><select id="pf_period">${DB.payrollRuns.map(r=>`<option value="${r.id}">${r.period}</option>`).join('')}</select></div><div id="pf_body"></div>`;
+    setTimeout(()=>{ const sel=document.getElementById('pf_period'); if(!sel.options.length) return;
+      const draw=()=>{ const run=DB.payrollRuns.find(r=>r.id===sel.value); if(!run) return;
+        const rows = run.items.filter(i=>i.pfEmp>0).map(i=>{ const e=getEmployee(i.empId);
+          return `<tr><td>${e?e.name:'—'}</td><td class="num-cell">₹${fmt(i.pfWage)}</td><td class="num-cell">₹${fmt(i.pfEmp)}</td><td class="num-cell">₹${fmt(i.pfEmployer)}</td><td class="num-cell">₹${fmt(i.pfEmp+i.pfEmployer)}</td></tr>`; }).join('');
+        document.getElementById('pf_body').innerHTML = `<div class="tbl-wrap"><table><tr><th>Employee</th><th class="num-cell">PF Wage</th><th class="num-cell">Employee 12%</th><th class="num-cell">Employer 12%</th><th class="num-cell">Total</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No PF-applicable employees</td></tr>'}</table></div>
+        <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Employer 12% typically splits as 8.33% EPS (capped at wage ₹15,000) + 3.67% EPF; 0.5% EDLI is payable separately by the employer over and above.</p>`; };
+      sel.onchange=draw; draw(); },0);
+  } else if(sr==='esi'){
+    body = `<div class="field"><label>Period</label><select id="esi_period">${DB.payrollRuns.map(r=>`<option value="${r.id}">${r.period}</option>`).join('')}</select></div><div id="esi_body"></div>`;
+    setTimeout(()=>{ const sel=document.getElementById('esi_period'); if(!sel.options.length) return;
+      const draw=()=>{ const run=DB.payrollRuns.find(r=>r.id===sel.value); if(!run) return;
+        const rows = run.items.filter(i=>i.esiEmp>0).map(i=>{ const e=getEmployee(i.empId);
+          return `<tr><td>${e?e.name:'—'}</td><td class="num-cell">₹${fmt(i.gross)}</td><td class="num-cell">₹${fmt(i.esiEmp)}</td><td class="num-cell">₹${fmt(i.esiEmployer)}</td></tr>`; }).join('');
+        document.getElementById('esi_body').innerHTML = `<div class="tbl-wrap"><table><tr><th>Employee</th><th class="num-cell">Gross Wage</th><th class="num-cell">Employee 0.75%</th><th class="num-cell">Employer 3.25%</th></tr>${rows||'<tr><td colspan=4 style="color:var(--ink-soft)">No ESI-eligible employees (wage ≤ ₹21,000)</td></tr>'}</table></div>`; };
+      sel.onchange=draw; draw(); },0);
+  }
+  return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('payroll','${t[0]}')">${t[1]}</button>`).join('')}</div><div class="card">${body}</div>`;
+}
+function openEmployeeModal(id){
+  const e = id? getEmployee(id) : {id:'E'+nextId('emp'), name:'', designation:'', doj:todayISO(), pan:'', bankAcc:'', basic:0, hra:0, otherAllow:0, pfApplicable:true, esiApplicable:false};
+  if(!id) DB.seq.emp--;
+  openModal(`
+    <div class="modal-head"><h2>${id?'Edit':'Add'} Employee</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Name</label><input id="em_name" value="${e.name}"></div>
+    <div class="row2"><div class="field"><label>Designation</label><input id="em_desig" value="${e.designation||''}"></div><div class="field"><label>Date of Joining</label><input id="em_doj" type="date" value="${e.doj||todayISO()}"></div></div>
+    <div class="row2"><div class="field"><label>Basic ₹</label><input id="em_basic" type="number" value="${e.basic||0}"></div><div class="field"><label>HRA ₹</label><input id="em_hra" type="number" value="${e.hra||0}"></div></div>
+    <div class="field"><label>Other Allowances ₹</label><input id="em_other" type="number" value="${e.otherAllow||0}"></div>
+    <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="em_pf" ${e.pfApplicable?'checked':''} style="width:auto"> PF Applicable</label></div>
+    <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="em_esi" ${e.esiApplicable?'checked':''} style="width:auto"> ESI Applicable (auto for gross ≤ ₹21,000)</label></div>
+    ${isReadOnly()?'<div class="readonly-note">View only — Auditor role cannot modify records.</div>':`<button class="btn btn-primary btn-block" onclick="saveEmployee('${e.id}')">Save Employee</button>`}
+  `);
+}
+function saveEmployee(id){
+  if(!canEdit()) return;
+  const data={id, name:document.getElementById('em_name').value.trim(), designation:document.getElementById('em_desig').value.trim(),
+    doj:document.getElementById('em_doj').value, basic:Number(document.getElementById('em_basic').value)||0,
+    hra:Number(document.getElementById('em_hra').value)||0, otherAllow:Number(document.getElementById('em_other').value)||0,
+    pfApplicable:document.getElementById('em_pf').checked, esiApplicable:document.getElementById('em_esi').checked};
+  if(!data.name){ toast('Name required'); return; }
+  const idx=DB.employees.findIndex(x=>x.id===id);
+  if(idx>=0) DB.employees[idx]=data; else { DB.seq.emp++; DB.employees.push(data); }
+  save(); closeModal(); toast('Employee saved'); render();
+}
+function openPayrollRunModal(){
+  if(!DB.employees.length){ toast('Add employees first'); go('payroll','employees'); return; }
+  openModal(`
+    <div class="modal-head"><h2>Process Salary</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Period</label><input id="pr_period" type="month" value="${todayISO().slice(0,7)}"></div>
+    <p style="font-size:12.5px;color:var(--ink-soft)">This will compute salary, PF & ESI for all ${DB.employees.length} employee(s) and submit for checker approval.</p>
+    <button class="btn btn-primary btn-block" onclick="processPayroll()">Process Salary</button>
+  `);
+}
+function processPayroll(){
+  if(!canEdit()) return;
+  const period = document.getElementById('pr_period').value;
+  if(!period){ toast('Select period'); return; }
+  if(DB.payrollRuns.some(r=>r.period===period)){ toast('Payroll already processed for this period'); return; }
+  const items = DB.employees.map(e=>{
+    const gross = empGross(e); const pfWage = Math.min(e.basic||0,15000);
+    const pfEmp = e.pfApplicable? Math.round(pfWage*0.12):0; const pfEmployer = e.pfApplicable? Math.round(pfWage*0.12):0;
+    const esiOk = e.esiApplicable && gross<=21000;
+    const esiEmp = esiOk? Math.round(gross*0.0075):0; const esiEmployer = esiOk? Math.round(gross*0.0325):0;
+    const netPay = gross-pfEmp-esiEmp;
+    return {empId:e.id, gross, pfWage, pfEmp, pfEmployer, esiEmp, esiEmployer, netPay};
+  });
+  const run = {id:'PR'+nextId('payroll'), period, items, status:'Pending Approval'};
+  DB.payrollRuns.push(run);
+  const totalGross=items.reduce((s,i)=>s+i.gross,0), totalNet=items.reduce((s,i)=>s+i.netPay,0);
+  const totalPFEmp=items.reduce((s,i)=>s+i.pfEmp,0), totalPFEmployer=items.reduce((s,i)=>s+i.pfEmployer,0);
+  const totalESIEmp=items.reduce((s,i)=>s+i.esiEmp,0), totalESIEmployer=items.reduce((s,i)=>s+i.esiEmployer,0);
+  const entries=[
+    {account:'Salaries Expense',debit:totalGross,credit:0},
+    {account:'Employer PF & ESI Expense',debit:totalPFEmployer+totalESIEmployer,credit:0},
+    {account:'Bank Account',debit:0,credit:totalNet},
+    {account:'PF Payable',debit:0,credit:totalPFEmp+totalPFEmployer},
+    {account:'ESI Payable',debit:0,credit:totalESIEmp+totalESIEmployer}
+  ].filter(e=>e.debit>0||e.credit>0);
+  addVoucher({type:'Payroll', ref:run.id, date:todayISO(), narration:`Salary processing — ${period}`, entries});
+  save(); closeModal(); toast('Payroll submitted — awaiting checker approval'); go('payroll','runs');
+}
+function viewPayrollRun(id){
+  const run = DB.payrollRuns.find(r=>r.id===id); if(!run) return;
+  const rows = run.items.map(i=>{ const e=getEmployee(i.empId); return `<tr><td>${e?e.name:'—'}</td><td class="num-cell">₹${fmt(i.gross)}</td><td class="num-cell">₹${fmt(i.pfEmp)}</td><td class="num-cell">₹${fmt(i.esiEmp)}</td><td class="num-cell">₹${fmt(i.netPay)}</td></tr>`; }).join('');
+  openModal(`<div class="modal-head"><h2>Payroll — ${run.period}</h2><button class="close-x" onclick="closeModal()">×</button></div>
+  <div class="tbl-wrap"><table><tr><th>Employee</th><th class="num-cell">Gross</th><th class="num-cell">PF</th><th class="num-cell">ESI</th><th class="num-cell">Net</th></tr>${rows}</table></div>
+  <p style="margin-top:10px;"><span class="stamp ${run.status==='Processed'?'approved':run.status==='Rejected'?'rejected':'pending'}">${run.status}</span></p>`);
+}
+
+/* ============ ASSETS ============ */
+function monthsBetween(d1,d2){ const a=new Date(d1),b=new Date(d2); return Math.max(0,(b.getFullYear()-a.getFullYear())*12+(b.getMonth()-a.getMonth())); }
+function computeDep(asset, uptoISO){
+  if(!asset.usefulLifeYears||asset.usefulLifeYears<=0) return 0;
+  const annual = asset.cost/asset.usefulLifeYears; const months = monthsBetween(asset.purchaseDate, uptoISO||todayISO());
+  return Math.min(asset.cost, Math.round(annual/12*months));
+}
+function renderAssets(){
+  const today=todayISO();
+  const rows = DB.assets.slice().sort((a,b)=>b.purchaseDate.localeCompare(a.purchaseDate)).map(a=>{
+    const dep = computeDep(a,today); const wdv = a.cost-dep;
+    const warnBadge = (d,label)=>{ if(!d) return ''; const days=Math.round((new Date(d)-new Date(today))/86400000);
+      if(days<0) return `<span class="stamp overdue">${label} expired</span>`; if(days<=30) return `<span class="stamp due">${label} due</span>`; return ''; };
+    return `<tr onclick="openAssetModal('${a.id}')"><td><b>${a.name}</b><div style="font-size:11px;color:var(--ink-soft)">${a.category} · ${a.purchaseDate}</div></td>
+      <td class="num-cell">₹${fmt(a.cost)}</td><td class="num-cell">₹${fmt(wdv)}</td><td>${warnBadge(a.amcExpiry,'AMC')}${warnBadge(a.warrantyExpiry,'Warranty')}</td></tr>`;
+  }).join('');
+  return `<div class="card"><div class="section-title"><span><span class="num">${String(DB.assets.length).padStart(2,'0')}</span>Asset Register</span>
+    ${isReadOnly()?'':'<button class="btn btn-outline btn-sm" onclick="runDepreciation()">Post Depreciation</button>'}</div>
+    ${DB.assets.length? `<div class="tbl-wrap"><table><tr><th>Asset</th><th class="num-cell">Cost</th><th class="num-cell">WDV (est.)</th><th>Alerts</th></tr>${rows}</table></div>` : `<div class="empty"><div class="ic">▣</div>No assets registered.</div>`}
+  </div>`;
+}
+function openAssetModal(id){
+  const a = id? DB.assets.find(x=>x.id===id) : {id:'AS'+nextId('asset'), name:'', category:'Furniture', purchaseDate:todayISO(), cost:0, usefulLifeYears:10, vendor:'', warrantyExpiry:'', amcExpiry:'', paymentMode:'Bank'};
+  if(!id) DB.seq.asset--;
+  openModal(`
+    <div class="modal-head"><h2>${id?'Edit':'Add'} Asset</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Name</label><input id="as_name" value="${a.name}"></div>
+    <div class="field"><label>Category</label><select id="as_cat">${['Lift','DG Set','Solar Plant','CCTV','Fire Equipment','Furniture','Computers','Other'].map(c=>`<option ${a.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
+    <div class="row2"><div class="field"><label>Purchase Date</label><input id="as_date" type="date" value="${a.purchaseDate}"></div><div class="field"><label>Cost ₹</label><input id="as_cost" type="number" value="${a.cost}"></div></div>
+    <div class="row2"><div class="field"><label>Useful Life (yrs)</label><input id="as_life" type="number" value="${a.usefulLifeYears}"></div><div class="field"><label>Vendor</label><input id="as_vendor" value="${a.vendor||''}"></div></div>
+    <div class="row2"><div class="field"><label>Warranty Expiry</label><input id="as_warr" type="date" value="${a.warrantyExpiry||''}"></div><div class="field"><label>AMC Expiry</label><input id="as_amc" type="date" value="${a.amcExpiry||''}"></div></div>
+    ${id?'':`<div class="field"><label>Paid Via</label><select id="as_pay"><option value="Bank">Bank</option><option value="Cash">Cash</option><option value="Credit">Vendor Credit</option></select></div>`}
+    ${isReadOnly()?'<div class="readonly-note">View only — Auditor role cannot modify records.</div>':`<button class="btn btn-primary btn-block" onclick="saveAsset('${a.id}')">Save Asset</button>`}
+  `);
+}
+function saveAsset(id){
+  if(!canEdit()) return;
+  const isNew = !DB.assets.some(x=>x.id===id);
+  const data={id, name:document.getElementById('as_name').value.trim(), category:document.getElementById('as_cat').value,
+    purchaseDate:document.getElementById('as_date').value, cost:Number(document.getElementById('as_cost').value)||0,
+    usefulLifeYears:Number(document.getElementById('as_life').value)||1, vendor:document.getElementById('as_vendor').value.trim(),
+    warrantyExpiry:document.getElementById('as_warr').value, amcExpiry:document.getElementById('as_amc').value};
+  if(!data.name||data.cost<=0){ toast('Enter name & valid cost'); return; }
+  if(isNew){
+    const mode=document.getElementById('as_pay').value;
+    const payAcc = mode==='Cash'?'Cash in Hand':mode==='Credit'?'Vendor Creditors':'Bank Account';
+    DB.seq.asset++; DB.assets.push(data);
+    addVoucher({type:'Journal', assetRef:data.id, date:data.purchaseDate, narration:`Asset purchase — ${data.name}`,
+      entries:[{account:'Fixed Assets',debit:data.cost,credit:0},{account:payAcc,debit:0,credit:data.cost}]});
+    toast('Asset added — posting awaits approval');
+  } else {
+    const idx=DB.assets.findIndex(x=>x.id===id); DB.assets[idx]=data; toast('Asset updated');
+  }
+  save(); closeModal(); render();
+}
+function runDepreciation(){
+  if(!canEdit()) return;
+  const totalComputed = DB.assets.reduce((s,a)=>s+computeDep(a,todayISO()),0);
+  const alreadyApproved = -accBalance('Accumulated Depreciation').net;
+  const delta = Math.round(totalComputed-alreadyApproved);
+  if(delta<=0){ toast('No new depreciation to post'); return; }
+  addVoucher({type:'Journal', date:todayISO(), narration:`Depreciation posting — as of ${todayISO()}`,
+    entries:[{account:'Depreciation Expense',debit:delta,credit:0},{account:'Accumulated Depreciation',debit:0,credit:delta}]});
+  save(); toast(`₹${fmt(delta)} depreciation submitted — awaiting checker approval`); render();
+}
+
+/* ============ INVENTORY ============ */
+function stockOnHand(itemId){
+  return DB.inventoryTx.filter(t=>t.itemId===itemId).reduce((s,t)=> s + (t.type==='purchase'?t.qty:-t.qty), 0);
+}
+function renderInventory(){
+  const sr = subroute || 'items';
+  const tabs=[['items','Items'],['tx','Transactions']];
+  let body='';
+  if(sr==='items'){
+    body = DB.inventoryItems.length? `<div class="tbl-wrap"><table><tr><th>Item</th><th class="num-cell">Stock</th></tr>
+      ${DB.inventoryItems.map(it=>{ const s=stockOnHand(it.id); const low=s<=it.reorderLevel;
+        return `<tr onclick="openInventoryItemModal('${it.id}')"><td><b>${it.name}</b><div style="font-size:11px;color:var(--ink-soft)">Reorder at ${it.reorderLevel} ${it.unit}</div></td><td class="num-cell">${s} ${it.unit} ${low?'<span class="stamp overdue">low</span>':''}</td></tr>`; }).join('')}
+      </table></div>` : `<div class="empty"><div class="ic">▥</div>No stock items yet.</div>`;
+  } else if(sr==='tx'){
+    const rows = DB.inventoryTx.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(t=>{ const it=DB.inventoryItems.find(i=>i.id===t.itemId);
+      return `<tr><td>${t.date}<div style="font-size:11px;color:var(--ink-soft)">${it?it.name:'—'} · ${t.note||''}</div></td><td>${t.type}</td><td class="num-cell">${t.qty}</td><td class="num-cell">₹${fmt(t.amount)}</td></tr>`; }).join('');
+    body = `<div class="tbl-wrap"><table><tr><th>Date</th><th>Type</th><th class="num-cell">Qty</th><th class="num-cell">Amount</th></tr>${rows||'<tr><td colspan=4 style="color:var(--ink-soft)">No transactions</td></tr>'}</table></div>`;
+  }
+  return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('inventory','${t[0]}')">${t[1]}</button>`).join('')}</div><div class="card">${body}</div>`;
+}
+function openInventoryItemModal(id){
+  const it = id? DB.inventoryItems.find(x=>x.id===id) : {id:'IT'+nextId('item'), name:'', unit:'pcs', reorderLevel:5};
+  if(!id) DB.seq.item--;
+  openModal(`<div class="modal-head"><h2>${id?'Edit':'Add'} Item</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Item Name</label><input id="it_name" value="${it.name}"></div>
+    <div class="row2"><div class="field"><label>Unit</label><input id="it_unit" value="${it.unit}"></div><div class="field"><label>Reorder Level</label><input id="it_reorder" type="number" value="${it.reorderLevel}"></div></div>
+    ${isReadOnly()?'<div class="readonly-note">View only — Auditor role cannot modify records.</div>':`<button class="btn btn-primary btn-block" onclick="saveInventoryItem('${it.id}')">Save Item</button>`}`);
+}
+function saveInventoryItem(id){
+  if(!canEdit()) return;
+  const data={id, name:document.getElementById('it_name').value.trim(), unit:document.getElementById('it_unit').value.trim()||'pcs', reorderLevel:Number(document.getElementById('it_reorder').value)||0};
+  if(!data.name){ toast('Name required'); return; }
+  const idx=DB.inventoryItems.findIndex(x=>x.id===id);
+  if(idx>=0) DB.inventoryItems[idx]=data; else { DB.seq.item++; DB.inventoryItems.push(data); }
+  save(); closeModal(); toast('Item saved'); render();
+}
+function openInventoryTxModal(){
+  if(!DB.inventoryItems.length){ toast('Add a stock item first'); go('inventory','items'); return; }
+  const expAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense');
+  openModal(`<div class="modal-head"><h2>Stock Transaction</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Item</label><select id="tx_item">${DB.inventoryItems.map(i=>`<option value="${i.id}">${i.name} (${stockOnHand(i.id)} ${i.unit} in stock)</option>`).join('')}</select></div>
+    <div class="field"><label>Type</label><select id="tx_type" onchange="toggleTxAccount()"><option value="purchase">Purchase (stock in)</option><option value="issue">Issue / Consumption (stock out)</option></select></div>
+    <div class="row2"><div class="field"><label>Quantity</label><input id="tx_qty" type="number"></div><div class="field"><label>Rate ₹/unit</label><input id="tx_rate" type="number"></div></div>
+    <div class="field"><label>Date</label><input id="tx_date" type="date" value="${todayISO()}"></div>
+    <div class="field"><label id="tx_acc_label">Paid Via</label><select id="tx_acc">${['Cash in Hand','Bank Account','Vendor Creditors'].map(a=>`<option>${a}</option>`).join('')}</select></div>
+    <div class="field"><label>Note</label><input id="tx_note"></div>
+    <button class="btn btn-primary btn-block" onclick="saveInventoryTx()">Save Transaction</button>`);
+  window.__expAccs = expAccs;
+}
+function toggleTxAccount(){
+  const type=document.getElementById('tx_type').value; const sel=document.getElementById('tx_acc'); const lbl=document.getElementById('tx_acc_label');
+  if(type==='purchase'){ lbl.textContent='Paid Via'; sel.innerHTML=['Cash in Hand','Bank Account','Vendor Creditors'].map(a=>`<option>${a}</option>`).join(''); }
+  else { lbl.textContent='Expense Account'; sel.innerHTML=window.__expAccs.map(a=>`<option ${a==='Housekeeping Expense'?'selected':''}>${a}</option>`).join(''); }
+}
+function saveInventoryTx(){
+  if(!canEdit()) return;
+  const itemId=document.getElementById('tx_item').value, type=document.getElementById('tx_type').value;
+  const qty=Number(document.getElementById('tx_qty').value), rate=Number(document.getElementById('tx_rate').value)||0;
+  const date=document.getElementById('tx_date').value, acc=document.getElementById('tx_acc').value, note=document.getElementById('tx_note').value.trim();
+  if(!qty||qty<=0){ toast('Enter valid quantity'); return; }
+  const amount = Math.round(qty*rate);
+  DB.inventoryTx.push({id:'ITX'+nextId('itx'), itemId, date, type, qty, rate, amount, note});
+  if(amount>0){
+    const itemName = DB.inventoryItems.find(i=>i.id===itemId)?.name||'item';
+    if(type==='purchase') addVoucher({type:'Journal', date, narration:`Stock purchase — ${itemName}`, entries:[{account:'Inventory Stock',debit:amount,credit:0},{account:acc,debit:0,credit:amount}]});
+    else addVoucher({type:'Journal', date, narration:`Stock issued — ${itemName}${note?' — '+note:''}`, entries:[{account:acc,debit:amount,credit:0},{account:'Inventory Stock',debit:0,credit:amount}]});
+    toast('Transaction saved — posting awaits approval');
+  } else toast('Transaction saved');
+  save(); closeModal(); render();
+}
+
+/* ============ APPROVALS (MAKER-CHECKER) ============ */
+function renderApprovals(){
+  const sr = subroute || 'pending';
+  const tabs=[['pending','Pending'],['history','Decision History'],['audit','Audit Log']];
+  let body='';
+  if(sr==='pending'){
+    const pend = DB.vouchers.filter(v=>v.status==='pending').sort((a,b)=>b.id-a.id);
+    const actionable = pend.filter(v=>canApprove(v));
+    const locked = pend.filter(v=>!canApprove(v));
+    const rows = actionable.map(v=>`
+      <label class="approval-row" style="display:flex;gap:10px;align-items:start;cursor:pointer;">
+        <input type="checkbox" class="pend_ck" data-id="${v.id}" onchange="updatePendingCount()" style="width:18px;height:18px;margin-top:2px;flex:0 0 auto;">
+        <div style="flex:1;">
+          <div style="display:flex;justify-content:space-between;align-items:start;">
+            <div><b>${v.type}</b> · ${v.date}<div style="font-size:12px;color:var(--ink-soft)">${v.narration||''}</div></div>
+            <div class="num-cell" style="font-weight:700;">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</div>
+          </div>
+          <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Raised by <b>${v.maker}</b> on ${new Date(v.makerAt).toLocaleString('en-IN')}</div>
+          <button class="btn btn-danger btn-sm" style="margin-top:8px;" onclick="event.preventDefault();promptReject(${v.id})">Reject this entry</button>
+        </div>
+      </label>`).join('');
+    const lockedRows = locked.map(v=>`
+      <div class="approval-row" style="opacity:.7;">
+        <div style="display:flex;justify-content:space-between;align-items:start;">
+          <div><b>${v.type}</b> · ${v.date}<div style="font-size:12px;color:var(--ink-soft)">${v.narration||''}</div></div>
+          <div class="num-cell" style="font-weight:700;">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</div>
+        </div>
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Raised by <b>${v.maker}</b> on ${new Date(v.makerAt).toLocaleString('en-IN')}</div>
+        <div class="readonly-note" style="margin-top:8px;">${isReadOnly()?'Auditors cannot approve — view only.':'You raised this entry — a different role must authorise it.'}</div>
+      </div>`).join('');
+    body = '';
+    if(actionable.length){
+      body += `<div style="background:var(--paper);padding:8px 0 10px;margin-bottom:4px;">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;margin-bottom:8px;"><input type="checkbox" onchange="toggleSelectAllPending(this)" style="width:16px;height:16px;"> Select all (${actionable.length})</label>
+        <button id="authoriseBtn" class="btn btn-primary btn-block" disabled style="opacity:.5;" onclick="authoriseTicked()">Authorise Ticked (0)</button>
+      </div>`;
+    }
+    body += rows + lockedRows;
+    if(!pend.length) body = `<div class="empty"><div class="ic">✓</div>Nothing pending approval. All caught up.</div>`;
+    else if(!actionable.length) body += `<p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">All pending entries above were raised by you or are locked to your role — nothing here for you to authorise right now.</p>`;
+  } else if(sr==='history'){
+    const done = DB.vouchers.filter(v=>v.status==='approved'||v.status==='rejected').sort((a,b)=>b.id-a.id).slice(0,100);
+    body = done.length? `<div class="tbl-wrap"><table><tr><th>Type</th><th>Maker → Checker</th><th class="num-cell">Amount</th><th>Status</th></tr>
+      ${done.map(v=>`<tr><td>${v.type}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''}</div></td><td style="font-size:12px;">${v.maker} → ${v.checker}${v.checkerNote?'<div style="font-size:11px;color:var(--ink-soft)">'+v.checkerNote+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')}
+      </table></div>` : `<div class="empty"><div class="ic">✓</div>No decisions recorded yet.</div>`;
+  } else if(sr==='audit'){
+    const log = (DB.auditLog||[]).slice().reverse().slice(0,200);
+    body = log.length? `<div class="tbl-wrap"><table><tr><th>Time</th><th>Role</th><th>Action</th><th>Detail</th></tr>
+      ${log.map(l=>`<tr><td style="font-size:11.5px;white-space:nowrap;">${new Date(l.ts).toLocaleString('en-IN')}</td><td><span class="role-badge" style="font-size:9.5px;">${l.role}</span></td><td>${l.action}</td><td style="font-size:12px;">${l.detail}</td></tr>`).join('')}
+      </table></div>` : `<div class="empty"><div class="ic">▦</div>No audit entries yet.</div>`;
+  }
+  return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('approvals','${t[0]}')">${t[1]}</button>`).join('')}</div>${body}`;
+}
+function promptReject(id){
+  const note = prompt('Reason for rejection (required):');
+  if(note===null) return;
+  rejectVoucher(id, note.trim());
+}
+
+/* ============ REPORTS ============ */
+function renderReports(){
+  const sr = subroute || 'trial';
+  const tabs=[['trial','Trial Balance'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['defaulters','Defaulters'],['flatledger','Flat Ledger']];
+  const isFinancialStatement = ['trial','ie','rp','bs'].includes(sr);
+  if(!window.__reportFrom) window.__reportFrom = fyStart();
+  if(!window.__reportTo) window.__reportTo = todayISO();
+  let body='';
+  const periodBar = isFinancialStatement? `<div class="row2" style="margin-bottom:12px;">
+      <div class="field"><label>${sr==='bs'?'As At':'From'}</label><input id="rpt_from" type="date" value="${window.__reportFrom}" ${sr==='bs'?'disabled style="opacity:.4"':''} onchange="window.__reportFrom=this.value;render();"></div>
+      <div class="field"><label>${sr==='bs'?'&nbsp;':'To'}</label><input id="rpt_to" type="date" value="${window.__reportTo}" onchange="window.__reportTo=this.value;render();"></div>
+    </div>` : '';
+  const from = window.__reportFrom, to = window.__reportTo;
+
+  if(sr==='trial'){
+    let totDr=0,totCr=0;
+    const groups={};
+    Object.keys(ACCOUNTS).forEach(a=>{ const b=accBalance(a,{upto:to}); if(!b.dr&&!b.cr) return; totDr+=b.dr; totCr+=b.cr;
+      const g=ACCOUNT_GROUPS[a]||'Other'; (groups[g]=groups[g]||[]).push({a,dr:b.dr,cr:b.cr}); });
+    const rows = Object.entries(groups).map(([g,accs])=>{
+      const gDr=accs.reduce((s,x)=>s+x.dr,0), gCr=accs.reduce((s,x)=>s+x.cr,0);
+      return `<tr><td colspan="3" style="font-weight:700;background:var(--paper);font-size:11.5px;text-transform:uppercase;letter-spacing:.3px;">${g}</td></tr>
+        ${accs.map(x=>`<tr><td style="padding-left:18px;">${x.a}</td><td class="num-cell">${x.dr?'₹'+fmt(x.dr):''}</td><td class="num-cell">${x.cr?'₹'+fmt(x.cr):''}</td></tr>`).join('')}
+        <tr style="font-style:italic;color:var(--ink-soft);"><td style="padding-left:18px;">Subtotal</td><td class="num-cell">₹${fmt(gDr)}</td><td class="num-cell">₹${fmt(gCr)}</td></tr>`;
+    }).join('');
+    body = statementHeader('Trial Balance', `As at ${to}`) + `<div class="tbl-wrap"><table><tr><th>Account</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th></tr>${rows||'<tr><td colspan=3 style="color:var(--ink-soft)">No approved entries yet</td></tr>'}
+      <tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total</td><td class="num-cell">₹${fmt(totDr)}</td><td class="num-cell">₹${fmt(totCr)}</td></tr></table></div>` + statementFooter();
+  } else if(sr==='ie'){
+    const incGroups = groupedRows(Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income'), a=>accBalance(a,{from,upto:to}).cr);
+    const expGroups = groupedRows(Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense'), a=>accBalance(a,{from,upto:to}).dr);
+    const totInc = incGroups.reduce((s,g)=>s+g.subtotal,0), totExp = expGroups.reduce((s,g)=>s+g.subtotal,0);
+    const renderGroupTable = (groups)=> groups.map(g=>`<tr><td style="font-weight:700;background:var(--paper);font-size:11.5px;text-transform:uppercase;">${g.group}</td><td></td></tr>
+      ${g.rows.map(x=>`<tr><td style="padding-left:18px;">${x.a}</td><td class="num-cell">₹${fmt(x.v)}</td></tr>`).join('')}
+      <tr style="font-style:italic;color:var(--ink-soft);"><td style="padding-left:18px;">Subtotal</td><td class="num-cell">₹${fmt(g.subtotal)}</td></tr>`).join('') || '<tr><td colspan=2 style="color:var(--ink-soft)">None</td></tr>';
+    body = statementHeader('Income & Expenditure Account', `For the period ${from} to ${to}`) +
+    `<h3 style="font-size:13px">Income</h3><div class="tbl-wrap"><table>${renderGroupTable(incGroups)}<tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total Income</td><td class="num-cell">₹${fmt(totInc)}</td></tr></table></div>
+    <h3 style="font-size:13px;margin-top:14px">Expenditure</h3><div class="tbl-wrap"><table>${renderGroupTable(expGroups)}<tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total Expenditure</td><td class="num-cell">₹${fmt(totExp)}</td></tr></table></div>
+    <div class="stat ${totInc-totExp>=0?'good':'alert'}" style="margin-top:14px"><div class="lbl">${totInc-totExp>=0?'Surplus':'Deficit'} for the period</div><div class="val">₹${fmt(Math.abs(totInc-totExp))}</div></div>` + statementFooter();
+  } else if(sr==='rp'){
+    const rp = receiptsPaymentsStatement(from, to);
+    const rRows = Object.entries(rp.receipts).sort((a,b)=>b[1]-a[1]).map(([label,amt])=>`<tr><td>${label}</td><td class="num-cell">₹${fmt(amt)}</td></tr>`).join('');
+    const pRows = Object.entries(rp.payments).sort((a,b)=>b[1]-a[1]).map(([label,amt])=>`<tr><td>${label}</td><td class="num-cell">₹${fmt(amt)}</td></tr>`).join('');
+    body = statementHeader('Receipts & Payments Account', `For the period ${from} to ${to}`) +
+    `<div class="tbl-wrap"><table>
+      <tr style="font-weight:700;background:var(--paper);"><td>To Opening Balance (Cash + Bank)</td><td class="num-cell">₹${fmt(rp.opening)}</td></tr>
+      <tr><td colspan="2" style="font-weight:700;font-size:11.5px;text-transform:uppercase;padding-top:10px;">Receipts</td></tr>
+      ${rRows||'<tr><td colspan=2 style="color:var(--ink-soft)">None</td></tr>'}
+      <tr style="font-style:italic;color:var(--ink-soft);"><td>Total Receipts</td><td class="num-cell">₹${fmt(rp.totalReceipts)}</td></tr>
+      <tr><td colspan="2" style="font-weight:700;font-size:11.5px;text-transform:uppercase;padding-top:10px;">Payments</td></tr>
+      ${pRows||'<tr><td colspan=2 style="color:var(--ink-soft)">None</td></tr>'}
+      <tr style="font-style:italic;color:var(--ink-soft);"><td>Total Payments</td><td class="num-cell">₹${fmt(rp.totalPayments)}</td></tr>
+      <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>By Closing Balance (Cash + Bank)</td><td class="num-cell">₹${fmt(rp.closing)}</td></tr>
+    </table></div>` + statementFooter() +
+    `<p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Cash-basis statement — records actual cash/bank movement in the period, unlike the accrual-based Income & Expenditure Account.</p>`;
+  } else if(sr==='bs'){
+    const assetGroups = groupedRows(Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Asset'), a=>accBalance(a,{upto:to}).net);
+    const liabGroups = groupedRows(Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Liability'), a=>-accBalance(a,{upto:to}).net);
+    const incomeAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income');
+    const expAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense');
+    const surplus = incomeAccs.reduce((s,a)=>s+accBalance(a,{upto:to}).cr,0) - expAccs.reduce((s,a)=>s+accBalance(a,{upto:to}).dr,0);
+    const totAssets = assetGroups.reduce((s,g)=>s+g.subtotal,0);
+    const totLiab = liabGroups.reduce((s,g)=>s+g.subtotal,0) + surplus;
+    const renderGroupTable = (groups)=> groups.map(g=>`<tr><td style="font-weight:700;background:var(--paper);font-size:11.5px;text-transform:uppercase;">${g.group}</td><td></td></tr>
+      ${g.rows.map(x=>`<tr><td style="padding-left:18px;">${x.a}</td><td class="num-cell">₹${fmt(x.v)}</td></tr>`).join('')}
+      <tr style="font-style:italic;color:var(--ink-soft);"><td style="padding-left:18px;">Subtotal</td><td class="num-cell">₹${fmt(g.subtotal)}</td></tr>`).join('') || '<tr><td colspan=2 style="color:var(--ink-soft)">None</td></tr>';
+    body = statementHeader('Balance Sheet', `As at ${to}`) +
+    `<h3 style="font-size:13px">Liabilities & Fund Balance</h3><div class="tbl-wrap"><table>${renderGroupTable(liabGroups)}<tr><td>Accumulated Surplus (Income & Expenditure)</td><td class="num-cell">₹${fmt(surplus)}</td></tr><tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total</td><td class="num-cell">₹${fmt(totLiab)}</td></tr></table></div>
+    <h3 style="font-size:13px;margin-top:14px">Assets</h3><div class="tbl-wrap"><table>${renderGroupTable(assetGroups)}<tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total Assets</td><td class="num-cell">₹${fmt(totAssets)}</td></tr></table></div>
+    <p style="font-size:11.5px;color:var(--ink-soft);margin-top:10px;">${Math.abs(totAssets-totLiab)<1?'✓ Balance Sheet tallies.':'⚠ Difference ₹'+fmt(Math.abs(totAssets-totLiab))+' — check for unbalanced or unapproved entries.'} Figures assume no opening balances were carried forward beyond what has been entered as opening journal(s).</p>` + statementFooter();
+  } else if(sr==='defaulters'){
+    const rows = DB.flats.map(f=>({f,out:flatOutstanding(f.id)})).filter(x=>x.out>0).sort((a,b)=>b.out-a.out)
+      .map(x=>`<tr><td>${flatLabel(x.f)}</td><td>${x.f.owner?.name||'—'}</td><td>${x.f.owner?.phone||'—'}</td><td class="num-cell" style="color:var(--brick)">₹${fmt(x.out)}</td></tr>`).join('');
+    body = `<div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th>Phone</th><th class="num-cell">Due</th></tr>${rows||'<tr><td colspan=4 style="color:var(--ink-soft)">No defaulters 🎉</td></tr>'}</table></div>`;
+  } else if(sr==='flatledger'){
+    body = `<div class="field"><label>Flat</label><select id="fl_sel">${DB.flats.map(f=>`<option value="${f.id}">${flatLabel(f)}</option>`).join('')}</select></div><div id="fl_body"></div>`;
+    setTimeout(()=>{
+      const sel=document.getElementById('fl_sel');
+      const draw=()=>{
+        const flatId=sel.value; let bal=0;
+        const rows = DB.vouchers.filter(v=>v.flatId===flatId).sort((a,b)=>a.date.localeCompare(b.date)).map(v=>{
+          const rec = v.entries.find(e=>e.account==='Maintenance Receivable');
+          if(!rec) return '';
+          bal += (rec.debit||0)-(rec.credit||0);
+          return `<tr><td>${v.date}</td><td>${v.narration||v.type}</td><td class="num-cell">${rec.debit?'₹'+fmt(rec.debit):''}</td><td class="num-cell">${rec.credit?'₹'+fmt(rec.credit):''}</td><td class="num-cell">₹${fmt(bal)}</td></tr>`;
+        }).join('');
+        document.getElementById('fl_body').innerHTML = `<div class="tbl-wrap"><table><tr><th>Date</th><th>Particulars</th><th class="num-cell">Billed</th><th class="num-cell">Received</th><th class="num-cell">Balance</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No transactions</td></tr>'}</table></div>`;
+      };
+      sel.onchange=draw; draw();
+    },0);
+  }
+  return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('reports','${t[0]}')">${t[1]}</button>`).join('')}</div>${periodBar}<div class="card">${body}</div>`;
+}
+
+/* ============ GST MODULE (returns, ITC & rate management) ============ */
+function outwardGSTByPeriod(){
+  const byPeriod={};
+  DB.bills.forEach(b=>{
+    if(!b.gstTotal) return;
+    const key = b.period.startsWith('ONE-')? b.dueDate.slice(0,7) : b.period;
+    if(!byPeriod[key]) byPeriod[key]={taxable:0,gst:0,byRate:{}};
+    byPeriod[key].taxable += b.subTotal; byPeriod[key].gst += b.gstTotal;
+    b.items.forEach(i=>{ if(i.gst>0){ const rate = Math.round(i.gst/i.amount*100); const k=rate+'%';
+      byPeriod[key].byRate[k]=byPeriod[key].byRate[k]||{taxable:0,gst:0}; byPeriod[key].byRate[k].taxable+=i.amount; byPeriod[key].byRate[k].gst+=i.gst; } });
+  });
+  return byPeriod;
+}
+function inwardGSTByPeriod(){
+  const byPeriod={};
+  DB.vendorBills.forEach(b=>{
+    if(!b.gstAmount) return;
+    const key = b.date.slice(0,7);
+    if(!byPeriod[key]) byPeriod[key]={taxable:0,gst:0};
+    byPeriod[key].taxable += b.amount; byPeriod[key].gst += b.gstAmount;
+  });
+  return byPeriod;
+}
+function renderGST(){
+  const sr = subroute || 'summary';
+  const tabs=[['summary','Return Summary'],['outward','Outward (GSTR-1)'],['itc','Input Credit'],['ledger','GST Ledgers']];
+  let body='';
+  const outward = outwardGSTByPeriod(), inward = inwardGSTByPeriod();
+  const allPeriods = [...new Set([...Object.keys(outward),...Object.keys(inward)])].sort().reverse();
+
+  if(sr==='summary'){
+    const outputCollected = accBalance('GST Payable').cr - accBalance('GST Payable').dr;
+    const itcAvailable = accBalance('GST Input Credit').net;
+    const netPayable = outputCollected - itcAvailable;
+    body = `<div class="stat-grid" style="margin-bottom:12px;">
+        <div class="stat"><div class="lbl">Output GST (collected)</div><div class="val">₹${fmt(outputCollected)}</div></div>
+        <div class="stat good"><div class="lbl">Input Tax Credit (ITC)</div><div class="val">₹${fmt(itcAvailable)}</div></div>
+        <div class="stat ${netPayable>0?'alert':'good'}"><div class="lbl">${netPayable>=0?'Net GST Payable':'ITC Carried Forward'}</div><div class="val">₹${fmt(Math.abs(netPayable))}</div></div>
+      </div>
+      <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Figures reflect <b>approved</b> entries only, in the style of a GSTR-3B summary (Output Tax − Input Tax Credit = Net Payable). This does not file anything — export or copy these figures into your GST portal / CA workflow.</p>
+      <div class="tbl-wrap"><table><tr><th>Period</th><th class="num-cell">Outward GST</th><th class="num-cell">Inward GST (ITC)</th><th class="num-cell">Net</th></tr>
+      ${allPeriods.map(p=>{ const o=(outward[p]?.gst)||0, i=(inward[p]?.gst)||0; return `<tr><td>${p}</td><td class="num-cell">₹${fmt(o)}</td><td class="num-cell">₹${fmt(i)}</td><td class="num-cell">₹${fmt(o-i)}</td></tr>`; }).join('') || '<tr><td colspan=4 style="color:var(--ink-soft)">No GST activity yet</td></tr>'}
+      </table></div>`;
+  } else if(sr==='outward'){
+    body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Taxable value and GST charged on resident bills, grouped by period and rate slab — mirrors what GSTR-1 needs for outward supplies.</p>`;
+    if(!allPeriods.filter(p=>outward[p]).length) body += `<div class="empty"><div class="ic">%</div>No GST-applicable bills yet.</div>`;
+    else allPeriods.filter(p=>outward[p]).forEach(p=>{
+      const d = outward[p];
+      body += `<div class="approval-row"><b>${p}</b><div class="tbl-wrap" style="margin-top:6px;"><table><tr><th>Rate</th><th class="num-cell">Taxable Value</th><th class="num-cell">GST</th></tr>
+        ${Object.entries(d.byRate).map(([rate,v])=>`<tr><td>${rate}</td><td class="num-cell">₹${fmt(v.taxable)}</td><td class="num-cell">₹${fmt(v.gst)}</td></tr>`).join('')}
+        <tr style="font-weight:700;"><td>Total</td><td class="num-cell">₹${fmt(d.taxable)}</td><td class="num-cell">₹${fmt(d.gst)}</td></tr></table></div></div>`;
+    });
+  } else if(sr==='itc'){
+    const bills = DB.vendorBills.filter(b=>b.gstAmount>0).sort((a,b)=>b.date.localeCompare(a.date));
+    body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Vendor bills where GST was charged and claimed as Input Tax Credit — reconcile this against your GSTR-2B before claiming.</p>`;
+    body += bills.length? `<div class="tbl-wrap"><table><tr><th>Vendor / Bill</th><th class="num-cell">Taxable</th><th class="num-cell">GST</th></tr>
+      ${bills.map(b=>{ const v=getVendor(b.vendorId); return `<tr><td>${b.date}<div style="font-size:11px;color:var(--ink-soft)">${v?v.name:'—'}${v?.gstin?' · '+v.gstin:''} · ${b.description||''}</div></td><td class="num-cell">₹${fmt(b.amount)}</td><td class="num-cell">₹${fmt(b.gstAmount)}</td></tr>`; }).join('')}
+      <tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total ITC</td><td class="num-cell">₹${fmt(bills.reduce((s,b)=>s+b.amount,0))}</td><td class="num-cell">₹${fmt(bills.reduce((s,b)=>s+b.gstAmount,0))}</td></tr></table></div>`
+      : `<div class="empty"><div class="ic">%</div>No input-credit-bearing vendor bills yet. Tick "GST charged" when logging a vendor bill to start claiming ITC.</div>`;
+  } else if(sr==='ledger'){
+    body = `<div class="field"><label>Ledger</label><select id="gl_acc" onchange="go('gst','ledger')"><option value="GST Payable" ${window.__gstLdgAcc==='GST Input Credit'?'':'selected'}>GST Payable (Output)</option><option value="GST Input Credit" ${window.__gstLdgAcc==='GST Input Credit'?'selected':''}>GST Input Credit (ITC)</option></select></div>`;
+    const accName = window.__gstLdgAcc || 'GST Payable';
+    setTimeout(()=>{ const sel=document.getElementById('gl_acc'); if(sel){ sel.value=accName; sel.onchange=(e)=>{ window.__gstLdgAcc=e.target.value; render(); }; } },0);
+    let bal=0;
+    const rows = DB.vouchers.filter(v=>v.status==='approved' && v.entries.some(e=>e.account===accName)).sort((a,b)=>a.date.localeCompare(b.date))
+      .map(v=>{ const e=v.entries.find(x=>x.account===accName); bal += (e.debit||0)-(e.credit||0);
+        return `<tr><td>${v.date}</td><td>${v.narration||v.type}</td><td class="num-cell">${e.debit?'₹'+fmt(e.debit):''}</td><td class="num-cell">${e.credit?'₹'+fmt(e.credit):''}</td><td class="num-cell">₹${fmt(Math.abs(bal))}</td></tr>`; }).join('');
+    body += `<div class="tbl-wrap"><table><tr><th>Date</th><th>Narration</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th><th class="num-cell">Balance</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No approved entries</td></tr>'}</table></div>`;
+  }
+  const settingsLink = isReadOnly()? '' : `<div style="margin-bottom:12px;"><button class="btn btn-outline btn-sm" onclick="openGSTRatesModal()">Edit GST Rates by Charge Head</button></div>`;
+  return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('gst','${t[0]}')">${t[1]}</button>`).join('')}</div>${settingsLink}<div class="card">${body}</div>
+  <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">This module prepares return-ready figures from your books; it does not file GSTR-1/3B directly. Confirm applicability, rates, and reconciliation with your CA/GST advisor.</p>`;
+}
+
+/* ============ SETTINGS ============ */
+function renderSettings(){
+  const heads = DB.chargeHeads.map(h=>`<tr onclick="openChargeHeadModal(${h.id})">
+    <td><b>${h.name}</b>${h.gstApplicable?'<span class="pill" style="margin-left:6px;">GST '+h.gstRate+'%</span>':''}</td>
+    <td style="font-size:12px;">${h.mode==='perArea'?'₹'+h.rate+'/sqft':h.mode==='perParking'?'₹'+h.rate+'/slot':h.mode==='meterReading'?'₹'+h.rate+'/unit · '+h.meterType:'₹'+h.rate+' flat'}</td>
+    <td>${h.account}</td></tr>`).join('');
+  const types = DB.flatTypes.map(t=>{
+    const n = DB.flats.filter(f=>getFlatCategory(f)?.id===t.id).length;
+    return `<tr onclick="openFlatTypeModal('${t.id}')"><td>${t.name}${t.mode==='sqft'?'<span class="pill" style="margin-left:6px;">'+t.minArea+'–'+t.maxArea+' sqft</span>':''}</td><td class="num-cell">${n} flat${n===1?'':'s'}</td></tr>`;
+  }).join('');
+  return `
+  <div class="card"><div class="section-title">Society Name</div>
+    <div class="field"><input id="st_name" value="${DB.society.name}"></div>
+    <button class="btn btn-primary btn-sm" onclick="saveSocietyName()">Save</button>
+  </div>
+  <div class="card"><div class="section-title"><span>Flat Categories</span>${isReadOnly()?'':'<button class="btn btn-outline btn-sm" onclick="openFlatTypeModal()">+ Add Category</button>'}</div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Group your flats/villas either by a named size (e.g. "2 BHK") or automatically by a square-foot range. Every flat in a category can then get its own maintenance rate per charge — see Category Rates below.</p>
+    ${DB.flatTypes.length? `<div class="tbl-wrap"><table><tr><th>Category</th><th class="num-cell">Flats</th></tr>${types}</table></div>` : `<p style="font-size:12.5px;color:var(--ink-soft)">No categories defined yet.</p>`}
+    ${isReadOnly()?'':'<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="openCategoryRatesModal()">Set Rates by Category</button>'}
+  </div>
+  <div class="card"><div class="section-title"><span>Charge Heads</span><span style="display:flex;gap:6px;">${isReadOnly()?'':'<button class="btn btn-outline btn-sm" onclick="openGSTRatesModal()">GST Rates</button><button class="btn btn-outline btn-sm" onclick="openChargeHeadModal()">+ Add Head</button>'}</span></div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Add, edit or remove any nature of charge — per sqft, flat rate, per parking slot, or billed by individual meter reading (water, DG, electricity), with optional GST. The rate shown here is the default; override it per category above.</p>
+    <div class="tbl-wrap"><table><tr><th>Charge</th><th>Basis</th><th>Account</th></tr>${heads}</table></div>
+  </div>
+  <div class="card"><div class="section-title">Access — Role PINs</div>
+    <p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Only Accountant, Treasurer & Auditor can sign in. Change each role's PIN below.</p>
+    ${ALLOWED_ROLES.map(r=>`
+      <div class="row2" style="align-items:end;">
+        <div class="field"><label>${r} PIN</label><input id="pin_${r}" type="password" inputmode="numeric" placeholder="New PIN"></div>
+        <button class="btn btn-outline" style="height:44px" onclick="changePin('${r}')">Update</button>
+      </div>`).join('')}
+  </div>
+  <div class="card"><div class="section-title">Data</div>
+    <p style="font-size:12.5px;color:var(--ink-soft)">All data is stored offline on this device (localStorage). Export a backup regularly.</p>
+    <div style="display:flex;gap:8px;"><button class="btn btn-outline" style="flex:1" onclick="exportData()">Export Backup</button>
+    <button class="btn btn-outline" style="flex:1" onclick="document.getElementById('importFile').click()">Import Backup</button></div>
+    <input type="file" id="importFile" style="display:none" accept=".json" onchange="importData(event)">
+  </div>`;
+}
+function saveSocietyName(){ DB.society.name=document.getElementById('st_name').value.trim()||'My Housing Society'; save(); toast('Saved'); render(); }
+function openFlatTypeModal(id){
+  const t = id? DB.flatTypes.find(x=>x.id===id) : {id:'FT'+nextId('ftype'), name:'', mode:'name', defaultArea:0, minArea:0, maxArea:0};
+  if(!id) DB.seq.ftype--;
+  openModal(`<div class="modal-head"><h2>${id?'Edit':'Add'} Category</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Category Name</label><input id="ft_name" value="${t.name}" placeholder="e.g. 2 BHK, Villa Type A, or 900-1000 sqft"></div>
+    <div class="field"><label>Define By</label>
+      <div class="tag-row">
+        <button type="button" class="tag-btn ${t.mode!=='sqft'?'active':''}" onclick="setFtMode('name',this)">Name (fixed area)</button>
+        <button type="button" class="tag-btn ${t.mode==='sqft'?'active':''}" onclick="setFtMode('sqft',this)">Square Foot Range</button>
+      </div>
+      <input type="hidden" id="ft_mode" value="${t.mode||'name'}">
+    </div>
+    <div id="ft_nameFields" style="display:${t.mode==='sqft'?'none':'block'}">
+      <div class="field"><label>Default Area (sqft)</label><input id="ft_area" type="number" value="${t.defaultArea||''}"></div>
+      <p style="font-size:11px;color:var(--ink-soft);">Flats are assigned to this category manually (from the Flat form), prefilling this area.</p>
+    </div>
+    <div id="ft_sqftFields" style="display:${t.mode==='sqft'?'block':'none'}">
+      <div class="row2"><div class="field"><label>Min Area (sqft)</label><input id="ft_min" type="number" value="${t.minArea||''}"></div><div class="field"><label>Max Area (sqft)</label><input id="ft_max" type="number" value="${t.maxArea||''}"></div></div>
+      <p style="font-size:11px;color:var(--ink-soft);">Any flat whose area falls in this range is automatically grouped under this category — no manual assignment needed.</p>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      ${isReadOnly()?'':`<button class="btn btn-primary" style="flex:1" onclick="saveFlatType('${t.id}')">Save</button>`}
+      ${id&&!isReadOnly()?`<button class="btn btn-danger" onclick="deleteFlatType('${t.id}')">Delete</button>`:''}
+    </div>`);
+}
+function setFtMode(mode,btn){
+  document.getElementById('ft_mode').value=mode;
+  btn.parentElement.querySelectorAll('.tag-btn').forEach(b=>b.classList.remove('active')); btn.classList.add('active');
+  document.getElementById('ft_nameFields').style.display = mode==='sqft'?'none':'block';
+  document.getElementById('ft_sqftFields').style.display = mode==='sqft'?'block':'none';
+}
+function saveFlatType(id){
+  if(!canEdit()) return;
+  const mode = document.getElementById('ft_mode').value;
+  const data={id, name:document.getElementById('ft_name').value.trim(), mode,
+    defaultArea: mode==='name'? Number(document.getElementById('ft_area').value)||0 : 0,
+    minArea: mode==='sqft'? Number(document.getElementById('ft_min').value)||0 : 0,
+    maxArea: mode==='sqft'? Number(document.getElementById('ft_max').value)||0 : 0};
+  if(!data.name){ toast('Name required'); return; }
+  if(mode==='sqft' && data.maxArea<=data.minArea){ toast('Max area must be greater than min area'); return; }
+  const idx=DB.flatTypes.findIndex(x=>x.id===id);
+  if(idx>=0) DB.flatTypes[idx]=data; else { DB.seq.ftype++; DB.flatTypes.push(data); }
+  save(); closeModal(); toast('Category saved'); render();
+}
+function deleteFlatType(id){
+  if(!canEdit()) return;
+  DB.flatTypes=DB.flatTypes.filter(t=>t.id!==id); save(); closeModal(); render();
+}
+function openCategoryRatesModal(){
+  const perFlatHeads = DB.chargeHeads;
+  if(!DB.flatTypes.length){ toast('Add at least one category first'); closeModal(); go('settings'); return; }
+  const previewArea = t=> t.mode==='sqft'? Math.round(((t.minArea||0)+(t.maxArea||0))/2) : (t.defaultArea||0);
+  openModal(`<div class="modal-head"><h2>Maintenance Rates by Category</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Leave a cell blank to use that charge's default rate. Rates are per sqft / per slot / per unit depending on the charge's billing basis — the estimate column totals non-meter charges for a typical unit in that category.</p>
+    <div class="tbl-wrap"><table><tr><th>Charge</th>${DB.flatTypes.map(t=>`<th class="num-cell">${t.name}</th>`).join('')}</tr>
+    ${perFlatHeads.map(h=>`<tr><td style="font-size:12px;">${h.name}<div style="font-size:10.5px;color:var(--ink-soft);">default ₹${h.rate}${h.mode==='meterReading'?'/unit':h.mode==='perArea'?'/sqft':h.mode==='perParking'?'/slot':''}</div></td>
+      ${DB.flatTypes.map(t=>`<td class="num-cell"><input type="number" class="cr_rate" data-head="${h.id}" data-cat="${t.id}" placeholder="${h.rate}" value="${(DB.categoryRates[h.id]&&DB.categoryRates[h.id][t.id]!==undefined&&DB.categoryRates[h.id][t.id]!=='')?DB.categoryRates[h.id][t.id]:''}" style="width:70px;text-align:right;"></td>`).join('')}
+      </tr>`).join('')}
+    <tr style="font-weight:700;border-top:2px solid var(--ink);"><td>Est. Monthly (excl. meter charges)</td>
+      ${DB.flatTypes.map(t=>{ const area=previewArea(t); const est = perFlatHeads.filter(h=>h.mode!=='meterReading').reduce((s,h)=>{ const r=categoryRate(h,t); return s+(h.mode==='perArea'?r*area:h.mode==='perParking'?r:r); },0);
+        return `<td class="num-cell">₹${fmt(Math.round(est))}</td>`; }).join('')}
+      </tr>
+    </table></div>
+    ${isReadOnly()?'':'<button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="saveCategoryRates()">Save Category Rates</button>'}
+    <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Estimate assumes 1 parking slot and the category's default/mid-range area; actual bills are calculated per flat's real area, parking slots, and meter readings.</p>`);
+}
+function saveCategoryRates(){
+  if(!canEdit()) return;
+  document.querySelectorAll('.cr_rate').forEach(inp=>{
+    const headId = Number(inp.dataset.head), catId = inp.dataset.cat;
+    if(!DB.categoryRates[headId]) DB.categoryRates[headId]={};
+    if(inp.value===''){ delete DB.categoryRates[headId][catId]; }
+    else DB.categoryRates[headId][catId] = Number(inp.value);
+  });
+  save(); closeModal(); toast('Category rates saved'); render();
+}
+function openChargeHeadModal(id){
+  const h = id? DB.chargeHeads.find(x=>x.id===id) : {id:0, name:'', mode:'perArea', rate:'', account:'Maintenance Income', meterType:'Water', gstApplicable:false, gstRate:18};
+  const accOptions = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income'||ACCOUNTS[a]==='Liability');
+  openModal(`<div class="modal-head"><h2>${id?'Edit':'Add'} Charge Head</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Name</label><input id="ch_name" value="${h.name}" placeholder="e.g. Water Charges"></div>
+    <div class="field"><label>Billing Basis</label><select id="ch_mode" onchange="toggleChargeModeFields()">
+      <option value="perArea" ${h.mode==='perArea'?'selected':''}>Per sqft area</option>
+      <option value="fixed" ${h.mode==='fixed'?'selected':''}>Fixed / flat rate</option>
+      <option value="perParking" ${h.mode==='perParking'?'selected':''}>Per parking slot</option>
+      <option value="meterReading" ${h.mode==='meterReading'?'selected':''}>By individual meter reading</option>
+    </select></div>
+    <div class="field" id="ch_meterField" style="display:${h.mode==='meterReading'?'block':'none'}"><label>Meter Type</label><select id="ch_meterType">
+      ${['Water','DG','Electricity'].map(m=>`<option ${h.meterType===m?'selected':''}>${m}</option>`).join('')}</select></div>
+    <div class="row2"><div class="field"><label id="ch_rateLabel">Rate ₹</label><input id="ch_rate" type="number" value="${h.rate}"></div>
+    <div class="field"><label>Account</label><select id="ch_acc">${accOptions.map(a=>`<option ${h.account===a?'selected':''}>${a}</option>`).join('')}</select></div></div>
+    <hr class="divider">
+    <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="ch_gst" ${h.gstApplicable?'checked':''} onchange="toggleChargeModeFields()" style="width:auto"> GST Applicable</label></div>
+    <div class="field" id="ch_gstField" style="display:${h.gstApplicable?'block':'none'}"><label>GST Rate %</label><input id="ch_gstRate" type="number" value="${h.gstRate||18}"></div>
+    <p style="font-size:11px;color:var(--ink-soft);">GST applicability & thresholds for RWA maintenance charges change from time to time — confirm current rules with your CA/GST advisor before enabling.</p>
+    <div style="display:flex;gap:10px;margin-top:10px;">
+      ${isReadOnly()?'':`<button class="btn btn-primary" style="flex:1" onclick="saveChargeHead(${h.id})">Save</button>`}
+      ${id&&!isReadOnly()?`<button class="btn btn-danger" onclick="deleteHead(${h.id})">Delete</button>`:''}
+    </div>`);
+}
+function toggleChargeModeFields(){
+  const mode = document.getElementById('ch_mode').value;
+  document.getElementById('ch_meterField').style.display = mode==='meterReading'?'block':'none';
+  document.getElementById('ch_rateLabel').textContent = mode==='meterReading'?'Rate ₹/unit':mode==='perArea'?'Rate ₹/sqft':mode==='perParking'?'Rate ₹/slot':'Rate ₹';
+  document.getElementById('ch_gstField').style.display = document.getElementById('ch_gst').checked?'block':'none';
+}
+function saveChargeHead(id){
+  if(!canEdit()) return;
+  const name=document.getElementById('ch_name').value.trim(), rate=Number(document.getElementById('ch_rate').value);
+  const mode=document.getElementById('ch_mode').value, account=document.getElementById('ch_acc').value;
+  const gstApplicable=document.getElementById('ch_gst').checked, gstRate=Number(document.getElementById('ch_gstRate').value)||0;
+  const meterType = mode==='meterReading'? document.getElementById('ch_meterType').value : undefined;
+  if(!name||!rate){ toast('Enter name & rate'); return; }
+  const data={id: id||nextId('head'), name, rate, mode, account, gstApplicable, gstRate, meterType};
+  const idx = DB.chargeHeads.findIndex(x=>x.id===id);
+  if(idx>=0) DB.chargeHeads[idx]=data; else DB.chargeHeads.push(data);
+  save(); closeModal(); toast('Charge head saved'); render();
+}
+function deleteHead(id){ if(!canEdit()) return; DB.chargeHeads=DB.chargeHeads.filter(h=>h.id!==id); save(); closeModal(); render(); }
+function changePin(role){
+  if(!canEdit()) return;
+  const val = document.getElementById('pin_'+role).value.trim();
+  if(!val || val.length<4){ toast('PIN must be at least 4 digits'); return; }
+  DB.security.pins[role]=val; save(); document.getElementById('pin_'+role).value=''; toast(role+' PIN updated');
+}
+function exportData(){
+  const blob = new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});
+  const url = URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download=`smartrwa-backup-${todayISO()}.json`; a.click();
+}
+function importData(ev){
+  if(!canEdit()) return;
+  const file = ev.target.files[0]; if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e=>{ try{ DB = JSON.parse(e.target.result); save(); toast('Backup restored'); go('dashboard'); }catch(err){ toast('Invalid file'); } };
+  reader.readAsText(file);
+}
+
+/* ============ GST RATES WINDOW ============ */
+function openGSTRatesModal(){
+  openModal(`<div class="modal-head"><h2>GST Rates by Charge Type</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Set the GST rate to collect for each nature of charge. Untick "Apply" to bill that charge without GST.</p>
+    <div class="tbl-wrap"><table><tr><th>Charge</th><th>Apply</th><th class="num-cell">Rate %</th></tr>
+    ${DB.chargeHeads.map(h=>`<tr><td>${h.name}</td><td><input type="checkbox" class="gr_on" data-id="${h.id}" ${h.gstApplicable?'checked':''} style="width:auto"></td><td class="num-cell"><input type="number" class="gr_rate" data-id="${h.id}" value="${h.gstRate||18}" style="width:70px;text-align:right;"></td></tr>`).join('')}
+    </table></div>
+    ${isReadOnly()?'':'<button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="saveGSTRates()">Save GST Rates</button>'}
+    <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Rates already applied to past bills are not changed retroactively — only new bills generated after saving use the updated rate.</p>`);
+}
+function saveGSTRates(){
+  if(!canEdit()) return;
+  document.querySelectorAll('.gr_on').forEach(chk=>{
+    const id = Number(chk.dataset.id); const h = DB.chargeHeads.find(x=>x.id===id); if(!h) return;
+    h.gstApplicable = chk.checked;
+  });
+  document.querySelectorAll('.gr_rate').forEach(inp=>{
+    const id = Number(inp.dataset.id); const h = DB.chargeHeads.find(x=>x.id===id); if(!h) return;
+    h.gstRate = Number(inp.value)||0;
+  });
+  save(); closeModal(); toast('GST rates updated'); render();
+}
+
+/* ============ HEALTH CHECK ============ */
+function runHealthChecks(){
+  const checks = [];
+  const add=(ok,label,detail)=>checks.push({ok,label,detail});
+
+  // Trial balance tallies for approved vouchers
+  let totDr=0,totCr=0;
+  DB.vouchers.filter(v=>v.status==='approved').forEach(v=> v.entries.forEach(e=>{ totDr+=e.debit||0; totCr+=e.credit||0; }));
+  add(Math.abs(totDr-totCr)<1, 'Trial Balance tallies', `Debit ₹${fmt(totDr)} vs Credit ₹${fmt(totCr)}`);
+
+  // Balance sheet tallies
+  const assets = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Asset').reduce((s,a)=>s+accBalance(a).net,0);
+  const liab = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Liability').reduce((s,a)=>s-accBalance(a).net,0);
+  const incomeAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income'), expAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense');
+  const surplus = incomeAccs.reduce((s,a)=>s+accBalance(a).cr,0) - expAccs.reduce((s,a)=>s+accBalance(a).dr,0);
+  add(Math.abs(assets-(liab+surplus))<1, 'Balance Sheet tallies', `Assets ₹${fmt(assets)} vs Liabilities+Surplus ₹${fmt(liab+surplus)}`);
+
+  // Pending approvals aging
+  const staleDays = 3;
+  const stale = DB.vouchers.filter(v=>v.status==='pending' && (new Date()-new Date(v.makerAt))/86400000 > staleDays);
+  add(stale.length===0, 'No stale pending approvals', stale.length? `${stale.length} entr${stale.length===1?'y':'ies'} pending for more than ${staleDays} days` : 'All pending entries raised recently');
+
+  // Flats missing owner info
+  const noOwner = DB.flats.filter(f=>!f.owner?.name);
+  add(noOwner.length===0, 'All flats have owner details', noOwner.length? `${noOwner.length} flat(s) missing owner name` : 'Complete');
+
+  // Duplicate flat numbers
+  const seen={}; let dupes=0;
+  DB.flats.forEach(f=>{ const k=f.tower+'|'+f.flatNo; if(seen[k]) dupes++; seen[k]=true; });
+  add(dupes===0, 'No duplicate flat numbers', dupes? `${dupes} duplicate tower+flat combination(s) found` : 'Complete');
+
+  // Bills without a linked voucher (data integrity)
+  const orphanBills = DB.bills.filter(b=> !DB.vouchers.some(v=>v.ref===b.id));
+  add(orphanBills.length===0, 'All bills have a matching accounting entry', orphanBills.length? `${orphanBills.length} bill(s) have no linked voucher` : 'Complete');
+
+  // Negative stock
+  const negStock = DB.inventoryItems.filter(it=>stockOnHand(it.id)<0);
+  add(negStock.length===0, 'No negative stock balances', negStock.length? `${negStock.length} item(s) show negative stock — check entries` : 'Complete');
+
+  // Vendor bills overdue > 60 days unpaid
+  const overdueVendor = DB.vendorBills.filter(b=> (b.netPayable-b.paid)>0 && (new Date()-new Date(b.date))/86400000>60);
+  add(overdueVendor.length===0, 'No vendor dues overdue beyond 60 days', overdueVendor.length? `${overdueVendor.length} vendor bill(s) unpaid for 60+ days` : 'Complete');
+
+  // Charge heads pointing to unknown accounts
+  const badHeads = DB.chargeHeads.filter(h=>!ACCOUNTS[h.account]);
+  add(badHeads.length===0, 'Charge heads point to valid accounts', badHeads.length? `${badHeads.length} charge head(s) reference an unrecognised account` : 'Complete');
+
+  // Meter-billed heads with no readings at all
+  const meterHeadsNoReadings = DB.chargeHeads.filter(h=>h.mode==='meterReading' && !DB.meterReadings.some(r=>r.meterType===h.meterType));
+  add(meterHeadsNoReadings.length===0, 'Meter-billed charges have readings on file', meterHeadsNoReadings.length? `${meterHeadsNoReadings.map(h=>h.name).join(', ')} — no meter readings entered yet` : 'Complete');
+
+  return checks;
+}
+function openHealthCheckModal(){
+  const checks = runHealthChecks();
+  const passCount = checks.filter(c=>c.ok).length;
+  const score = Math.round(passCount/checks.length*100);
+  openModal(`<div class="modal-head"><h2>Health Check</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="stat ${score===100?'good':score>=70?'':'alert'}" style="margin-bottom:14px;"><div class="lbl">Overall Health</div><div class="val">${score}% (${passCount}/${checks.length})</div></div>
+    ${checks.map(c=>`<div class="approval-row" style="padding:10px 12px;"><div style="display:flex;gap:8px;align-items:start;">
+      <span style="font-size:15px;">${c.ok?'✅':'⚠️'}</span>
+      <div><div style="font-weight:600;font-size:13.5px;">${c.label}</div><div style="font-size:12px;color:var(--ink-soft);">${c.detail}</div></div>
+    </div></div>`).join('')}
+    <p style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Run this anytime from the ♡ icon at the top of the app.</p>`);
+  logAction('Health Check', `Score ${score}% (${passCount}/${checks.length} checks passed)`);
+}
+
+/* ============ HELP ============ */
+function renderHelp(){
+  const sections = [
+    ['Getting Started', `1. Add your <b>Flat/Villa Types</b> and <b>Flats</b> under Setup / Flats (or bulk-import via CSV).<br>
+      2. Set up <b>Charge Heads</b> — per sqft, fixed, per parking slot, or by meter reading — with GST where applicable.<br>
+      3. Enter <b>Meter Readings</b> each period for Water/DG/Electricity before generating bills.<br>
+      4. Use <b>Generate Bills</b> for the whole society, or <b>Bill One Flat</b> / <b>One-Time Charge</b> for individual cases.<br>
+      5. Record <b>Receipts</b> as owners pay — they auto-adjust the oldest dues first.<br>
+      6. Every accounting entry needs a second person to <b>Approve</b> it before it hits the ledger (maker-checker).`],
+    ['Roles & Maker-Checker', `Only <b>Accountant</b>, <b>Treasurer</b>, and <b>Auditor</b> can sign in. Whoever raises a bill, receipt, voucher, vendor payment, payroll run, or asset entry cannot approve their own entry — a different role must review it under the <b>Approve</b> tab. Auditors can view everything but cannot create, edit, or approve anything — a full read-only audit trail.`],
+    ['Billing & GST', `Charge heads can be billed per sqft, as a flat fixed amount, per parking slot, or by individual meter reading (Water/DG/Electricity). Add new charge types anytime under Setup → Charge Heads. GST can be switched on per charge type from Setup → Charge Heads → <b>GST Rates</b>. Confirm current GST applicability thresholds with your CA before enabling.`],
+    ['Bulk Flat Import (CSV)', `From the Flats screen, tap <b>CSV Template</b> to download a spreadsheet with sample rows (opens fine in Excel or Google Sheets). Fill in your flats, keep the header row unchanged, then tap <b>Import CSV</b> to upload it back. The app checks each row for a Flat No., valid area, and duplicates before adding — you'll see a summary of what was added vs skipped and why.`],
+    ['Health Check', `Tap the ♡ icon at the top anytime to run a diagnostic: it checks that your Trial Balance and Balance Sheet tally, flags stale pending approvals, flats without owners, negative stock, overdue vendor dues, and other data issues — so small mistakes get caught early.`],
+    ['Data & Backup', `All data lives only on this device (offline-first). Export a backup regularly from Setup → Data, and store it somewhere safe (e.g. Google Drive/email to yourself). Import restores a full backup, replacing current data — use with care.`],
+    ['Modules at a Glance', `<b>Flats</b> — owners, tenants, areas, parking · <b>Billing</b> — bills & meter readings · <b>Receipts</b> — payments received · <b>Vendors</b> — vendor bills, TDS, payments · <b>Payroll</b> — salary, PF, ESI · <b>Assets</b> — register & depreciation · <b>Stock</b> — inventory in/out · <b>Accounts</b> — vouchers & ledgers · <b>Approve</b> — maker-checker queue & audit log · <b>Issues</b> — complaints · <b>Reports</b> — Trial Balance, I&E, Balance Sheet, GST, Defaulters, Flat Ledger.`],
+  ];
+  return sections.map(([title,body])=>`<div class="card"><div class="section-title">${title}</div><p style="font-size:13px;line-height:1.6;color:var(--ink);">${body}</p></div>`).join('');
+}
+
+/* ============ THEME ============ */
+function toggleTheme(){
+  document.body.classList.toggle('dark');
+  localStorage.setItem('smartrwa_theme', document.body.classList.contains('dark')?'dark':'light');
+}
+if(localStorage.getItem('smartrwa_theme')==='dark') document.body.classList.add('dark');
+
+/* ============ ACCESS CONTROL ============ */
+const ALLOWED_ROLES = ['Accountant','Treasurer','Auditor'];
+let selectedRole = 'Accountant';
+function selectRole(btn){
+  selectedRole = btn.dataset.role;
+  document.querySelectorAll('.role-opt').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('lockErr').textContent='';
+}
+function attemptLogin(){
+  const pin = document.getElementById('lockPin').value.trim();
+  if(DB.security.pins[selectedRole] === pin){
+    sessionStorage.setItem('smartrwa_role', selectedRole);
+    enterApp(selectedRole);
+  } else {
+    document.getElementById('lockErr').textContent = 'Incorrect PIN for '+selectedRole+'.';
+  }
+}
+function logout(){
+  sessionStorage.removeItem('smartrwa_role');
+  document.getElementById('app').style.display='none';
+  document.getElementById('lockscreen').style.display='flex';
+  document.getElementById('lockPin').value='';
+}
+function enterApp(role){
+  window.__currentRole = role;
+  document.getElementById('lockscreen').style.display='none';
+  document.getElementById('app').style.display='flex';
+  document.getElementById('roleBadge').textContent = role;
+  renderSidebar();
+  go('dashboard');
+}
+
+/* ============ INIT ============ */
+const savedRole = sessionStorage.getItem('smartrwa_role');
+if(savedRole && ALLOWED_ROLES.includes(savedRole)){
+  enterApp(savedRole);
+} else {
+  document.getElementById('lockscreen').style.display='flex';
+}
+</script>
+</body>
+</html>
