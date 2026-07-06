@@ -200,6 +200,26 @@ body.dark .role-badge{color:var(--teal-dark); border-color:var(--teal-dark);}
 body.dark .approval-row{border-color:var(--border-dark);}
 .readonly-note{font-size:11.5px; color:var(--ink-soft); background:var(--paper); border:1px dashed var(--border); border-radius:8px; padding:8px 10px; margin-top:10px;}
 body.dark .readonly-note{background:var(--paper-dark); border-color:var(--border-dark);}
+
+/* Chatbot */
+#chatModal{position:fixed; inset:0; background:rgba(20,20,15,0.5); z-index:90; display:none; align-items:flex-end; justify-content:center;}
+#chatModal.show{display:flex;}
+.chat-box{background:var(--surface); width:100%; max-width:520px; height:78vh; border-radius:16px 16px 0 0; display:flex; flex-direction:column; overflow:hidden;}
+body.dark .chat-box{background:var(--surface-dark);}
+@media(min-width:640px){ #chatModal{align-items:center;} .chat-box{border-radius:14px; height:70vh;} }
+.chat-head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border);}
+body.dark .chat-head{border-color:var(--border-dark);}
+.chat-messages{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px;}
+.chat-msg{max-width:82%;padding:9px 12px;border-radius:12px;font-size:13.5px;line-height:1.45;}
+.chat-msg.bot{background:var(--paper);align-self:flex-start;border-bottom-left-radius:3px;}
+body.dark .chat-msg.bot{background:var(--paper-dark);}
+.chat-msg.user{background:var(--teal);color:#fff;align-self:flex-end;border-bottom-right-radius:3px;}
+.chat-chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 16px 10px;}
+.chat-chip{background:var(--paper);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:12px;color:var(--ink-soft);}
+body.dark .chat-chip{background:var(--paper-dark);border-color:var(--border-dark);}
+.chat-input-row{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--border);}
+body.dark .chat-input-row{border-color:var(--border-dark);}
+.chat-input-row input{flex:1;}
 </style>
 </head>
 <body>
@@ -229,6 +249,7 @@ body.dark .readonly-note{background:var(--paper-dark); border-color:var(--border
       </div>
       <div class="top-actions">
         <span class="role-badge" id="roleBadge"></span>
+        <button class="icon-btn" onclick="openChatBot()" title="Ask SmartRWA">💬</button>
         <button class="icon-btn" onclick="openHealthCheckModal()" title="Health Check">♡</button>
         <button class="icon-btn" onclick="toggleTheme()">◐</button>
         <button class="icon-btn" onclick="logout()">⏻</button>
@@ -239,6 +260,12 @@ body.dark .readonly-note{background:var(--paper-dark); border-color:var(--border
 </div>
 <button class="fab" id="fabBtn" onclick="handleFab()">+</button>
 <div class="modal-bg" id="modalBg"><div class="modal" id="modalBody"></div></div>
+<div id="chatModal"><div class="chat-box">
+  <div class="chat-head"><b>Ask SmartRWA</b><button class="close-x" onclick="closeChatBot()">×</button></div>
+  <div class="chat-messages" id="chatMessages"></div>
+  <div class="chat-chips" id="chatChips"></div>
+  <div class="chat-input-row"><input id="chatInput" placeholder="Type a question…" onkeydown="if(event.key==='Enter')sendChat()"><button class="btn btn-primary btn-sm" onclick="sendChat()">Send</button></div>
+</div></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -2856,6 +2883,110 @@ function openHealthCheckModal(){
 }
 
 /* ============ HELP ============ */
+/* ============ FAQ CHATBOT ============ */
+const FAQ = [
+  {k:['bill','generate','create bill','monthly bill'], q:'How do I generate monthly bills?',
+   a:'Go to Billing → tap the + button → pick the period, due date and charge heads → Generate. Bills are created for every flat at once (skipping flats already billed for that period). For one flat only, use "Bill One Flat".'},
+  {k:['whatsapp','share bill','send bill','email bill'], q:'How do I send a bill on WhatsApp or email?',
+   a:'Open any bill (Billing → tap the bill) — you\'ll see WhatsApp and Email buttons. They use the phone/email saved on that flat. The message opens pre-filled; you just hit send.'},
+  {k:['reminder','defaulter','due','overdue','pending dues'], q:'How do I send payment reminders?',
+   a:'Reports → Defaulters shows everyone with dues. Each row has WhatsApp/Email buttons, or use "Send Reminders to All" to go through everyone one by one. Each reminder lists their unpaid bills and total due.'},
+  {k:['receipt','payment received','upi','collect'], q:'How do I record a payment from a resident?',
+   a:'Receipts → + → pick the flat, amount, and mode (Cash/UPI/Bank Transfer/Cheque). It settles their oldest bills first automatically once approved. Direct UPI/bank deposits are recorded the same way — just pick the right mode.'},
+  {k:['advance','excess','credit balance'], q:'How do advance payments work?',
+   a:'Record a normal receipt for the full amount — anything beyond current dues sits as a credit and auto-adjusts against future bills. See Reports → Advance Balances for all flats in credit on any date.'},
+  {k:['approve','authorise','pending','maker','checker'], q:'How does approval work?',
+   a:'Every entry needs a second person. Go to Approve → tick the entries you\'re satisfied with → "Authorise Ticked". Use "Call for Explanation" to query an entry without rejecting it; the maker responds and you approve when satisfied. You cannot approve your own entries.'},
+  {k:['delete','wrong entry','remove','mistake'], q:'How do I delete a wrong entry?',
+   a:'Accounts → Vouchers. Pending entries you made: "Withdraw". Approved entries: "Request Deletion" with a reason — a different role confirms it under Approve → Deletions, and the entry is properly reversed.'},
+  {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
+   a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
+  {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
+   a:'Setup → Flat Categories → "Set Rates by Category" — a grid of every charge × every category. Leave blank to use the default rate. To levy a charge on only some categories (e.g. EWS-only), edit the charge head and use "Applies To".'},
+  {k:['opening','previous balance','carry forward','last year'], q:'How do I enter opening balances?',
+   a:'Setup → Opening Balances — three buttons: Flat Opening Dues (what each flat owed), Vendor Opening Dues, and Opening Trial Balance (bank/cash/funds). All post through normal approval.'},
+  {k:['backup','export','restore','data safe'], q:'How do I back up my data?',
+   a:'Setup → Data → Export Backup downloads a JSON file — keep it safe (email it to yourself or save to iCloud). Import Backup restores it. The dashboard warns you if no backup for 7+ days. All data lives only on this device, so backups matter.'},
+  {k:['wipe','erase','delete all','clear all'], q:'How do I wipe all data?',
+   a:'Setup → Danger Zone → Request Full Data Wipe (reason required) — a different role must confirm. A restore point is saved automatically and can be recovered with "Restore Last Wipe".'},
+  {k:['gst','input credit','itc','return'], q:'How does the GST module work?',
+   a:'The GST tab shows Output GST collected minus Input Tax Credit = Net Payable (GSTR-3B style), outward supplies by rate slab, and an ITC register. Tick "Vendor has charged GST" when logging vendor bills to claim ITC. It prepares figures — filing is still via the portal/your CA.'},
+  {k:['stock','inventory','consumption','purchase item'], q:'How do I manage stock?',
+   a:'Stock → Items to register items (any unit — pcs, kg, litre). Purchases: Stock → Transactions → Purchase, or tick "stock purchase" on a vendor bill. Consumption: Transactions → Issue/Consumption, charged to an expense account. Stock on hand updates live.'},
+  {k:['tds','vendor','contractor'], q:'How does vendor TDS work?',
+   a:'When logging a vendor bill, pick the TDS section (194C/194J/194I/194H) — TDS is withheld on the taxable amount and sits in TDS Payable until you deposit it. The vendor is paid net of TDS.'},
+  {k:['payroll','salary','pf','esi'], q:'How do I run payroll?',
+   a:'Payroll → add employees with their salary structure → Run Payroll for the month. PF (12% on capped basic) and ESI (0.75%/3.25% if gross ≤ ₹21k) are computed automatically and sit as payables until deposited.'},
+  {k:['audit','auditor','trail'], q:'What does the auditor see?',
+   a:'The Audit tab: data health checks, one-tap links to all statements, every approval decision, and the full action log. Auditors log in with their own PIN and everything is read-only for them.'},
+  {k:['login','pin','password','access'], q:'How do logins and PINs work?',
+   a:'Three roles — Accountant, Treasurer, Auditor — each with their own PIN (default 1234, change under Setup → Access). Auditor is view-only. The maker-checker system needs at least two different roles to be in use.'},
+  {k:['pwa','install','home screen','offline'], q:'Can I install this as an app?',
+   a:'Yes — in Safari tap Share → "Add to Home Screen". It opens full-screen like a native app and works fully offline. Data stays on the device.'},
+];
+function openChatBot(){
+  document.getElementById('chatModal').classList.add('show');
+  const msgs = document.getElementById('chatMessages');
+  if(!msgs.children.length){
+    addChatMsg('bot', `Namaste! I can answer questions about using SmartRWA — billing, receipts, approvals, GST, backups and more. Tap a suggestion below or type your question.`);
+    renderChatChips();
+  }
+  setTimeout(()=>document.getElementById('chatInput').focus(), 100);
+}
+function closeChatBot(){ document.getElementById('chatModal').classList.remove('show'); }
+function renderChatChips(){
+  const picks = [FAQ[0], FAQ[2], FAQ[5], FAQ[7], FAQ[10]];
+  document.getElementById('chatChips').innerHTML = picks.map(f=>`<button class="chat-chip" onclick="askChat('${f.q.replace(/'/g,"\\'")}')">${f.q}</button>`).join('');
+}
+function addChatMsg(who, text){
+  const el = document.createElement('div');
+  el.className = 'chat-msg '+who;
+  el.innerHTML = text;
+  document.getElementById('chatMessages').appendChild(el);
+  el.scrollIntoView({behavior:'smooth', block:'end'});
+}
+function askChat(q){ document.getElementById('chatInput').value = q; sendChat(); }
+function liveDataAnswer(qLower){
+  if(/how much|total.*due|outstanding|kitna/.test(qLower) && /due|outstanding|baki/.test(qLower)){
+    const total = DB.bills.reduce((s,b)=>s+billOutstanding(b),0);
+    const n = DB.flats.filter(f=>flatOutstanding(f.id)>0).length;
+    return `Right now, total outstanding dues are <b>₹${fmt(total)}</b> across ${n} flat(s). See Reports → Defaulters for the list.`;
+  }
+  if(/pending.*approval|approval.*pending|kitne pending/.test(qLower)){
+    const n = DB.vouchers.filter(v=>v.status==='pending').length;
+    return n? `There ${n===1?'is':'are'} <b>${n}</b> entr${n===1?'y':'ies'} pending approval — see the Approve tab.` : 'Nothing is pending approval right now. All caught up!';
+  }
+  if(/cash|bank balance|balance kitna/.test(qLower) && /balance|kitna/.test(qLower)){
+    const bal = accBalance('Cash in Hand').net + accBalance('Bank Account').net;
+    return `Cash & Bank balance (approved entries): <b>₹${fmt(bal)}</b>. Full detail in Reports → Trial Balance.`;
+  }
+  if(/advance/.test(qLower) && /kitna|how much|total/.test(qLower)){
+    const adv = DB.flats.reduce((s,f)=>{ const b=flatLedgerBalance(f.id); return s+(b<0?-b:0); },0);
+    return `Total advances held from residents: <b>₹${fmt(adv)}</b>. See Reports → Advance Balances for flat-wise detail.`;
+  }
+  return null;
+}
+function sendChat(){
+  const input = document.getElementById('chatInput');
+  const q = input.value.trim(); if(!q) return;
+  input.value = '';
+  addChatMsg('user', q.replace(/</g,'&lt;'));
+  const qLower = q.toLowerCase();
+  const live = liveDataAnswer(qLower);
+  if(live){ addChatMsg('bot', live); return; }
+  let best=null, bestScore=0;
+  FAQ.forEach(f=>{
+    let score = 0;
+    f.k.forEach(kw=>{ if(qLower.includes(kw)) score += kw.length; });
+    if(score>bestScore){ bestScore=score; best=f; }
+  });
+  if(best && bestScore>2){
+    addChatMsg('bot', best.a);
+  } else {
+    addChatMsg('bot', `I don't have a ready answer for that. Try the <b>Help</b> tab for detailed guides, or rephrase using words like "bill", "receipt", "approve", "GST", "backup", "stock", "payroll"…`);
+  }
+}
+
 function renderHelp(){
   const sections = [
     ['Getting Started', `1. Add your <b>Flat/Villa Types</b> and <b>Flats</b> under Setup / Flats (or bulk-import via CSV).<br>
