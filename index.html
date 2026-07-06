@@ -220,6 +220,15 @@ body.dark .chat-chip{background:var(--paper-dark);border-color:var(--border-dark
 .chat-input-row{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--border);}
 body.dark .chat-input-row{border-color:var(--border-dark);}
 .chat-input-row input{flex:1;}
+@media print{
+  body.printing #sidebar, body.printing #topbar, body.printing .subtabs, body.printing .no-print, body.printing button, body.printing .fab{ display:none !important; }
+  body.printing #content{ padding:0 !important; margin:0 !important; }
+  body.printing #main{ margin:0 !important; }
+  body.printing #printArea{ box-shadow:none !important; border:none !important; padding:0 !important; }
+  body.printing .card{ box-shadow:none !important; border:none !important; break-inside:avoid; }
+  body.printing{ background:#fff !important; color:#000 !important; }
+  @page{ margin:14mm; }
+}
 </style>
 </head>
 <body>
@@ -292,6 +301,7 @@ if(!DB.utilityRates) DB.utilityRates = {govtElectricityRate:0, dgSupplyRate:0};
 if(!DB.bankAccounts) DB.bankAccounts = [];
 if(!DB.seq.bank) DB.seq.bank=1;
 DB.flatTypes.forEach(t=>{ if(!t.mode) t.mode='name'; if(t.minArea===undefined) t.minArea=0; if(t.maxArea===undefined) t.maxArea=0; });
+DB.flats.forEach(f=>{ if(!f.history) f.history=[]; });
 Object.assign(DB.seq, {vendor:DB.seq.vendor||1, vbill:DB.seq.vbill||1, emp:DB.seq.emp||1, payroll:DB.seq.payroll||1, asset:DB.seq.asset||1, item:DB.seq.item||1, itx:DB.seq.itx||1, ftype:DB.seq.ftype||1, meter:DB.seq.meter||1});
 DB.chargeHeads.forEach(h=>{ if(h.gstApplicable===undefined) h.gstApplicable=false; if(h.gstRate===undefined) h.gstRate=18; if(!h.applicableCategories) h.applicableCategories=[]; });
 DB.seq.head = Math.max(DB.seq.head||1, ...DB.chargeHeads.map(h=>h.id), 0) + 1;
@@ -837,6 +847,77 @@ function parseCSVLine(line){
   out.push(cur);
   return out;
 }
+function downloadBillChargesCSVTemplate(){
+  const header = ['Tower','FlatNo','Period','ChargeHead','Amount','GSTAmount'];
+  const headName = DB.chargeHeads[0]?.name || 'Fixed CAM Charges';
+  const sample = [
+    ['A','201','2026-07',headName,'2400','0'],
+    ['A','201','2026-07','Electricity Charges','850','0'],
+    ['A','202','2026-07',headName,'2400','0'],
+  ];
+  const csv = [header, ...sample].map(r=>r.map(csvEscape).join(',')).join('\n');
+  const blob = new Blob([csv],{type:'text/csv'}); const url=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download='smartrwa-bill-charges-template.csv'; a.click();
+  toast('Template downloaded — one row per charge line. Same Tower+FlatNo+Period rows are combined into one bill.');
+}
+function importBillChargesCSV(ev){
+  if(!canEdit()) return;
+  const file = ev.target.files[0]; if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e=>{
+    const lines = e.target.result.split(/\r?\n/).filter(l=>l.trim().length);
+    if(!lines.length){ toast('Empty file'); return; }
+    const header = parseCSVLine(lines[0]).map(h=>h.trim().toLowerCase());
+    const col = name=>header.indexOf(name.toLowerCase());
+    const idx = {tower:col('Tower'), flatNo:col('FlatNo'), period:col('Period'), head:col('ChargeHead'), amt:col('Amount'), gst:col('GSTAmount')};
+    if(idx.flatNo<0 || idx.period<0 || idx.head<0 || idx.amt<0){ toast('CSV missing a required column — use the template (FlatNo, Period, ChargeHead, Amount)'); return; }
+    const errors=[]; const newHeads=[]; const groups={};
+    for(let i=1;i<lines.length;i++){
+      const cells = parseCSVLine(lines[i]); if(!cells.some(c=>c.trim())) continue;
+      const tower = idx.tower>=0? (cells[idx.tower]||'').trim() : '';
+      const flatNo = (cells[idx.flatNo]||'').trim();
+      const period = (cells[idx.period]||'').trim();
+      const headName = (cells[idx.head]||'').trim();
+      const amount = Number(cells[idx.amt]);
+      const gst = idx.gst>=0? Number(cells[idx.gst])||0 : 0;
+      if(!flatNo || !period || !headName || isNaN(amount)){ errors.push(`Row ${i+1}: missing/invalid data — skipped`); continue; }
+      const flat = DB.flats.find(f=>f.flatNo===flatNo && (tower? f.tower===tower : true));
+      if(!flat){ errors.push(`Row ${i+1}: flat ${tower?tower+'-':''}${flatNo} not found — skipped`); continue; }
+      if(DB.bills.some(b=>b.flatId===flat.id && b.period===period)){ errors.push(`Row ${i+1}: ${tower?tower+'-':''}${flatNo} already has a bill for ${period} — skipped`); continue; }
+      let head = DB.chargeHeads.find(h=>h.name.toLowerCase()===headName.toLowerCase());
+      if(!head){
+        head = {id:nextId('head'), name:headName, mode:'fixed', rate:0, account:'Other Income', gstApplicable:false, gstRate:18, applicableCategories:[]};
+        DB.chargeHeads.push(head); newHeads.push(headName);
+      }
+      const key = flat.id+'|'+period;
+      if(!groups[key]) groups[key] = {flat, period, items:[]};
+      groups[key].items.push({head:head.name, account:head.account, amount, gst});
+    }
+    let created=0;
+    Object.values(groups).forEach(g=>{
+      const subTotal = g.items.reduce((s,i)=>s+i.amount,0), gstTotal = g.items.reduce((s,i)=>s+(i.gst||0),0);
+      const total = subTotal+gstTotal; if(total<=0) return;
+      const bill = {id:'B'+nextId('bill'), flatId:g.flat.id, period:g.period, dueDate:todayISO(), items:g.items, subTotal, gstTotal, total, paid:0, status:'unpaid'};
+      DB.bills.push(bill);
+      const entries=[{account:'Maintenance Receivable',debit:total,credit:0}];
+      const byAcc={}; g.items.forEach(i=>{ byAcc[i.account]=(byAcc[i.account]||0)+i.amount; });
+      Object.entries(byAcc).forEach(([acc,amt])=>entries.push({account:acc,debit:0,credit:amt}));
+      if(gstTotal>0) entries.push({account:'GST Payable',debit:0,credit:gstTotal});
+      addVoucher({type:'Journal', flatId:g.flat.id, date:todayISO(), narration:`Imported bill — ${flatLabel(g.flat)} — ${g.period}`, entries, ref:bill.id});
+      created++;
+    });
+    save();
+    logAction('Import', `Bill charges CSV import — ${created} bill(s) created${newHeads.length? ', new charge heads: '+newHeads.join(', '):''}`);
+    openModal(`<div class="modal-head"><h2>Import Results</h2><button class="close-x" onclick="closeModal()">×</button></div>
+      <div class="stat-grid"><div class="stat good"><div class="lbl">Bills Created</div><div class="val">${created}</div></div><div class="stat ${errors.length?'alert':''}"><div class="lbl">Rows Skipped</div><div class="val">${errors.length}</div></div></div>
+      ${newHeads.length? `<div class="readonly-note" style="margin-top:10px;">New charge heads auto-created (posted to "Other Income" — check Setup → Charge Heads and reassign the right account): ${newHeads.join(', ')}</div>`:''}
+      ${errors.length? `<div class="tbl-wrap" style="margin-top:10px;"><table><tr><th>Issue</th></tr>${errors.map(e=>`<tr><td style="font-size:12px;">${e}</td></tr>`).join('')}</table></div>` : '<p style="color:var(--moss);font-size:13px;margin-top:8px;">All rows imported cleanly.</p>'}
+      <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">These bills await the usual checker approval before posting to the ledger.</p>`);
+    render();
+  };
+  reader.readAsText(file);
+  ev.target.value='';
+}
 function downloadFlatCSVTemplate(){
   const header = ['Tower','FlatNo','FlatType','Area','ParkingSlots','Occupancy','OwnerName','OwnerPhone','OwnerEmail','TenantName'];
   const sampleType = DB.flatTypes[0]?.name || '2 BHK';
@@ -924,6 +1005,7 @@ function openFlatModal(id){
       <button class="btn btn-primary" style="flex:1" onclick="saveFlat('${f.id}')">Save Flat</button>
       ${id?`<button class="btn btn-danger" onclick="deleteFlat('${f.id}')">Delete</button>`:''}
     </div>
+    ${id?`<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="viewFlatHistory('${f.id}')">View Ownership & Tenancy History${f.history&&f.history.length?' ('+f.history.length+')':''}</button>`:''}
   `);
   window.__editingFlat = f;
   setTimeout(showAutoCategory,0);
@@ -955,8 +1037,33 @@ function saveFlat(id){
   };
   if(!data.flatNo){ toast('Flat No. is required'); return; }
   const existing = DB.flats.findIndex(x=>x.id===id);
-  if(existing>=0) DB.flats[existing]=data; else { DB.seq.flat++; DB.flats.push(data); }
+  if(existing>=0){
+    const prev = DB.flats[existing];
+    data.history = prev.history || [];
+    const nameOf = p=> p? p.name : '';
+    if(nameOf(prev.owner) !== nameOf(data.owner) && (nameOf(prev.owner) || nameOf(data.owner))){
+      data.history.push({type:'Ownership Change', date: todayISO(), from: {name:prev.owner?.name||'', phone:prev.owner?.phone||'', email:prev.owner?.email||''}, to: {name:data.owner.name, phone:data.owner.phone, email:data.owner.email}, changedBy: window.__currentRole, changedAt: nowTS()});
+    }
+    if(nameOf(prev.tenant) !== nameOf(data.tenant) && (nameOf(prev.tenant) || nameOf(data.tenant))){
+      data.history.push({type:'Tenancy Change', date: todayISO(), from: prev.tenant? {name:prev.tenant.name||'', phone:prev.tenant.phone||'', email:prev.tenant.email||''} : {name:'(vacant/owner-occupied)'}, to: data.tenant? {name:data.tenant.name, phone:data.tenant.phone, email:data.tenant.email} : {name:'(vacant/owner-occupied)'}, changedBy: window.__currentRole, changedAt: nowTS()});
+    }
+    DB.flats[existing]=data;
+  } else { DB.seq.flat++; data.history=[]; DB.flats.push(data); }
   save(); closeModal(); toast('Flat saved'); render();
+}
+function viewFlatHistory(id){
+  const f = getFlat(id); if(!f) return;
+  const hist = (f.history||[]).slice().reverse();
+  openModal(`<div class="modal-head"><h2>${flatLabel(f)} — Ownership & Tenancy History</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    ${hist.length? hist.map(h=>`<div class="approval-row">
+        <div style="display:flex;justify-content:space-between;"><b>${h.type}</b><span style="font-size:11px;color:var(--ink-soft)">${h.date}</span></div>
+        <div style="font-size:12.5px;margin-top:6px;">
+          <div><span style="color:var(--ink-soft)">From:</span> ${h.from.name||'—'}${h.from.phone?' · '+h.from.phone:''}</div>
+          <div style="margin-top:2px;"><span style="color:var(--ink-soft)">To:</span> ${h.to.name||'—'}${h.to.phone?' · '+h.to.phone:''}</div>
+        </div>
+        <div style="font-size:10.5px;color:var(--ink-soft);margin-top:6px;">Recorded by ${h.changedBy} on ${new Date(h.changedAt).toLocaleString('en-IN')}</div>
+      </div>`).join('') : `<div class="empty"><div class="ic">⌘</div>No ownership or tenancy changes recorded yet — this logs automatically whenever the owner or tenant name changes on this flat.</div>`}
+  `);
 }
 function deleteFlat(id){
   if(!canEdit()) return;
@@ -969,13 +1076,29 @@ function renderBilling(){
   const sr = subroute || 'bills';
   const tabs=[['bills','Bills'],['meters','Meter Readings'],['consolidated','Consolidated Bills']];
   let body='';
-  const actionBar = isReadOnly()? '' : `<div style="display:flex; gap:8px; margin-bottom:12px;">
+  const actionBar = isReadOnly()? '' : `
+    <div class="card" style="margin-bottom:12px;">
+      <div class="section-title">Generate Bills This Month</div>
+      <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Two ways to get bills into SmartRWA — use whichever suits a given month, even side by side for different flats.</p>
+      <div class="row2">
+        <div>
+          <button class="btn btn-primary btn-block" onclick="openGenerateBillModal()">⚙ Calculate in SmartRWA</button>
+          <p style="font-size:10.5px;color:var(--ink-soft);margin-top:4px;">Uses your charge-head rates, categories & consolidated bills.</p>
+        </div>
+        <div>
+          <button class="btn btn-outline btn-block" onclick="document.getElementById('billChargesFile').click()">⬆ Import from Other App</button>
+          <p style="font-size:10.5px;color:var(--ink-soft);margin-top:4px;">Upload amounts already calculated elsewhere. <a href="#" onclick="event.preventDefault();downloadBillChargesCSVTemplate()">Get template</a></p>
+        </div>
+      </div>
+      <input type="file" id="billChargesFile" accept=".csv" style="display:none" onchange="importBillChargesCSV(event)">
+    </div>
+    <div style="display:flex; gap:8px; margin-bottom:12px;">
       <button class="btn btn-outline btn-sm" style="flex:1" onclick="openIndividualBillModal()">Bill One Flat</button>
       <button class="btn btn-outline btn-sm" style="flex:1" onclick="openOneTimeChargeModal()">+ One-Time Charge</button>
     </div>`;
   if(sr==='bills'){
     const bills = DB.bills.slice().sort((a,b)=> b.period.localeCompare(a.period) || flatLabel(getFlat(a.flatId)||{}).localeCompare(flatLabel(getFlat(b.flatId)||{})) );
-    if(!bills.length) body = actionBar + `<div class="empty"><div class="ic">▤</div>No bills generated yet.<br><br>${isReadOnly()?'':'<button class="btn btn-primary" onclick="openGenerateBillModal()">Generate Bills</button>'}</div>`;
+    if(!bills.length) body = actionBar + `<div class="empty"><div class="ic">▤</div>No bills generated yet — use either option above to get started.</div>`;
     else {
       const rows = bills.map(b=>{
         const f = getFlat(b.flatId); const out = billOutstanding(b);
@@ -2135,7 +2258,7 @@ function renderReports(){
   if(!window.__reportFrom) window.__reportFrom = fyStart();
   if(!window.__reportTo) window.__reportTo = todayISO();
   let body='';
-  const periodBar = isFinancialStatement? `<div class="row2" style="margin-bottom:12px;">
+  const periodBar = isFinancialStatement? `<div class="row2 no-print" style="margin-bottom:12px;">
       <div class="field"><label>${sr==='bs'?'As At':'From'}</label><input id="rpt_from" type="date" value="${window.__reportFrom}" ${sr==='bs'?'disabled style="opacity:.4"':''} onchange="window.__reportFrom=this.value;render();"></div>
       <div class="field"><label>${sr==='bs'?'&nbsp;':'To'}</label><input id="rpt_to" type="date" value="${window.__reportTo}" onchange="window.__reportTo=this.value;render();"></div>
     </div>` : '';
@@ -2230,7 +2353,8 @@ function renderReports(){
       sel.onchange=draw; draw();
     },0);
   }
-  return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('reports','${t[0]}')">${t[1]}</button>`).join('')}</div>${periodBar}<div class="card">${body}</div>`;
+  const printBtn = isFinancialStatement? `<button class="btn btn-outline btn-block" style="margin-bottom:10px;" onclick="printStatement()">🖨 Print / Save as PDF</button>` : '';
+  return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('reports','${t[0]}')">${t[1]}</button>`).join('')}</div>${periodBar}${printBtn}<div class="card" id="printArea">${body}</div>`;
 }
 
 /* ============ GST MODULE (returns, ITC & rate management) ============ */
@@ -2885,8 +3009,8 @@ function openHealthCheckModal(){
 /* ============ HELP ============ */
 /* ============ FAQ CHATBOT ============ */
 const FAQ = [
-  {k:['bill','generate','create bill','monthly bill'], q:'How do I generate monthly bills?',
-   a:'Go to Billing → tap the + button → pick the period, due date and charge heads → Generate. Bills are created for every flat at once (skipping flats already billed for that period). For one flat only, use "Bill One Flat".'},
+  {k:['bill','generate','create bill','monthly bill','import bill','other app'], q:'How do I generate monthly bills?',
+   a:'Billing → Bills has two options side by side: "Calculate in SmartRWA" (uses your charge-head rates, categories & consolidated bills) or "Import from Other App" (upload a CSV of amounts already worked out elsewhere). Both can be used in the same month, even for different flats. For one flat only, use "Bill One Flat".'},
   {k:['whatsapp','share bill','send bill','email bill'], q:'How do I send a bill on WhatsApp or email?',
    a:'Open any bill (Billing → tap the bill) — you\'ll see WhatsApp and Email buttons. They use the phone/email saved on that flat. The message opens pre-filled; you just hit send.'},
   {k:['reminder','defaulter','due','overdue','pending dues'], q:'How do I send payment reminders?',
@@ -2897,16 +3021,26 @@ const FAQ = [
    a:'Record a normal receipt for the full amount — anything beyond current dues sits as a credit and auto-adjusts against future bills. See Reports → Advance Balances for all flats in credit on any date.'},
   {k:['approve','authorise','pending','maker','checker'], q:'How does approval work?',
    a:'Every entry needs a second person. Go to Approve → tick the entries you\'re satisfied with → "Authorise Ticked". Use "Call for Explanation" to query an entry without rejecting it; the maker responds and you approve when satisfied. You cannot approve your own entries.'},
+  {k:['query','explanation','clarify','call for explanation'], q:'What does "Call for Explanation" do?',
+   a:'It lets a checker flag an entry as needing clarification without rejecting it outright. The maker sees the question and can "Respond to Query" with an answer — the whole exchange stays visible on the entry. Once satisfied, the checker just ticks it as normal and authorises.'},
   {k:['delete','wrong entry','remove','mistake'], q:'How do I delete a wrong entry?',
-   a:'Accounts → Vouchers. Pending entries you made: "Withdraw". Approved entries: "Request Deletion" with a reason — a different role confirms it under Approve → Deletions, and the entry is properly reversed.'},
+   a:'Accounts → Vouchers. Pending entries you made: "Withdraw". Approved entries: "Request Deletion" with a reason — a different role confirms it under Approve → Deletions, and the entry is properly reversed (allocations un-done, linked bill removed).'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
    a:'Setup → Flat Categories → "Set Rates by Category" — a grid of every charge × every category. Leave blank to use the default rate. To levy a charge on only some categories (e.g. EWS-only), edit the charge head and use "Applies To".'},
+  {k:['sold','new owner','tenant change','ownership','transfer flat'], q:'How do I update a flat when it\'s sold or gets a new tenant?',
+   a:'Flats → tap the flat → edit the Owner or Tenant fields directly, then Save. Check for outstanding dues or an advance credit first, since the balance carries over to whoever\'s name is on the flat. Every change is auto-logged — see "View Ownership & Tenancy History" on that flat for the full trail of who changed what and when.'},
+  {k:['bank account','multiple bank','fd','fixed deposit','savings'], q:'Can I track multiple bank accounts and FDs?',
+   a:'Setup → Bank & FD Accounts — register each Savings, Current, or FD account with its number, which fund it belongs to (General/Sinking/Corpus), and balance. It\'s a reference register you keep updated manually; receipts and payments still post to the pooled Bank Account for now.'},
   {k:['opening','previous balance','carry forward','last year'], q:'How do I enter opening balances?',
    a:'Setup → Opening Balances — three buttons: Flat Opening Dues (what each flat owed), Vendor Opening Dues, and Opening Trial Balance (bank/cash/funds). All post through normal approval.'},
   {k:['backup','export','restore','data safe'], q:'How do I back up my data?',
    a:'Setup → Data → Export Backup downloads a JSON file — keep it safe (email it to yourself or save to iCloud). Import Backup restores it. The dashboard warns you if no backup for 7+ days. All data lives only on this device, so backups matter.'},
+  {k:['pdf','print','signature','sign','export statement'], q:'How do I export financial statements as PDF?',
+   a:'Reports → Trial Balance / Income & Expenditure / Receipts & Payments / Balance Sheet each have a "Print / Save as PDF" button. On iPhone: tap it, pinch-zoom the preview to reveal the share icon, then Save to Files as PDF. It prints clean with signature lines for Treasurer/Secretary/Chairman/Auditor, ready to sign.'},
+  {k:['excel','xlsx','flats master','bill charges template'], q:'Can I get the import templates as Excel?',
+   a:'The in-app downloads (Flats → CSV Template, Billing → Bills → Get Template) are CSV, which Excel opens natively — no conversion needed. True .xlsx downloads aren\'t built into the app yet since that needs an internet-loaded library, which would break offline use for that one button.'},
   {k:['wipe','erase','delete all','clear all'], q:'How do I wipe all data?',
    a:'Setup → Danger Zone → Request Full Data Wipe (reason required) — a different role must confirm. A restore point is saved automatically and can be recovered with "Restore Last Wipe".'},
   {k:['gst','input credit','itc','return'], q:'How does the GST module work?',
@@ -2935,7 +3069,8 @@ function openChatBot(){
 }
 function closeChatBot(){ document.getElementById('chatModal').classList.remove('show'); }
 function renderChatChips(){
-  const picks = [FAQ[0], FAQ[2], FAQ[5], FAQ[7], FAQ[10]];
+  const pickByKeyword = kw => FAQ.find(f=>f.k.includes(kw));
+  const picks = [pickByKeyword('generate'), pickByKeyword('reminder'), pickByKeyword('sold'), pickByKeyword('consolidated'), pickByKeyword('backup')].filter(Boolean);
   document.getElementById('chatChips').innerHTML = picks.map(f=>`<button class="chat-chip" onclick="askChat('${f.q.replace(/'/g,"\\'")}')">${f.q}</button>`).join('');
 }
 function addChatMsg(who, text){
@@ -2989,23 +3124,38 @@ function sendChat(){
 
 function renderHelp(){
   const sections = [
-    ['Getting Started', `1. Add your <b>Flat/Villa Types</b> and <b>Flats</b> under Setup / Flats (or bulk-import via CSV).<br>
-      2. Set up <b>Charge Heads</b> — per sqft, fixed, per parking slot, or by meter reading — with GST where applicable.<br>
+    ['Getting Started', `1. Add your <b>Flat Categories</b> (Setup) and <b>Flats</b> (or bulk-import via CSV).<br>
+      2. Set up <b>Charge Heads</b> — per sqft, fixed, per parking slot, or by meter reading — with GST where applicable, and override rates per category if needed.<br>
       3. Enter <b>Meter Readings</b> each period for Water/DG/Electricity before generating bills.<br>
-      4. Use <b>Generate Bills</b> for the whole society, or <b>Bill One Flat</b> / <b>One-Time Charge</b> for individual cases.<br>
-      5. Record <b>Receipts</b> as owners pay — they auto-adjust the oldest dues first.<br>
+      4. Billing → Bills has two ways to get bills in: <b>Calculate in SmartRWA</b> (your own rates) or <b>Import from Other App</b> (a CSV of amounts already worked out elsewhere) — use either, or both in the same month.<br>
+      5. Record <b>Receipts</b> as owners pay — they auto-adjust the oldest dues first; anything extra sits as a credit.<br>
       6. Every accounting entry needs a second person to <b>Approve</b> it before it hits the ledger (maker-checker).`],
-    ['Roles & Maker-Checker', `Only <b>Accountant</b>, <b>Treasurer</b>, and <b>Auditor</b> can sign in. Whoever raises a bill, receipt, voucher, vendor payment, payroll run, or asset entry cannot approve their own entry — a different role must review it under the <b>Approve</b> tab. Auditors can view everything but cannot create, edit, or approve anything — a full read-only audit trail.`],
-    ['Billing & GST', `Charge heads can be billed per sqft, as a flat fixed amount, per parking slot, or by individual meter reading (Water/DG/Electricity). Add new charge types anytime under Setup → Charge Heads. GST can be switched on per charge type from Setup → Charge Heads → <b>GST Rates</b>. Confirm current GST applicability thresholds with your CA before enabling.`],
-    ['Bulk Flat Import (CSV)', `From the Flats screen, tap <b>CSV Template</b> to download a spreadsheet with sample rows (opens fine in Excel or Google Sheets). Fill in your flats, keep the header row unchanged, then tap <b>Import CSV</b> to upload it back. The app checks each row for a Flat No., valid area, and duplicates before adding — you'll see a summary of what was added vs skipped and why.`],
+    ['Roles & Maker-Checker', `Only <b>Accountant</b>, <b>Treasurer</b>, and <b>Auditor</b> can sign in (PIN-based, change under Setup → Access). Whoever raises a bill, receipt, voucher, vendor payment, payroll run, or asset entry cannot approve their own entry — a different role must review it under <b>Approve</b>. Tick entries you're satisfied with and hit <b>Authorise Ticked</b>; use <b>Call for Explanation</b> to query one without rejecting it — the maker can respond, and you authorise once satisfied. Auditors can view everything but cannot create, edit, or approve anything.`],
+    ['Deleting or Correcting an Entry', `Accounts → Vouchers shows every entry with the right action for its status. <b>Pending</b> entries you raised: "Withdraw" (no approval needed, since nothing's posted yet). <b>Approved</b> entries: "Request Deletion" with a reason — this goes to Approve → Deletions where a <i>different</i> role must "Confirm Delete". Confirming properly reverses everything: receipt/payment allocations are undone and the linked bill or vendor bill is removed, not just the voucher.`],
+    ['Billing & GST', `Charge heads can be billed per sqft, as a flat fixed amount, per parking slot, or by individual meter reading (Water/DG/Electricity). Restrict a charge to specific flat categories (e.g. an EWS-only fixed charge) via "Applies To" on that charge head. GST can be switched on per charge from Setup → Charge Heads → GST Rates, or all at once via the <b>GST</b> tab, which also shows Output GST − Input Tax Credit = Net Payable, outward supplies by rate slab, and an ITC register (from vendor bills marked GST-charged). Confirm current thresholds/rates with your CA — this prepares figures, it doesn't file.`],
+    ['Flat Categories & Rates', `Setup → Flat Categories groups flats either by name (e.g. "Penthouse", fixed default area) or by a sqft range (auto-detected from each flat's area). "Set Rates by Category" opens a grid — every charge × every category — to override the default rate per group; leave a cell blank to use the charge's normal rate.`],
+    ['Consolidated (Lump-Sum) Bills', `For a single bill the RWA pays and then recovers from residents — a tower's lift AMC, common electricity, a water tanker bill — use Billing → Consolidated Bills. Enter the total, choose <b>Whole Society</b> or <b>One Tower Only</b>, and how to split it: by built-up area, equally, or by individual meter reading. For common electricity specifically, tick <b>"Calculate from Main Meter"</b> — it takes the main meter reading, subtracts the sum of every flat's individual sub-meter, and apportions only that common portion by area. Every flat's bill shows the full working (total bill, method, their share) so nobody needs to ask the office how it was worked out.`],
+    ['Advance Payments', `A resident can simply be sent a receipt for more than they currently owe — the extra sits as a credit against that flat and is drawn down automatically as future bills are raised. Reports → Advance Balances lists every flat in credit as at any date you choose, with a running total.`],
+    ['Ownership & Tenancy Changes', `When a flat is sold or gets a new tenant, open Flats → that flat and edit the Owner or Tenant fields directly — check for outstanding dues or an advance credit first, since the balance simply carries over to whoever's name is on the flat. Every change is logged automatically; tap <b>"View Ownership & Tenancy History"</b> on the flat to see who changed what, when, and by whom.`],
+    ['Sending Bills & Reminders', `Open any bill to find WhatsApp/Email buttons using that flat's saved contact — the message is pre-filled, you just hit send (this app can't send anything silently in the background, by design). Reports → Defaulters has the same per-row buttons plus a <b>"Send Reminders to All"</b> queue that walks you through every resident with dues, one at a time.`],
+    ['Bank & FD Accounts', `Setup → Bank & FD Accounts registers every Savings, Current, or Fixed Deposit account — account number, which fund it belongs to (General/Sinking/Corpus/Other), balance, and FD maturity/interest where relevant. It's a reference register you keep updated by hand; day-to-day receipts and payments still post to the pooled Bank Account ledger.`],
+    ['Opening Balances', `Switching to SmartRWA mid-year? Setup → Opening Balances has three tools: <b>Flat Opening Dues</b> (what each flat already owed), <b>Vendor Opening Dues</b>, and <b>Opening Trial Balance</b> (Bank/Cash/Assets/Funds as a balanced journal entry). All three go through the normal checker approval like everything else.`],
+    ['Bulk Import (CSV)', `Flats → CSV Template gives you a spreadsheet to fill and re-upload via Import CSV — duplicates and missing data are flagged before anything's added. Billing → Bills → "Import from Other App" does the same for bill amounts already calculated elsewhere: one row per charge line, multiple rows for the same flat+period combine into one bill.`],
+    ['Backup, Restore & Data Wipe', `All data lives only on this device — nothing is synced anywhere. Export a backup regularly from Setup → Data (the Dashboard nags you if it's been 7+ days). If you ever need to erase everything and start fresh, Setup → Danger Zone requires a reason and a different role to confirm — a restore point is saved automatically first, recoverable with "Restore Last Wipe".`],
+    ['Printing Statements as PDF', `Trial Balance, Income & Expenditure, Receipts & Payments, and Balance Sheet (Reports tab) each have a <b>"Print / Save as PDF"</b> button at the top — it uses your phone's own print system, so it works fully offline. On iPhone: tap it, then in the print preview <b>pinch to zoom in</b> — that switches to a full-page view with a share icon at top right; tap it → <b>Save to Files</b> → PDF. The printed page hides all app menus and shows only the clean statement, complete with signature lines for Treasurer/Secretary/Chairman/Auditor, ready for physical signing.`],
     ['Health Check', `Tap the ♡ icon at the top anytime to run a diagnostic: it checks that your Trial Balance and Balance Sheet tally, flags stale pending approvals, flats without owners, negative stock, overdue vendor dues, and other data issues — so small mistakes get caught early.`],
-    ['Data & Backup', `All data lives only on this device (offline-first). Export a backup regularly from Setup → Data, and store it somewhere safe (e.g. Google Drive/email to yourself). Import restores a full backup, replacing current data — use with care.`],
-    ['Modules at a Glance', `<b>Flats</b> — owners, tenants, areas, parking · <b>Billing</b> — bills & meter readings · <b>Receipts</b> — payments received · <b>Vendors</b> — vendor bills, TDS, payments · <b>Payroll</b> — salary, PF, ESI · <b>Assets</b> — register & depreciation · <b>Stock</b> — inventory in/out · <b>Accounts</b> — vouchers & ledgers · <b>Approve</b> — maker-checker queue & audit log · <b>Issues</b> — complaints · <b>Reports</b> — Trial Balance, I&E, Balance Sheet, GST, Defaulters, Flat Ledger.`],
+    ['Ask SmartRWA (Chat)', `Tap the 💬 icon at the top for quick answers — it's a built-in FAQ assistant (no AI, works offline) covering how-to questions across the app, and it can answer a few live questions directly from your data, like "how much is outstanding" or "pending approvals?".`],
+    ['Modules at a Glance', `<b>Flats</b> — owners, tenants, areas, parking, history · <b>Billing</b> — bills, meter readings, consolidated bills · <b>Receipts</b> — payments received · <b>Vendors</b> — bills, TDS, GST input credit, payments · <b>Payroll</b> — salary, PF, ESI · <b>Assets</b> — register & depreciation · <b>Stock</b> — inventory in/out · <b>Accounts</b> — vouchers, ledgers, deletions · <b>Approve</b> — maker-checker queue, queries, audit log · <b>Issues</b> — complaints · <b>Reports</b> — Trial Balance, I&E, Receipts & Payments, Balance Sheet, Defaulters, Advance Balances, Flat Ledger · <b>GST</b> — returns & ITC · <b>Audit</b> — auditor workspace · <b>Setup</b> — everything above lives here.`],
   ];
-  return sections.map(([title,body])=>`<div class="card"><div class="section-title">${title}</div><p style="font-size:13px;line-height:1.6;">${body}</p></div>`).join('');
+  return sections.map(([title,body])=>`<div class="card"><div class="section-title">${title}</div><p style="font-size:13px;line-height:1.6;">${body}</p></div>`).join('') +
+    `<p style="font-size:10px;color:var(--ink-soft);text-align:center;margin-top:4px;">Developed by Anil Sharma, Former General Manager, Central Bank of India.</p>`;
 }
 
 /* ============ THEME ============ */
+function printStatement(){
+  document.body.classList.add('printing');
+  setTimeout(()=>{ window.print(); setTimeout(()=>document.body.classList.remove('printing'), 300); }, 50);
+}
 function toggleTheme(){
   document.body.classList.toggle('dark');
   localStorage.setItem('smartrwa_theme', document.body.classList.contains('dark')?'dark':'light');
