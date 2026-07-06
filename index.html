@@ -179,7 +179,7 @@ body.dark #lockscreen{background:var(--paper-dark);}
 body.dark .lock-card{background:var(--surface-dark); border-color:var(--border-dark);}
 .lock-card h1{font-size:20px; margin:0 0 3px;}
 .lock-sub{font-size:12.5px; color:var(--ink-soft); margin-bottom:18px;}
-.role-grid{display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:16px;}
+.role-grid{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:16px;}
 .role-opt{border:1.5px solid var(--border); background:var(--paper); border-radius:9px; padding:12px 4px; text-align:center; font-size:12px; font-weight:600; color:var(--ink);}
 body.dark .role-opt{border-color:var(--border-dark); background:var(--paper-dark); color:var(--ink-dark);}
 .role-opt.active{border-color:var(--teal); background:var(--teal); color:#fff;}
@@ -235,11 +235,12 @@ body.dark .chat-input-row{border-color:var(--border-dark);}
 <div id="lockscreen" style="display:none">
   <div class="lock-card">
     <h1>SmartRWA — Society Register</h1>
-    <div class="lock-sub">Restricted to Accountant, Treasurer & Auditor only.</div>
+    <div class="lock-sub">Restricted to President, Accountant, Treasurer & Auditor only.</div>
     <div class="role-grid" id="roleGrid">
       <button class="role-opt active" data-role="Accountant" onclick="selectRole(this)">Accountant</button>
       <button class="role-opt" data-role="Treasurer" onclick="selectRole(this)">Treasurer</button>
       <button class="role-opt" data-role="Auditor" onclick="selectRole(this)">Auditor</button>
+      <button class="role-opt" data-role="President" onclick="selectRole(this)">President</button>
     </div>
     <div class="field"><label>PIN</label><input id="lockPin" type="password" inputmode="numeric" placeholder="Enter PIN" onkeydown="if(event.key==='Enter')attemptLogin()"></div>
     <div class="lock-err" id="lockErr"></div>
@@ -291,7 +292,10 @@ function load(){
     security:{pins:{Accountant:'1234',Treasurer:'1234',Auditor:'1234'}}
   };
 }
-if(!DB.security) DB.security = {pins:{Accountant:'1234',Treasurer:'1234',Auditor:'1234'}};
+if(!DB.security) DB.security = {pins:{Accountant:'1234',Treasurer:'1234',Auditor:'1234',President:'1234'}};
+if(!DB.security.names) DB.security.names = {Accountant:'',Treasurer:'',Auditor:'',President:''};
+if(!DB.security.pins.President) DB.security.pins.President='1234';
+if(DB.security.names.President===undefined) DB.security.names.President='';
 ['vendors','vendorBills','employees','payrollRuns','assets','inventoryItems','inventoryTx','flatTypes','meterReadings','consolidatedBills','towers','mainMeterReadings'].forEach(k=>{ if(!DB[k]) DB[k]=[]; });
 if(!DB.seq.tower) DB.seq.tower=1;
 if(!DB.seq.mmr) DB.seq.mmr=1;
@@ -499,10 +503,12 @@ function flatLedgerBalance(flatId, uptoDate){
   });
   return bal;
 }
+function actorName(){ return DB.security.names[window.__currentRole] || ''; }
+function actorLabel(role, name){ return name? `${role} (${name})` : role; }
 function addVoucher(v){
   v.id = nextId('voucher'); v.date = v.date||todayISO();
-  v.status = 'pending'; v.maker = window.__currentRole; v.makerAt = nowTS();
-  v.checker = null; v.checkerAt = null; v.checkerNote = '';
+  v.status = 'pending'; v.maker = window.__currentRole; v.makerName = actorName(); v.makerAt = nowTS();
+  v.checker = null; v.checkerName=''; v.checkerAt = null; v.checkerNote = '';
   DB.vouchers.push(v);
   logAction('Create', `${v.type} voucher #${v.id} — ${v.narration||''} (₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))})`);
   return v;
@@ -551,18 +557,19 @@ function statementFooter(){
   </div>`;
 }
 function nowTS(){ return new Date().toISOString(); }
-function isReadOnly(){ return window.__currentRole==='Auditor'; }
-function canEdit(){ if(isReadOnly()){ toast('Auditor role is read-only'); return false; } return true; }
+function isReadOnly(){ return window.__currentRole==='Auditor' || window.__currentRole==='President'; }
+function canManageAccess(){ return window.__currentRole==='President'; }
+function canEdit(){ if(isReadOnly()){ toast(window.__currentRole+' is a view-only role'); return false; } return true; }
 function canApprove(v){ return !isReadOnly() && v.status==='pending' && v.maker!==window.__currentRole; }
 function logAction(action, detail){
   if(!DB.auditLog) DB.auditLog=[];
-  DB.auditLog.push({id:DB.auditLog.length+1, ts:nowTS(), role:window.__currentRole, action, detail});
+  DB.auditLog.push({id:DB.auditLog.length+1, ts:nowTS(), role:window.__currentRole, name:actorName(), action, detail});
   if(DB.auditLog.length>2000) DB.auditLog.splice(0, DB.auditLog.length-2000);
 }
 function approveVoucherCore(id, note){
   const v = DB.vouchers.find(x=>x.id===id); if(!v) return false;
   if(!canApprove(v)) return false;
-  v.status='approved'; v.checker=window.__currentRole; v.checkerAt=nowTS(); v.checkerNote=note||'';
+  v.status='approved'; v.checker=window.__currentRole; v.checkerName=actorName(); v.checkerAt=nowTS(); v.checkerNote=note||'';
   applyApprovalSideEffects(v);
   logAction('Approve', `${v.type} voucher #${v.id} — ${v.narration||''}`);
   return true;
@@ -594,7 +601,7 @@ function rejectVoucher(id, note){
   const v = DB.vouchers.find(x=>x.id===id); if(!v) return;
   if(!canApprove(v)){ toast(v.maker===window.__currentRole? 'You cannot decide on your own entry — needs a different role.' : 'Not permitted'); return; }
   if(!note){ toast('Please add a reason for rejection'); return; }
-  v.status='rejected'; v.checker=window.__currentRole; v.checkerAt=nowTS(); v.checkerNote=note;
+  v.status='rejected'; v.checker=window.__currentRole; v.checkerName=actorName(); v.checkerAt=nowTS(); v.checkerNote=note;
   logAction('Reject', `${v.type} voucher #${v.id} — ${v.narration||''} — reason: ${note}`);
   save(); render(); toast('Rejected');
 }
@@ -629,7 +636,7 @@ function requestDeleteVoucher(id){
   if(billHasOtherPayments(v)){ toast('This bill already has payments recorded against it — delete/reverse those receipts first.'); return; }
   const reason = prompt('Reason for requesting deletion (required):');
   if(!reason || !reason.trim()) return;
-  v.deleteRequested = true; v.deleteRequestedBy = window.__currentRole; v.deleteRequestedAt = nowTS(); v.deleteReason = reason.trim();
+  v.deleteRequested = true; v.deleteRequestedBy = window.__currentRole; v.deleteRequestedByName = actorName(); v.deleteRequestedAt = nowTS(); v.deleteReason = reason.trim();
   logAction('Delete Requested', `${v.type} voucher #${v.id} — ${v.narration||''} — reason: ${reason.trim()}`);
   save(); render(); toast('Deletion requested — awaiting a different role to confirm');
 }
@@ -642,7 +649,7 @@ function cancelDeleteRequest(id){
 }
 function confirmDeleteVoucher(id){
   const v = DB.vouchers.find(x=>x.id===id); if(!v) return;
-  if(isReadOnly()){ toast('Auditors cannot delete entries — view only.'); return; }
+  if(isReadOnly()){ toast(window.__currentRole+' cannot delete entries — view only.'); return; }
   if(v.deleteRequestedBy===window.__currentRole){ toast('A different role must confirm this deletion.'); return; }
   if(billHasOtherPayments(v)){ toast('This bill now has payments recorded against it — cannot delete safely. Cancel the request and investigate.'); return; }
   reverseApprovalSideEffects(v);
@@ -1570,7 +1577,7 @@ function renderReceipts(){
   if(!receipts.length) return `<div class="empty"><div class="ic">⊙</div>No receipts recorded yet.<br><br>${isReadOnly()?'':'<button class="btn btn-primary" onclick="openReceiptModal()">Record Receipt</button>'}</div>`;
   const rows = receipts.map(v=>{
     const f = getFlat(v.flatId); const amt = v.entries.find(e=>e.debit>0)?.debit||0;
-    return `<tr><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''} · by ${v.maker}</div></td><td>${f?flatLabel(f):'—'}</td><td class="num-cell">₹${fmt(amt)}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`;
+    return `<tr><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''} · by ${actorLabel(v.maker,v.makerName)}</div></td><td>${f?flatLabel(f):'—'}</td><td class="num-cell">₹${fmt(amt)}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`;
   }).join('');
   return `<div class="card"><div class="section-title"><span><span class="num">${String(receipts.length).padStart(2,'0')}</span>Receipts</span></div>
   <div class="tbl-wrap"><table><tr><th>Date</th><th>Flat</th><th class="num-cell">Amount</th><th>Status</th></tr>${rows}</table></div></div>`;
@@ -1617,7 +1624,7 @@ function renderAccounts(){
           else if(v.status==='approved' && v.deleteRequested) action = v.deleteRequestedBy===window.__currentRole? `<span class="stamp pending" style="font-size:9.5px;">delete pending</span>` : `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();confirmDeleteVoucher(${v.id})">Confirm Delete</button>`;
           else if(v.status==='approved') action = `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();requestDeleteVoucher(${v.id})">Request Deletion</button>`;
         }
-        return `<tr onclick="${v.status==='pending'?`go('approvals')`:''}"><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${v.maker}</div></td><td>${v.type}</td><td>${v.narration||''}${v.deleteRequested?'<div style="font-size:10.5px;color:var(--brick);margin-top:2px;">Deletion requested by '+v.deleteRequestedBy+': '+v.deleteReason+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td><td>${action}</td></tr>`;
+        return `<tr onclick="${v.status==='pending'?`go('approvals')`:''}"><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${actorLabel(v.maker,v.makerName)}</div></td><td>${v.type}</td><td>${v.narration||''}${v.deleteRequested?'<div style="font-size:10.5px;color:var(--brick);margin-top:2px;">Deletion requested by '+actorLabel(v.deleteRequestedBy,v.deleteRequestedByName)+': '+v.deleteReason+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td><td>${action}</td></tr>`;
       }).join('')}
       </table></div>` : `<div class="empty"><div class="ic">§</div>No vouchers yet.</div>`;
   } else if(sr==='ledger'){
@@ -1736,7 +1743,7 @@ function renderVendors(){
   } else if(sr==='payments'){
     const pays = DB.vouchers.filter(v=>v.type==='VendorPayment').slice().sort((a,b)=>b.date.localeCompare(a.date));
     body = pays.length? `<div class="tbl-wrap"><table><tr><th>Date</th><th>Vendor</th><th class="num-cell">Amount</th><th>Status</th></tr>
-      ${pays.map(v=>{ const vd=getVendor(v.vendorId); return `<tr><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${v.maker}</div></td><td>${vd?vd.name:'—'}</td><td class="num-cell">₹${fmt(v.entries.find(e=>e.debit>0)?.debit||0)}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`; }).join('')}
+      ${pays.map(v=>{ const vd=getVendor(v.vendorId); return `<tr><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${actorLabel(v.maker,v.makerName)}</div></td><td>${vd?vd.name:'—'}</td><td class="num-cell">₹${fmt(v.entries.find(e=>e.debit>0)?.debit||0)}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`; }).join('')}
       </table></div>` : `<div class="empty"><div class="ic">⎔</div>No vendor payments recorded.</div>`;
   }
   return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('vendors','${t[0]}')">${t[1]}</button>`).join('')}</div><div class="card">${body}</div>`;
@@ -2142,10 +2149,10 @@ function renderAudit(){
     const done = DB.vouchers.filter(v=>v.status==='approved'||v.status==='rejected').sort((a,b)=>b.id-a.id).slice(0,150);
     const log = (DB.auditLog||[]).slice().reverse().slice(0,150);
     body = `<div class="card"><div class="section-title">Approval Decisions</div><div class="tbl-wrap"><table><tr><th>Type</th><th>Maker → Checker</th><th class="num-cell">Amount</th><th>Status</th></tr>
-      ${done.map(v=>`<tr><td>${v.type}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''}</div></td><td style="font-size:12px;">${v.maker} → ${v.checker}${v.checkerNote?'<div style="font-size:11px;color:var(--ink-soft)">'+v.checkerNote+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')||'<tr><td colspan=4 style="color:var(--ink-soft)">None yet</td></tr>'}
+      ${done.map(v=>`<tr><td>${v.type}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''}</div></td><td style="font-size:12px;">${actorLabel(v.maker,v.makerName)} → ${actorLabel(v.checker,v.checkerName)}${v.checkerNote?'<div style="font-size:11px;color:var(--ink-soft)">'+v.checkerNote+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')||'<tr><td colspan=4 style="color:var(--ink-soft)">None yet</td></tr>'}
       </table></div></div>
       <div class="card"><div class="section-title">Full Audit Log</div><div class="tbl-wrap"><table><tr><th>Time</th><th>Role</th><th>Action</th><th>Detail</th></tr>
-      ${log.map(l=>`<tr><td style="font-size:11.5px;white-space:nowrap;">${new Date(l.ts).toLocaleString('en-IN')}</td><td><span class="role-badge" style="font-size:9.5px;">${l.role}</span></td><td>${l.action}</td><td style="font-size:12px;">${l.detail}</td></tr>`).join('')||'<tr><td colspan=4 style="color:var(--ink-soft)">None yet</td></tr>'}
+      ${log.map(l=>`<tr><td style="font-size:11.5px;white-space:nowrap;">${new Date(l.ts).toLocaleString('en-IN')}</td><td><span class="role-badge" style="font-size:9.5px;">${actorLabel(l.role,l.name)}</span></td><td>${l.action}</td><td style="font-size:12px;">${l.detail}</td></tr>`).join('')||'<tr><td colspan=4 style="color:var(--ink-soft)">None yet</td></tr>'}
       </table></div></div>`;
   }
   return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('audit','${t[0]}')">${t[1]}</button>`).join('')}</div>${body}
@@ -2164,7 +2171,7 @@ function renderApprovals(){
           <div><b>${v.type}</b> · ${v.date}<div style="font-size:12px;color:var(--ink-soft)">${v.narration||''}</div></div>
           <div class="num-cell" style="font-weight:700;">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</div>
         </div>
-        <div style="font-size:11px;color:var(--brick);margin-top:6px;">Deletion requested by <b>${v.deleteRequestedBy}</b> on ${new Date(v.deleteRequestedAt).toLocaleString('en-IN')}<br>Reason: ${v.deleteReason}</div>
+        <div style="font-size:11px;color:var(--brick);margin-top:6px;">Deletion requested by <b>${actorLabel(v.deleteRequestedBy,v.deleteRequestedByName)}</b> on ${new Date(v.deleteRequestedAt).toLocaleString('en-IN')}<br>Reason: ${v.deleteReason}</div>
         ${isReadOnly()? '' : v.deleteRequestedBy===window.__currentRole? `<div class="readonly-note" style="margin-top:8px;">A different role must confirm this — you raised the request.</div><button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="cancelDeleteRequest(${v.id})">Withdraw Request</button>` : `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-danger btn-sm" style="flex:1" onclick="confirmDeleteVoucher(${v.id})">Confirm Delete</button><button class="btn btn-outline btn-sm" style="flex:1" onclick="cancelDeleteRequest(${v.id})">Decline</button></div>`}
       </div>`).join('') : `<div class="empty"><div class="ic">✓</div>No deletion requests pending.</div>`;
   } else if(sr==='pending'){
@@ -2172,8 +2179,8 @@ function renderApprovals(){
     const actionable = pend.filter(v=>canApprove(v));
     const locked = pend.filter(v=>!canApprove(v));
     const queryBlock = v=> v.queried? `<div style="font-size:11px;background:var(--amber-soft);border-radius:6px;padding:6px 8px;margin-top:8px;">
-        <b style="color:var(--gold);">Explanation requested</b> by ${v.queriedBy} on ${new Date(v.queriedAt).toLocaleString('en-IN')}: ${v.queryNote}
-        ${v.responseNote? `<div style="margin-top:4px;"><b style="color:var(--moss);">Response</b> from ${v.respondedBy} on ${new Date(v.respondedAt).toLocaleString('en-IN')}: ${v.responseNote}</div>` : ''}
+        <b style="color:var(--gold);">Explanation requested</b> by ${actorLabel(v.queriedBy,v.queriedByName)} on ${new Date(v.queriedAt).toLocaleString('en-IN')}: ${v.queryNote}
+        ${v.responseNote? `<div style="margin-top:4px;"><b style="color:var(--moss);">Response</b> from ${actorLabel(v.respondedBy,v.respondedByName)} on ${new Date(v.respondedAt).toLocaleString('en-IN')}: ${v.responseNote}</div>` : ''}
       </div>` : '';
     const rows = actionable.map(v=>`
       <label class="approval-row" style="display:flex;gap:10px;align-items:start;cursor:pointer;">
@@ -2183,7 +2190,7 @@ function renderApprovals(){
             <div><b>${v.type}</b> · ${v.date}<div style="font-size:12px;color:var(--ink-soft)">${v.narration||''}</div></div>
             <div class="num-cell" style="font-weight:700;">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</div>
           </div>
-          <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Raised by <b>${v.maker}</b> on ${new Date(v.makerAt).toLocaleString('en-IN')}</div>
+          <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Raised by <b>${actorLabel(v.maker,v.makerName)}</b> on ${new Date(v.makerAt).toLocaleString('en-IN')}</div>
           ${queryBlock(v)}
           <div style="display:flex;gap:8px;margin-top:8px;">
             <button class="btn btn-outline btn-sm" style="flex:1" onclick="event.preventDefault();promptQuery(${v.id})">${v.queried?'Query Again':'Call for Explanation'}</button>
@@ -2197,9 +2204,9 @@ function renderApprovals(){
           <div><b>${v.type}</b> · ${v.date}<div style="font-size:12px;color:var(--ink-soft)">${v.narration||''}</div></div>
           <div class="num-cell" style="font-weight:700;">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</div>
         </div>
-        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Raised by <b>${v.maker}</b> on ${new Date(v.makerAt).toLocaleString('en-IN')}</div>
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Raised by <b>${actorLabel(v.maker,v.makerName)}</b> on ${new Date(v.makerAt).toLocaleString('en-IN')}</div>
         ${queryBlock(v)}
-        <div class="readonly-note" style="margin-top:8px;">${isReadOnly()?'Auditors cannot approve — view only.':'You raised this entry — a different role must authorise it.'}</div>
+        <div class="readonly-note" style="margin-top:8px;">${isReadOnly()?window.__currentRole+' cannot approve — view only.':'You raised this entry — a different role must authorise it.'}</div>
         ${v.queried && v.maker===window.__currentRole && !isReadOnly()? `<button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="promptRespond(${v.id})">Respond to Query</button>` : ''}
       </div>`).join('');
     body = '';
@@ -2215,12 +2222,12 @@ function renderApprovals(){
   } else if(sr==='history'){
     const done = DB.vouchers.filter(v=>v.status==='approved'||v.status==='rejected').sort((a,b)=>b.id-a.id).slice(0,100);
     body = done.length? `<div class="tbl-wrap"><table><tr><th>Type</th><th>Maker → Checker</th><th class="num-cell">Amount</th><th>Status</th></tr>
-      ${done.map(v=>`<tr><td>${v.type}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''}</div></td><td style="font-size:12px;">${v.maker} → ${v.checker}${v.checkerNote?'<div style="font-size:11px;color:var(--ink-soft)">'+v.checkerNote+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')}
+      ${done.map(v=>`<tr><td>${v.type}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''}</div></td><td style="font-size:12px;">${actorLabel(v.maker,v.makerName)} → ${actorLabel(v.checker,v.checkerName)}${v.checkerNote?'<div style="font-size:11px;color:var(--ink-soft)">'+v.checkerNote+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')}
       </table></div>` : `<div class="empty"><div class="ic">✓</div>No decisions recorded yet.</div>`;
   } else if(sr==='audit'){
     const log = (DB.auditLog||[]).slice().reverse().slice(0,200);
     body = log.length? `<div class="tbl-wrap"><table><tr><th>Time</th><th>Role</th><th>Action</th><th>Detail</th></tr>
-      ${log.map(l=>`<tr><td style="font-size:11.5px;white-space:nowrap;">${new Date(l.ts).toLocaleString('en-IN')}</td><td><span class="role-badge" style="font-size:9.5px;">${l.role}</span></td><td>${l.action}</td><td style="font-size:12px;">${l.detail}</td></tr>`).join('')}
+      ${log.map(l=>`<tr><td style="font-size:11.5px;white-space:nowrap;">${new Date(l.ts).toLocaleString('en-IN')}</td><td><span class="role-badge" style="font-size:9.5px;">${actorLabel(l.role,l.name)}</span></td><td>${l.action}</td><td style="font-size:12px;">${l.detail}</td></tr>`).join('')}
       </table></div>` : `<div class="empty"><div class="ic">▦</div>No audit entries yet.</div>`;
   }
   return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('approvals','${t[0]}')">${t[1]}</button>`).join('')}</div>${body}`;
@@ -2235,7 +2242,7 @@ function promptQuery(id){
   if(!canApprove(v)){ toast('Not permitted'); return; }
   const note = prompt('What needs explaining? (visible to the maker)');
   if(!note || !note.trim()) return;
-  v.queried = true; v.queriedBy = window.__currentRole; v.queriedAt = nowTS(); v.queryNote = note.trim();
+  v.queried = true; v.queriedBy = window.__currentRole; v.queriedByName = actorName(); v.queriedAt = nowTS(); v.queryNote = note.trim();
   v.responseNote=''; v.respondedBy=null; v.respondedAt=null;
   logAction('Query', `${v.type} voucher #${v.id} — explanation requested: ${note.trim()}`);
   save(); render(); toast('Explanation requested from the maker');
@@ -2245,7 +2252,7 @@ function promptRespond(id){
   if(v.maker!==window.__currentRole){ toast('Only the maker can respond to this query'); return; }
   const note = prompt('Your response to the query:');
   if(!note || !note.trim()) return;
-  v.responseNote = note.trim(); v.respondedBy = window.__currentRole; v.respondedAt = nowTS();
+  v.responseNote = note.trim(); v.respondedBy = window.__currentRole; v.respondedByName = actorName(); v.respondedAt = nowTS();
   logAction('Query Response', `${v.type} voucher #${v.id} — response: ${note.trim()}`);
   save(); render(); toast('Response sent — the checker will review it');
 }
@@ -2491,13 +2498,23 @@ function renderSettings(){
     <p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Add, edit or remove any nature of charge — per sqft, flat rate, per parking slot, or billed by individual meter reading (water, DG, electricity), with optional GST. The rate shown here is the default; override it per category above.</p>
     <div class="tbl-wrap"><table><tr><th>Charge</th><th>Basis</th><th>Account</th></tr>${heads}</table></div>
   </div>
-  <div class="card"><div class="section-title">Access — Role PINs</div>
-    <p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Only Accountant, Treasurer & Auditor can sign in. Change each role's PIN below.</p>
-    ${ALLOWED_ROLES.map(r=>`
-      <div class="row2" style="align-items:end;">
-        <div class="field"><label>${r} PIN</label><input id="pin_${r}" type="password" inputmode="numeric" placeholder="New PIN"></div>
-        <button class="btn btn-outline" style="height:44px" onclick="changePin('${r}')">Update</button>
-      </div>`).join('')}
+  <div class="card"><div class="section-title">Access — Roles, PINs & Names</div>
+    ${canManageAccess()? `
+      <p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">President, Accountant, Treasurer & Auditor can sign in. As President, you control every role's PIN and the name of whoever currently holds it — that name is stamped on everything they do from here on, for accountability.</p>
+      ${ALLOWED_ROLES.map(r=>`
+        <div style="margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border);">
+          <div style="font-weight:700;font-size:13px;margin-bottom:6px;">${r}</div>
+          <div class="row2" style="align-items:end;">
+            <div class="field"><label>Current ${r}'s Name</label><input id="name_${r}" value="${DB.security.names[r]||''}" placeholder="e.g. Ramesh Kumar"></div>
+            <button class="btn btn-outline" style="height:44px" onclick="saveActorName('${r}')">Save Name</button>
+          </div>
+          <div class="row2" style="align-items:end;margin-top:8px;">
+            <div class="field"><label>${r} PIN</label><input id="pin_${r}" type="password" inputmode="numeric" placeholder="New PIN"></div>
+            <button class="btn btn-outline" style="height:44px" onclick="changePin('${r}')">Update PIN</button>
+          </div>
+        </div>`).join('')}
+      <p style="font-size:11px;color:var(--ink-soft);">Changing a PIN here takes effect immediately — let the person know their new PIN directly.</p>
+    ` : `<div class="readonly-note">Only the <b>President</b> can allocate roles, set PINs, and name who currently holds each role. Ask your President to make changes here.</div>`}
   </div>
   <div class="card"><div class="section-title">Data</div>
     <p style="font-size:12.5px;color:var(--ink-soft)">All data is stored offline on this device (localStorage). Export a backup regularly.</p>
@@ -2838,10 +2855,17 @@ function saveChargeHead(id){
 }
 function deleteHead(id){ if(!canEdit()) return; DB.chargeHeads=DB.chargeHeads.filter(h=>h.id!==id); save(); closeModal(); render(); }
 function changePin(role){
-  if(!canEdit()) return;
+  if(!canManageAccess()){ toast('Only the President can change PINs'); return; }
   const val = document.getElementById('pin_'+role).value.trim();
   if(!val || val.length<4){ toast('PIN must be at least 4 digits'); return; }
   DB.security.pins[role]=val; save(); document.getElementById('pin_'+role).value=''; toast(role+' PIN updated');
+  logAction('PIN Changed', `${role}'s PIN was updated by the President`);
+}
+function saveActorName(role){
+  if(!canManageAccess()){ toast('Only the President can set this'); return; }
+  DB.security.names[role] = document.getElementById('name_'+role).value.trim();
+  save(); toast(`${role}'s name saved`); render();
+  logAction('Name Updated', `${role} is now recorded as ${DB.security.names[role]||'(no name set)'}`);
 }
 function exportData(){
   DB.lastBackupAt = nowTS(); save();
@@ -2873,7 +2897,7 @@ function cancelWipeRequest(){
   DB.wipeRequest = null; save(); render(); toast('Wipe request cancelled');
 }
 function confirmWipeAll(){
-  if(isReadOnly()){ toast('Auditors cannot confirm a wipe.'); return; }
+  if(isReadOnly()){ toast(window.__currentRole+' cannot confirm a wipe.'); return; }
   if(!DB.wipeRequest){ toast('No wipe request pending'); return; }
   if(DB.wipeRequest.requestedBy===window.__currentRole){ toast('A different role must confirm this.'); return; }
   if(!confirm('This will erase all data on this device (a restore point will be saved). Continue?')) return;
@@ -3053,8 +3077,10 @@ const FAQ = [
    a:'Payroll → add employees with their salary structure → Run Payroll for the month. PF (12% on capped basic) and ESI (0.75%/3.25% if gross ≤ ₹21k) are computed automatically and sit as payables until deposited.'},
   {k:['audit','auditor','trail'], q:'What does the auditor see?',
    a:'The Audit tab: data health checks, one-tap links to all statements, every approval decision, and the full action log. Auditors log in with their own PIN and everything is read-only for them.'},
+  {k:['president','assign name','allocate','who is treasurer','set name','name of user','identify user'], q:'Where does the President assign names to roles?',
+   a:'Log in as President → Setup → "Access — Roles, PINs & Names" card. Each role has a Name field and a PIN field, side by side — set the name first, then hand over the PIN. Only the President sees these as editable; every other role sees a locked notice.'},
   {k:['login','pin','password','access'], q:'How do logins and PINs work?',
-   a:'Three roles — Accountant, Treasurer, Auditor — each with their own PIN (default 1234, change under Setup → Access). Auditor is view-only. The maker-checker system needs at least two different roles to be in use.'},
+   a:'Four roles — President, Accountant, Treasurer, Auditor — each with their own PIN. Only the President can set PINs and record who currently holds each role (Setup → Access) — that name gets stamped on every entry for accountability. Accountant/Treasurer handle transactions; Auditor and President are both view-only; the maker-checker system needs at least two different transacting roles in use.'},
   {k:['pwa','install','home screen','offline'], q:'Can I install this as an app?',
    a:'Yes — in Safari tap Share → "Add to Home Screen". It opens full-screen like a native app and works fully offline. Data stays on the device.'},
 ];
@@ -3130,7 +3156,8 @@ function renderHelp(){
       4. Billing → Bills has two ways to get bills in: <b>Calculate in SmartRWA</b> (your own rates) or <b>Import from Other App</b> (a CSV of amounts already worked out elsewhere) — use either, or both in the same month.<br>
       5. Record <b>Receipts</b> as owners pay — they auto-adjust the oldest dues first; anything extra sits as a credit.<br>
       6. Every accounting entry needs a second person to <b>Approve</b> it before it hits the ledger (maker-checker).`],
-    ['Roles & Maker-Checker', `Only <b>Accountant</b>, <b>Treasurer</b>, and <b>Auditor</b> can sign in (PIN-based, change under Setup → Access). Whoever raises a bill, receipt, voucher, vendor payment, payroll run, or asset entry cannot approve their own entry — a different role must review it under <b>Approve</b>. Tick entries you're satisfied with and hit <b>Authorise Ticked</b>; use <b>Call for Explanation</b> to query one without rejecting it — the maker can respond, and you authorise once satisfied. Auditors can view everything but cannot create, edit, or approve anything.`],
+    ['Roles & Maker-Checker', `<b>President, Accountant, Treasurer,</b> and <b>Auditor</b> can sign in (PIN-based). Only the <b>President</b> can allocate PINs and record who currently holds each role, under Setup → Access — that name is stamped on everything done from then on, so "Treasurer" in a report can be traced back to an actual person. Whoever raises a bill, receipt, voucher, vendor payment, payroll run, or asset entry cannot approve their own entry — a different role must review it under <b>Approve</b>. Tick entries you're satisfied with and hit <b>Authorise Ticked</b>; use <b>Call for Explanation</b> to query one without rejecting it. Both Auditor and President are view-only everywhere else — they cannot create, edit, or approve transactions.`],
+    ['President: Assigning Names & PINs', `Log in as <b>President</b> → sidebar → <b>Setup</b> → the <b>"Access — Roles, PINs & Names"</b> card at the top. For each role (President/Accountant/Treasurer/Auditor) there are two fields: <b>Current [Role]'s Name</b> (e.g. type "Ramesh Kumar" for Treasurer, tap Save Name) and the <b>PIN</b> (type a new one, tap Update PIN). Only the President sees these as editable — everyone else sees a locked notice pointing back to the President. Set the name <i>before</i> handing someone a role's PIN, so every entry they make from then on is traceable to them by name, not just role.`],
     ['Deleting or Correcting an Entry', `Accounts → Vouchers shows every entry with the right action for its status. <b>Pending</b> entries you raised: "Withdraw" (no approval needed, since nothing's posted yet). <b>Approved</b> entries: "Request Deletion" with a reason — this goes to Approve → Deletions where a <i>different</i> role must "Confirm Delete". Confirming properly reverses everything: receipt/payment allocations are undone and the linked bill or vendor bill is removed, not just the voucher.`],
     ['Billing & GST', `Charge heads can be billed per sqft, as a flat fixed amount, per parking slot, or by individual meter reading (Water/DG/Electricity). Restrict a charge to specific flat categories (e.g. an EWS-only fixed charge) via "Applies To" on that charge head. GST can be switched on per charge from Setup → Charge Heads → GST Rates, or all at once via the <b>GST</b> tab, which also shows Output GST − Input Tax Credit = Net Payable, outward supplies by rate slab, and an ITC register (from vendor bills marked GST-charged). Confirm current thresholds/rates with your CA — this prepares figures, it doesn't file.`],
     ['Flat Categories & Rates', `Setup → Flat Categories groups flats either by name (e.g. "Penthouse", fixed default area) or by a sqft range (auto-detected from each flat's area). "Set Rates by Category" opens a grid — every charge × every category — to override the default rate per group; leave a cell blank to use the charge's normal rate.`],
@@ -3163,7 +3190,7 @@ function toggleTheme(){
 if(localStorage.getItem('smartrwa_theme')==='dark') document.body.classList.add('dark');
 
 /* ============ ACCESS CONTROL ============ */
-const ALLOWED_ROLES = ['Accountant','Treasurer','Auditor'];
+const ALLOWED_ROLES = ['Accountant','Treasurer','Auditor','President'];
 let selectedRole = 'Accountant';
 function selectRole(btn){
   selectedRole = btn.dataset.role;
