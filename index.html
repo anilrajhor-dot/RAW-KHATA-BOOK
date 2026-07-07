@@ -259,6 +259,7 @@ body.dark .chat-input-row{border-color:var(--border-dark);}
       </div>
       <div class="top-actions">
         <span class="role-badge" id="roleBadge"></span>
+        <button class="icon-btn" onclick="openChangeMyPinModal()" title="Change My PIN">🔑</button>
         <button class="icon-btn" onclick="openChatBot()" title="Ask SmartRWA">💬</button>
         <button class="icon-btn" onclick="openHealthCheckModal()" title="Health Check">♡</button>
         <button class="icon-btn" onclick="toggleTheme()">◐</button>
@@ -294,6 +295,7 @@ function load(){
 }
 if(!DB.security) DB.security = {pins:{Accountant:'1234',Treasurer:'1234',Auditor:'1234',President:'1234'}};
 if(!DB.security.names) DB.security.names = {Accountant:'',Treasurer:'',Auditor:'',President:''};
+if(!DB.security.mustChangePin) DB.security.mustChangePin = {Accountant:false,Treasurer:false,Auditor:false,President:false};
 if(!DB.security.pins.President) DB.security.pins.President='1234';
 if(DB.security.names.President===undefined) DB.security.names.President='';
 ['vendors','vendorBills','employees','payrollRuns','assets','inventoryItems','inventoryTx','flatTypes','meterReadings','consolidatedBills','towers','mainMeterReadings'].forEach(k=>{ if(!DB[k]) DB[k]=[]; });
@@ -3170,8 +3172,32 @@ function changePin(role){
   if(!canManageAccess()){ toast('Only the President can change PINs'); return; }
   const val = document.getElementById('pin_'+role).value.trim();
   if(!val || val.length<4){ toast('PIN must be at least 4 digits'); return; }
-  DB.security.pins[role]=val; save(); document.getElementById('pin_'+role).value=''; toast(role+' PIN updated');
-  logAction('PIN Changed', `${role}'s PIN was updated by the President`);
+  DB.security.pins[role]=val;
+  if(!DB.security.mustChangePin) DB.security.mustChangePin={};
+  DB.security.mustChangePin[role] = true;
+  save(); document.getElementById('pin_'+role).value=''; toast(role+' PIN reset — they must set their own on next login');
+  logAction('PIN Reset', `${role}'s PIN was reset by the President — forced to change on next login`);
+}
+function openChangeMyPinModal(){
+  const role = window.__currentRole;
+  openModal(`<div class="modal-head"><h2>Change My PIN</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Changing the PIN for <b>${role}</b>. You need your current PIN to do this — if you have forgotten it, ask your President to reset it for you (Setup → Access), then come back here to set a new one.</p>
+    <div class="field"><label>Current PIN</label><input id="myp_current" type="password" inputmode="numeric"></div>
+    <div class="field"><label>New PIN</label><input id="myp_new" type="password" inputmode="numeric"></div>
+    <div class="field"><label>Confirm New PIN</label><input id="myp_confirm" type="password" inputmode="numeric"></div>
+    <button class="btn btn-primary btn-block" onclick="saveMyPin()">Update My PIN</button>`);
+}
+function saveMyPin(){
+  const role = window.__currentRole;
+  const current = document.getElementById('myp_current').value.trim();
+  const next = document.getElementById('myp_new').value.trim();
+  const confirm_ = document.getElementById('myp_confirm').value.trim();
+  if(current !== DB.security.pins[role]){ toast('Current PIN is incorrect'); return; }
+  if(!next || next.length<4){ toast('New PIN must be at least 4 digits'); return; }
+  if(next !== confirm_){ toast('New PIN and confirmation do not match'); return; }
+  DB.security.pins[role] = next;
+  save(); closeModal(); toast('Your PIN has been updated');
+  logAction('PIN Changed', `${role} changed their own PIN`);
 }
 function saveActorName(role){
   if(!canManageAccess()){ toast('Only the President can set this'); return; }
@@ -3444,8 +3470,8 @@ const FAQ = [
    a:'The Audit tab: data health checks, one-tap links to all statements, every approval decision, and the full action log. Auditors log in with their own PIN and everything is read-only for them.'},
   {k:['president','assign name','allocate','who is treasurer','set name','name of user','identify user'], q:'Where does the President assign names to roles?',
    a:'Log in as President → Setup → "Access — Roles, PINs & Names" card. Each role has a Name field and a PIN field, side by side — set the name first, then hand over the PIN. Only the President sees these as editable; every other role sees a locked notice.'},
-  {k:['login','pin','password','access'], q:'How do logins and PINs work?',
-   a:'Four roles — President, Accountant, Treasurer, Auditor — each with their own PIN. Only the President can set PINs and record who currently holds each role (Setup → Access) — that name gets stamped on every entry for accountability. Accountant/Treasurer handle transactions; Auditor and President are both view-only; the maker-checker system needs at least two different transacting roles in use.'},
+  {k:['login','pin','password','access','change my pin','forgot pin','reset pin'], q:'How do logins, PINs, and forgotten PINs work?',
+   a:'Four roles — President, Accountant, Treasurer, Auditor. Everyone starts at PIN 1234. Once logged in, tap the 🔑 icon in the top bar anytime to change your own PIN (needs your current one). If you forget it, ask the President to reset it (Setup → Access, no old PIN needed) — but that reset PIN only unlocks a forced "set your own new PIN" screen, nothing else. The President cannot use it to actually operate as that role, and neither can you until you have chosen a new private PIN yourself.'},
   {k:['pwa','install','home screen','offline'], q:'Can I install this as an app?',
    a:'Yes — in Safari tap Share → "Add to Home Screen". It opens full-screen like a native app and works fully offline. Data stays on the device.'},
 ];
@@ -3522,7 +3548,7 @@ function renderHelp(){
       5. Record <b>Receipts</b> as owners pay — they auto-adjust the oldest dues first; anything extra sits as a credit.<br>
       6. Every accounting entry needs a second person to <b>Approve</b> it before it hits the ledger (maker-checker).`],
     ['Roles & Maker-Checker', `<b>President, Accountant, Treasurer,</b> and <b>Auditor</b> can sign in (PIN-based). Only the <b>President</b> can allocate PINs and record who currently holds each role, under Setup → Access — that name is stamped on everything done from then on, so "Treasurer" in a report can be traced back to an actual person. Whoever raises a bill, receipt, voucher, vendor payment, payroll run, or asset entry cannot approve their own entry — a different role must review it under <b>Approve</b>. Tick entries you're satisfied with and hit <b>Authorise Ticked</b>; use <b>Call for Explanation</b> to query one without rejecting it. Both Auditor and President are view-only everywhere else — they cannot create, edit, or approve transactions.`],
-    ['President: Assigning Names & PINs', `Log in as <b>President</b> → sidebar → <b>Setup</b> → the <b>"Access — Roles, PINs & Names"</b> card at the top. For each role (President/Accountant/Treasurer/Auditor) there are two fields: <b>Current [Role]'s Name</b> (e.g. type "Ramesh Kumar" for Treasurer, tap Save Name) and the <b>PIN</b> (type a new one, tap Update PIN). Only the President sees these as editable — everyone else sees a locked notice pointing back to the President. Set the name <i>before</i> handing someone a role's PIN, so every entry they make from then on is traceable to them by name, not just role.`],
+    ['President: Assigning Names & PINs, and Forgotten PINs', `Log in as <b>President</b> → sidebar → <b>Setup</b> → the <b>"Access — Roles, PINs & Names"</b> card at the top. For each role there are two fields: <b>Current [Role]'s Name</b> and the <b>PIN</b> — set the name before handing someone their PIN, so every entry they make is traceable to them, not just their role. Only the President sees these as editable.<br><br>Once logged in, anyone can tap the <b>🔑 icon</b> in the top bar to change their own PIN — needs their current PIN as proof, so it can't be used by someone who isn't already that role.<br><br><b>Forgotten PIN, done safely:</b> the person asks the President directly (phone/WhatsApp, not through the app) to reset it. That reset PIN is deliberately limited — logging in with it opens <i>only</i> a forced "set your own new PIN" screen, nothing else in the app is reachable until a new PIN is chosen. This matters: it means the President cannot reset someone's PIN and then quietly operate as that role themselves, and neither can anyone else who happens to learn the temporary PIN — the account only becomes usable once the real person has locked in a PIN the President never sees. This keeps the maker-checker separation intact even through a reset.`],
     ['Deleting or Correcting an Entry', `Accounts → Vouchers shows every entry with the right action for its status. <b>Pending</b> entries you raised: "Withdraw" (no approval needed, since nothing's posted yet). <b>Approved</b> entries: "Request Deletion" with a reason — this goes to Approve → Deletions where a <i>different</i> role must "Confirm Delete". Confirming properly reverses everything: receipt/payment allocations are undone and the linked bill or vendor bill is removed, not just the voucher.`],
     ['Billing & GST', `Charge heads can be billed per sqft, as a flat fixed amount, per parking slot, or by individual meter reading (Water/DG/Electricity). Restrict a charge to specific flat categories (e.g. an EWS-only fixed charge) via "Applies To" on that charge head. GST can be switched on per charge from Setup → Charge Heads → GST Rates, or all at once via the <b>GST</b> tab, which also shows Output GST − Input Tax Credit = Net Payable, outward supplies by rate slab, and an ITC register (from vendor bills marked GST-charged). Confirm current thresholds/rates with your CA — this prepares figures, it doesn't file.`],
     ['Flat Categories & Rates', `Setup → Flat Categories groups flats either by name (e.g. "Penthouse", fixed default area) or by a sqft range (auto-detected from each flat's area). "Set Rates by Category" opens a grid — every charge × every category — to override the default rate per group; leave a cell blank to use the charge's normal rate.`],
@@ -3586,7 +3612,31 @@ function enterApp(role){
   document.getElementById('app').style.display='flex';
   document.getElementById('roleBadge').textContent = role;
   renderSidebar();
+  if(DB.security.mustChangePin && DB.security.mustChangePin[role]){
+    document.getElementById('content').innerHTML = '';
+    openForcedPinChangeModal(role);
+    return;
+  }
   go('dashboard');
+}
+function openForcedPinChangeModal(role){
+  openModal(`<div class="modal-head"><h2>Set a New PIN</h2></div>
+    <p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Your PIN was just reset by the President. Before you can do anything else as <b>${role}</b>, set a new PIN that only you know — the President will not see this one.</p>
+    <div class="field"><label>New PIN</label><input id="fpc_new" type="password" inputmode="numeric"></div>
+    <div class="field"><label>Confirm New PIN</label><input id="fpc_confirm" type="password" inputmode="numeric"></div>
+    <button class="btn btn-primary btn-block" onclick="saveForcedPinChange('${role}')">Set My New PIN</button>`);
+}
+function saveForcedPinChange(role){
+  const next = document.getElementById('fpc_new').value.trim();
+  const confirm_ = document.getElementById('fpc_confirm').value.trim();
+  if(!next || next.length<4){ toast('New PIN must be at least 4 digits'); return; }
+  if(next !== confirm_){ toast('New PIN and confirmation do not match'); return; }
+  if(next === '1234'){ toast('Please choose something other than the default 1234'); return; }
+  DB.security.pins[role] = next;
+  DB.security.mustChangePin[role] = false;
+  save();
+  logAction('PIN Changed', `${role} set a new private PIN after a President reset`);
+  closeModal(); toast('PIN set — welcome in'); go('dashboard');
 }
 
 /* ============ INIT ============ */
