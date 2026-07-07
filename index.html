@@ -302,6 +302,7 @@ if(!DB.seq.mmr) DB.seq.mmr=1;
 if(!DB.seq.cbill) DB.seq.cbill=1;
 if(!DB.categoryRates) DB.categoryRates = {};
 if(!DB.utilityRates) DB.utilityRates = {govtElectricityRate:0, dgSupplyRate:0};
+if(DB.society.minBalanceThreshold===undefined) DB.society.minBalanceThreshold = 0;
 if(!DB.bankAccounts) DB.bankAccounts = [];
 if(!DB.seq.bank) DB.seq.bank=1;
 DB.flatTypes.forEach(t=>{ if(!t.mode) t.mode='name'; if(t.minArea===undefined) t.minArea=0; if(t.maxArea===undefined) t.maxArea=0; });
@@ -744,6 +745,8 @@ function renderDashboard(){
   const maxColl = Math.max(1,...collByMonth);
 
   const defaulters = DB.flats.map(f=>({f,out:flatOutstanding(f.id)})).filter(x=>x.out>0).sort((a,b)=>b.out-a.out).slice(0,5);
+  const minBalThreshold = DB.society.minBalanceThreshold||0;
+  const lowBalanceCount = minBalThreshold? DB.flats.filter(f=>-flatLedgerBalance(f.id) < minBalThreshold).length : 0;
   const backupDays = DB.lastBackupAt? Math.floor((new Date()-new Date(DB.lastBackupAt))/86400000) : null;
   const backupBanner = (backupDays===null || backupDays>=7)? `<div class="card" style="border-color:var(--brick);cursor:pointer;" onclick="go('settings')">
       <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -759,6 +762,7 @@ function renderDashboard(){
     <div class="stat"><div class="lbl">Occupied</div><div class="val">${occupied}</div></div>
     <div class="stat alert" style="cursor:pointer;" onclick="go('reports','defaulters')"><div class="lbl">Outstanding Dues ›</div><div class="val">₹${fmt(totalOutstanding)}</div></div>
     <div class="stat good" style="cursor:pointer;" onclick="go('reports','advances')"><div class="lbl">Advances Held ›</div><div class="val">₹${fmt(advancesTotal)}</div></div>
+    ${minBalThreshold? `<div class="stat ${lowBalanceCount>0?'alert':'good'}" style="cursor:pointer;" onclick="go('reports','lowbalance')"><div class="lbl">Low Balance Alerts ›</div><div class="val">${lowBalanceCount}</div></div>` : ''}
     <div class="stat"><div class="lbl">Collected · ${thisMonth}</div><div class="val">₹${fmt(collectedThisMonth)}</div></div>
     <div class="stat"><div class="lbl">Billed · ${thisMonth}</div><div class="val">₹${fmt(billedThisMonth)}</div></div>
     <div class="stat ${openComplaints>0?'alert':''}" style="cursor:pointer;" onclick="go('complaints')"><div class="lbl">Open Issues ›</div><div class="val">${openComplaints}</div></div>
@@ -1178,7 +1182,7 @@ function openConsolidatedBillModal(){
     </div>
     <hr class="divider">
     <div class="field"><label>Expense Account (what RWA paid)</label><select id="cb_exp">${expAccs.map(a=>`<option ${a==='Electricity Expense'?'selected':''}>${a}</option>`).join('')}</select></div>
-    <div class="field"><label>Paid Via</label><select id="cb_mode">${PAYMENT_MODES.map(m=>`<option>${m}</option>`).join('')}</select></div>
+    <div class="field"><label>Paid From</label>${paymentAccountSelect('cb_mode')}</div>
     <p style="font-size:11px;color:var(--ink-soft);">This records the RWA's actual payment (posted for checker approval) and makes the apportionment available the next time you generate bills for this charge & period.</p>
     <button class="btn btn-primary btn-block" onclick="saveConsolidatedBill()">Save & Post Payment</button>
   `);
@@ -1237,7 +1241,7 @@ function saveConsolidatedBill(){
   const cbill = {id:'CB'+nextId('cbill'), chargeHeadId, period, authority, billNumber, billDate, totalAmount, apportionMethod, scope, tower, mainMeterCalc:!!useMMR, mmrMeta};
   DB.consolidatedBills.push(cbill);
   addVoucher({type:'Payment', date:billDate, narration:`Consolidated bill — ${authority||'utility'}${billNumber?' #'+billNumber:''}${scope==='tower'?' — Tower '+tower:''} — ${period}`,
-    entries:[{account:expAcc,debit:totalAmount,credit:0},{account:modeToAccount(mode),debit:0,credit:totalAmount}]});
+    entries:[{account:expAcc,debit:totalAmount,credit:0},{account:mode,debit:0,credit:totalAmount}]});
   save(); closeModal(); toast('Consolidated bill logged — payment awaits approval'); go('billing','consolidated');
 }
 function viewConsolidatedBill(id){
@@ -1366,6 +1370,76 @@ function queueSend(channel){
 function advanceReminderQueue(){
   window.__reminderIndex = (window.__reminderIndex||0)+1;
   drawReminderQueue();
+}
+
+/* ============ LOW BALANCE ALERTS ============ */
+function lowBalanceText(f){
+  const bal = -flatLedgerBalance(f.id);
+  const threshold = DB.society.minBalanceThreshold||0;
+  const lines = [`*${DB.society.name}*`, `Dear ${f.owner?.name||f.tenant?.name||'Resident'},`, '',
+    `This is a reminder that your maintenance account for *${flatLabel(f)}* has fallen below the minimum balance we ask residents to maintain.`, ''];
+  lines.push(`Current Balance: ₹${fmt(bal)}${bal<0?' (this is an amount due, not a credit)':''}`);
+  lines.push(`Minimum Balance Required: ₹${fmt(threshold)}`);
+  lines.push('', `Kindly deposit ₹${fmt(threshold-bal)} at the earliest to restore your balance to the required minimum.`, '', `Thank you,`, `${DB.society.name} Management`);
+  return lines.join('\n');
+}
+function sendLowBalanceWhatsApp(flatId){
+  const f = getFlat(flatId); if(!f) return;
+  const phone = (f.owner?.phone||f.tenant?.phone||'').replace(/\D/g,'');
+  if(!phone){ toast('No phone number on file for this flat'); return; }
+  const num = phone.length===10? '91'+phone : phone;
+  window.open(`https://wa.me/${num}?text=${encodeURIComponent(lowBalanceText(f))}`, '_blank');
+  logAction('Low Balance Reminder', `WhatsApp low-balance reminder sent to ${flatLabel(f)} (balance ₹${fmt(-flatLedgerBalance(flatId))})`);
+  save();
+}
+function sendLowBalanceEmail(flatId){
+  const f = getFlat(flatId); if(!f) return;
+  const email = f.owner?.email||f.tenant?.email;
+  if(!email){ toast('No email on file for this flat'); return; }
+  const subject = `${DB.society.name} — Minimum Balance Reminder — ${flatLabel(f)}`;
+  window.location.href = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(lowBalanceText(f))}`;
+  logAction('Low Balance Reminder', `Email low-balance reminder sent to ${flatLabel(f)} (balance ₹${fmt(-flatLedgerBalance(flatId))})`);
+  save();
+}
+function openLowBalanceQueue(){
+  const threshold = DB.society.minBalanceThreshold||0;
+  window.__lbQueue = DB.flats.map(f=>({f,bal:-flatLedgerBalance(f.id)})).filter(x=>x.bal<threshold).sort((a,b)=>a.bal-b.bal).map(x=>x.f.id);
+  window.__lbIndex = 0;
+  window.__lbSent = 0;
+  drawLowBalanceQueue();
+}
+function drawLowBalanceQueue(){
+  const queue = window.__lbQueue||[];
+  const i = window.__lbIndex||0;
+  if(i>=queue.length){
+    openModal(`<div class="modal-head"><h2>Reminders Done</h2><button class="close-x" onclick="closeModal()">×</button></div>
+      <div class="empty"><div class="ic">✓</div>${window.__lbSent} reminder(s) sent this session.<br>Review timestamps anytime in Audit → Audit Trail.</div>`);
+    return;
+  }
+  const f = getFlat(queue[i]); const bal = -flatLedgerBalance(f.id);
+  const phone = f.owner?.phone||f.tenant?.phone, email = f.owner?.email||f.tenant?.email;
+  openModal(`<div class="modal-head"><h2>Reminder ${i+1} of ${queue.length}</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="card" style="box-shadow:none;border:1px solid var(--border);">
+      <div style="font-weight:700;">${flatLabel(f)} — ${f.owner?.name||f.tenant?.name||'—'}</div>
+      <div style="font-size:12px;color:var(--ink-soft);margin-top:2px;">${phone||'no phone'} · ${email||'no email'}</div>
+      <div class="num-cell" style="font-size:20px;font-weight:700;margin-top:8px;color:${bal<0?'var(--brick)':'var(--gold)'};">₹${fmt(bal)} balance</div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px;">
+      <button class="btn btn-primary" style="flex:1" ${phone?'':'disabled style="opacity:.4"'} onclick="lbQueueSend('whatsapp')">📱 Send WhatsApp</button>
+      <button class="btn btn-primary" style="flex:1" ${email?'':'disabled style="opacity:.4"'} onclick="lbQueueSend('email')">✉️ Send Email</button>
+    </div>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="advanceLowBalanceQueue()">Skip this resident</button>
+    <p style="font-size:11px;color:var(--ink-soft);margin-top:10px;">Each send opens WhatsApp/Mail for you to review and hit send — nothing goes out silently in the background.</p>`);
+}
+function lbQueueSend(channel){
+  const f = getFlat(window.__lbQueue[window.__lbIndex]);
+  if(channel==='whatsapp') sendLowBalanceWhatsApp(f.id); else sendLowBalanceEmail(f.id);
+  window.__lbSent = (window.__lbSent||0)+1;
+  advanceLowBalanceQueue();
+}
+function advanceLowBalanceQueue(){
+  window.__lbIndex = (window.__lbIndex||0)+1;
+  drawLowBalanceQueue();
 }
 function renderMeterEntry(){
   if(!DB.flats.length) return `<div class="empty"><div class="ic">⊙</div>Add flats first.</div>`;
@@ -1589,22 +1663,29 @@ function openReceiptModal(){
     <div class="field"><label>Flat</label><select id="rc_flat">${DB.flats.map(f=>`<option value="${f.id}">${flatLabel(f)} — ${f.owner?.name||''} ${flatOutstanding(f.id)>0?'(Due ₹'+fmt(flatOutstanding(f.id))+')':''}</option>`).join('')}</select></div>
     <div class="row2"><div class="field"><label>Amount</label><input id="rc_amount" type="number"></div>
     <div class="field"><label>Date</label><input id="rc_date" type="date" value="${todayISO()}"></div></div>
-    <div class="field"><label>Mode</label><select id="rc_mode">${PAYMENT_MODES.map(m=>`<option>${m}</option>`).join('')}</select></div>
+    <div class="field"><label>Received Into</label>${paymentAccountSelect('rc_acc', null, 'toggleReceiptVia()')}</div>
+    <div class="field" id="rc_viaWrap" style="display:none;"><label>Via</label>${paymentViaSelect('rc_via')}</div>
     <div class="field"><label>Narration (optional)</label><input id="rc_narr" placeholder="e.g. Cheque no., UTR"></div>
     <button class="btn btn-primary btn-block" onclick="saveReceipt()">Save Receipt</button>
   `);
+  setTimeout(toggleReceiptVia, 0);
+}
+function toggleReceiptVia(){
+  const acc = document.getElementById('rc_acc')?.value;
+  const wrap = document.getElementById('rc_viaWrap');
+  if(wrap) wrap.style.display = (acc && acc!=='Cash in Hand')? 'block':'none';
 }
 function saveReceipt(){
   if(!canEdit()) return;
   const flatId = document.getElementById('rc_flat').value;
   const amount = Number(document.getElementById('rc_amount').value);
   const date = document.getElementById('rc_date').value;
-  const mode = document.getElementById('rc_mode').value;
+  const acc = document.getElementById('rc_acc').value;
+  const via = acc!=='Cash in Hand'? document.getElementById('rc_via').value : 'Cash';
   const narr = document.getElementById('rc_narr').value.trim();
   if(!amount || amount<=0){ toast('Enter valid amount'); return; }
-  const cashAcc = modeToAccount(mode);
-  addVoucher({type:'Receipt', flatId, date, narration: narr || `Maintenance receipt — ${flatLabel(getFlat(flatId))} (${mode})`,
-    entries:[{account:cashAcc,debit:amount,credit:0},{account:'Maintenance Receivable',debit:0,credit:amount}]});
+  addVoucher({type:'Receipt', flatId, date, narration: narr || `Maintenance receipt — ${flatLabel(getFlat(flatId))} (${via} → ${acc})`,
+    entries:[{account:acc,debit:amount,credit:0},{account:'Maintenance Receivable',debit:0,credit:amount}]});
   save(); closeModal(); toast('Receipt submitted — awaiting checker approval'); render();
 }
 
@@ -1647,9 +1728,9 @@ function openVoucherModal(){
     <div class="field"><label>Voucher Type</label><select id="vc_type" onchange="toggleVoucherFields()"><option>Payment</option><option>Journal</option><option>Contra</option><option>Receipt</option></select></div>
     <div class="field"><label>Date</label><input id="vc_date" type="date" value="${todayISO()}"></div>
     <div class="field" id="vc_drWrap"><label id="vc_drLabel">Debit Account</label><select id="vc_dr">${Object.keys(ACCOUNTS).map(a=>`<option>${a}</option>`).join('')}</select></div>
-    <div class="field" id="vc_modeWrapDr" style="display:none;"><label>Received Via</label><select id="vc_modeDr">${PAYMENT_MODES.map(m=>`<option>${m}</option>`).join('')}</select></div>
+    <div class="field" id="vc_modeWrapDr" style="display:none;"><label>Received Into</label>${paymentAccountSelect('vc_modeDr')}</div>
     <div class="field" id="vc_crWrap"><label id="vc_crLabel">Credit Account</label><select id="vc_cr">${Object.keys(ACCOUNTS).map(a=>`<option>${a}</option>`).join('')}</select></div>
-    <div class="field" id="vc_modeWrapCr" style="display:none;"><label>Paid Via</label><select id="vc_modeCr">${PAYMENT_MODES.map(m=>`<option>${m}</option>`).join('')}</select></div>
+    <div class="field" id="vc_modeWrapCr" style="display:none;"><label>Paid From</label>${paymentAccountSelect('vc_modeCr')}</div>
     <div class="field"><label>Amount</label><input id="vc_amt" type="number"></div>
     <div class="field"><label>Narration</label><input id="vc_narr" placeholder="e.g. Electricity bill paid - June"></div>
     <button class="btn btn-primary btn-block" onclick="saveVoucher()">Save Voucher</button>
@@ -1670,8 +1751,8 @@ function saveVoucher(){
   if(!canEdit()) return;
   const type=document.getElementById('vc_type').value, date=document.getElementById('vc_date').value;
   const isPayment = type==='Payment', isReceipt = type==='Receipt';
-  const dr = isReceipt? modeToAccount(document.getElementById('vc_modeDr').value) : document.getElementById('vc_dr').value;
-  const cr = isPayment? modeToAccount(document.getElementById('vc_modeCr').value) : document.getElementById('vc_cr').value;
+  const dr = isReceipt? document.getElementById('vc_modeDr').value : document.getElementById('vc_dr').value;
+  const cr = isPayment? document.getElementById('vc_modeCr').value : document.getElementById('vc_cr').value;
   const amt=Number(document.getElementById('vc_amt').value); let narr=document.getElementById('vc_narr').value.trim();
   if(!amt||amt<=0){ toast('Enter valid amount'); return; }
   if(dr===cr){ toast('Debit & Credit accounts must differ'); return; }
@@ -1841,11 +1922,17 @@ function openVendorPaymentModal(){
     <div class="field"><label>Vendor</label><select id="vp_vendor" onchange="drawVendorOutstanding()">${DB.vendors.map(v=>`<option value="${v.id}">${v.name} ${vendorOutstanding(v.id)>0?'(Due ₹'+fmt(vendorOutstanding(v.id))+')':''}</option>`).join('')}</select></div>
     <div id="vp_outstanding"></div>
     <div class="row2"><div class="field"><label>Amount</label><input id="vp_amt" type="number"></div><div class="field"><label>Date</label><input id="vp_date" type="date" value="${todayISO()}"></div></div>
-    <div class="field"><label>Mode</label><select id="vp_mode">${PAYMENT_MODES.map(m=>`<option>${m}</option>`).join('')}</select></div>
+    <div class="field"><label>Paid From</label>${paymentAccountSelect('vp_acc', null, 'toggleVPVia()')}</div>
+    <div class="field" id="vp_viaWrap" style="display:none;"><label>Via</label>${paymentViaSelect('vp_via')}</div>
     <p style="font-size:11.5px;color:var(--ink-soft);">A single payment here settles the vendor's oldest outstanding bills first (consolidated payment) — enter the total amount you're paying across bills.</p>
     <button class="btn btn-primary btn-block" onclick="saveVendorPayment()">Save Payment</button>
   `);
-  setTimeout(drawVendorOutstanding,0);
+  setTimeout(()=>{ drawVendorOutstanding(); toggleVPVia(); },0);
+}
+function toggleVPVia(){
+  const acc = document.getElementById('vp_acc')?.value;
+  const wrap = document.getElementById('vp_viaWrap');
+  if(wrap) wrap.style.display = (acc && acc!=='Cash in Hand')? 'block':'none';
 }
 function drawVendorOutstanding(){
   const vendorId = document.getElementById('vp_vendor')?.value; if(!vendorId) return;
@@ -1859,11 +1946,11 @@ function drawVendorOutstanding(){
 function saveVendorPayment(){
   if(!canEdit()) return;
   const vendorId=document.getElementById('vp_vendor').value, amount=Number(document.getElementById('vp_amt').value);
-  const date=document.getElementById('vp_date').value, mode=document.getElementById('vp_mode').value;
+  const date=document.getElementById('vp_date').value, acc=document.getElementById('vp_acc').value;
+  const via = acc!=='Cash in Hand'? document.getElementById('vp_via').value : 'Cash';
   if(!amount||amount<=0){ toast('Enter valid amount'); return; }
-  const cashAcc = modeToAccount(mode);
-  addVoucher({type:'VendorPayment', vendorId, date, narration:`Payment to ${getVendor(vendorId).name} (${mode})`,
-    entries:[{account:'Vendor Creditors',debit:amount,credit:0},{account:cashAcc,debit:0,credit:amount}]});
+  addVoucher({type:'VendorPayment', vendorId, date, narration:`Payment to ${getVendor(vendorId).name} (${via} → ${acc})`,
+    entries:[{account:'Vendor Creditors',debit:amount,credit:0},{account:acc,debit:0,credit:amount}]});
   save(); closeModal(); toast('Payment submitted — awaiting checker approval'); go('vendors','payments');
 }
 
@@ -1932,6 +2019,7 @@ function openPayrollRunModal(){
   openModal(`
     <div class="modal-head"><h2>Process Salary</h2><button class="close-x" onclick="closeModal()">×</button></div>
     <div class="field"><label>Period</label><input id="pr_period" type="month" value="${todayISO().slice(0,7)}"></div>
+    <div class="field"><label>Disburse Net Salary From</label>${paymentAccountSelect('pr_acc')}</div>
     <p style="font-size:12.5px;color:var(--ink-soft)">This will compute salary, PF & ESI for all ${DB.employees.length} employee(s) and submit for checker approval.</p>
     <button class="btn btn-primary btn-block" onclick="processPayroll()">Process Salary</button>
   `);
@@ -1941,6 +2029,7 @@ function processPayroll(){
   const period = document.getElementById('pr_period').value;
   if(!period){ toast('Select period'); return; }
   if(DB.payrollRuns.some(r=>r.period===period)){ toast('Payroll already processed for this period'); return; }
+  const disburseAcc = document.getElementById('pr_acc').value;
   const items = DB.employees.map(e=>{
     const gross = empGross(e); const pfWage = Math.min(e.basic||0,15000);
     const pfEmp = e.pfApplicable? Math.round(pfWage*0.12):0; const pfEmployer = e.pfApplicable? Math.round(pfWage*0.12):0;
@@ -1957,7 +2046,7 @@ function processPayroll(){
   const entries=[
     {account:'Salaries Expense',debit:totalGross,credit:0},
     {account:'Employer PF & ESI Expense',debit:totalPFEmployer+totalESIEmployer,credit:0},
-    {account:'Bank Account',debit:0,credit:totalNet},
+    {account:disburseAcc,debit:0,credit:totalNet},
     {account:'PF Payable',debit:0,credit:totalPFEmp+totalPFEmployer},
     {account:'ESI Payable',debit:0,credit:totalESIEmp+totalESIEmployer}
   ].filter(e=>e.debit>0||e.credit>0);
@@ -2003,7 +2092,7 @@ function openAssetModal(id){
     <div class="row2"><div class="field"><label>Purchase Date</label><input id="as_date" type="date" value="${a.purchaseDate}"></div><div class="field"><label>Cost ₹</label><input id="as_cost" type="number" value="${a.cost}"></div></div>
     <div class="row2"><div class="field"><label>Useful Life (yrs)</label><input id="as_life" type="number" value="${a.usefulLifeYears}"></div><div class="field"><label>Vendor</label><input id="as_vendor" value="${a.vendor||''}"></div></div>
     <div class="row2"><div class="field"><label>Warranty Expiry</label><input id="as_warr" type="date" value="${a.warrantyExpiry||''}"></div><div class="field"><label>AMC Expiry</label><input id="as_amc" type="date" value="${a.amcExpiry||''}"></div></div>
-    ${id?'':`<div class="field"><label>Paid Via</label><select id="as_pay"><option value="Bank">Bank</option><option value="Cash">Cash</option><option value="Credit">Vendor Credit</option></select></div>`}
+    ${id?'':`<div class="field"><label>Paid Via</label><select id="as_pay"><option value="Credit">Vendor Credit</option>${paymentAccountOptions().map(a=>`<option value="${a}">${a}</option>`).join('')}</select></div>`}
     ${isReadOnly()?'<div class="readonly-note">View only — Auditor role cannot modify records.</div>':`<button class="btn btn-primary btn-block" onclick="saveAsset('${a.id}')">Save Asset</button>`}
   `);
 }
@@ -2017,7 +2106,7 @@ function saveAsset(id){
   if(!data.name||data.cost<=0){ toast('Enter name & valid cost'); return; }
   if(isNew){
     const mode=document.getElementById('as_pay').value;
-    const payAcc = mode==='Cash'?'Cash in Hand':mode==='Credit'?'Vendor Creditors':'Bank Account';
+    const payAcc = mode==='Credit'?'Vendor Creditors':mode;
     DB.seq.asset++; DB.assets.push(data);
     addVoucher({type:'Journal', assetRef:data.id, date:data.purchaseDate, narration:`Asset purchase — ${data.name}`,
       entries:[{account:'Fixed Assets',debit:data.cost,credit:0},{account:payAcc,debit:0,credit:data.cost}]});
@@ -2082,14 +2171,14 @@ function openInventoryTxModal(){
     <div class="field"><label>Type</label><select id="tx_type" onchange="toggleTxAccount()"><option value="purchase">Purchase (stock in)</option><option value="issue">Issue / Consumption (stock out)</option></select></div>
     <div class="row2"><div class="field"><label>Quantity</label><input id="tx_qty" type="number"></div><div class="field"><label>Rate ₹/unit</label><input id="tx_rate" type="number"></div></div>
     <div class="field"><label>Date</label><input id="tx_date" type="date" value="${todayISO()}"></div>
-    <div class="field"><label id="tx_acc_label">Paid Via</label><select id="tx_acc">${['Cash in Hand','Bank Account','Vendor Creditors'].map(a=>`<option>${a}</option>`).join('')}</select></div>
+    <div class="field"><label id="tx_acc_label">Paid Via</label><select id="tx_acc">${['Vendor Creditors',...paymentAccountOptions()].map(a=>`<option>${a}</option>`).join('')}</select></div>
     <div class="field"><label>Note</label><input id="tx_note"></div>
     <button class="btn btn-primary btn-block" onclick="saveInventoryTx()">Save Transaction</button>`);
   window.__expAccs = expAccs;
 }
 function toggleTxAccount(){
   const type=document.getElementById('tx_type').value; const sel=document.getElementById('tx_acc'); const lbl=document.getElementById('tx_acc_label');
-  if(type==='purchase'){ lbl.textContent='Paid Via'; sel.innerHTML=['Cash in Hand','Bank Account','Vendor Creditors'].map(a=>`<option>${a}</option>`).join(''); }
+  if(type==='purchase'){ lbl.textContent='Paid Via'; sel.innerHTML=['Vendor Creditors',...paymentAccountOptions()].map(a=>`<option>${a}</option>`).join(''); }
   else { lbl.textContent='Expense Account'; sel.innerHTML=window.__expAccs.map(a=>`<option ${a==='Housekeeping Expense'?'selected':''}>${a}</option>`).join(''); }
 }
 function saveInventoryTx(){
@@ -2260,7 +2349,7 @@ function promptRespond(id){
 /* ============ REPORTS ============ */
 function renderReports(){
   const sr = subroute || 'trial';
-  const tabs=[['trial','Trial Balance'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['defaulters','Defaulters'],['advances','Advance Balances'],['flatledger','Flat Ledger']];
+  const tabs=[['trial','Trial Balance'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['defaulters','Defaulters'],['advances','Advance Balances'],['lowbalance','Low Balance Alerts'],['flatledger','Flat Ledger']];
   const isFinancialStatement = ['trial','ie','rp','bs'].includes(sr);
   if(!window.__reportFrom) window.__reportFrom = fyStart();
   if(!window.__reportTo) window.__reportTo = todayISO();
@@ -2332,6 +2421,23 @@ function renderReports(){
       <td><div style="display:flex;gap:4px;"><button class="btn btn-outline btn-sm" ${(x.f.owner?.phone||x.f.tenant?.phone)?'':'disabled style="opacity:.3"'} onclick="sendReminderWhatsApp('${x.f.id}')" title="WhatsApp">📱</button><button class="btn btn-outline btn-sm" ${(x.f.owner?.email||x.f.tenant?.email)?'':'disabled style="opacity:.3"'} onclick="sendReminderEmail('${x.f.id}')" title="Email">✉️</button></div></td></tr>`).join('');
     body = (defaulters.length&&!isReadOnly()? `<button class="btn btn-primary btn-block" style="margin-bottom:12px;" onclick="openReminderQueue()">Send Reminders to All (${defaulters.length})</button>`:'') +
       `<div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th>Phone</th><th class="num-cell">Due</th><th>Remind</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No defaulters 🎉</td></tr>'}</table></div>`;
+  } else if(sr==='lowbalance'){
+    const threshold = DB.society.minBalanceThreshold||0;
+    if(!threshold){
+      body = `<div class="empty"><div class="ic">⚠</div>No minimum balance threshold set yet.<br><br>${isReadOnly()?'':`<button class="btn btn-primary" onclick="go('settings')">Set it under Setup</button>`}</div>`;
+    } else {
+      const rows = DB.flats.map(f=>({f, bal: -flatLedgerBalance(f.id)})).filter(x=>x.bal<threshold).sort((a,b)=>a.bal-b.bal);
+      body = `<div class="stat-grid" style="margin-bottom:12px;">
+        <div class="stat"><div class="lbl">Threshold</div><div class="val">₹${fmt(threshold)}</div></div>
+        <div class="stat ${rows.length?'alert':'good'}"><div class="lbl">Flats Below Threshold</div><div class="val">${rows.length}</div></div>
+      </div>`;
+      if(rows.length && !isReadOnly()) body += `<button class="btn btn-primary btn-block" style="margin-bottom:12px;" onclick="openLowBalanceQueue()">Send Reminders to All (${rows.length})</button>`;
+      body += `<div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th class="num-cell">Balance</th><th>Remind</th></tr>
+        ${rows.map(x=>`<tr><td>${flatLabel(x.f)}</td><td>${x.f.owner?.name||'—'}</td><td class="num-cell" style="${x.bal<0?'color:var(--brick)':'color:var(--gold)'}">₹${fmt(x.bal)}</td>
+          <td><div style="display:flex;gap:4px;"><button class="btn btn-outline btn-sm" ${(x.f.owner?.phone||x.f.tenant?.phone)?'':'disabled style="opacity:.3"'} onclick="sendLowBalanceWhatsApp('${x.f.id}')" title="WhatsApp">📱</button><button class="btn btn-outline btn-sm" ${(x.f.owner?.email||x.f.tenant?.email)?'':'disabled style="opacity:.3"'} onclick="sendLowBalanceEmail('${x.f.id}')" title="Email">✉️</button></div></td></tr>`).join('') || '<tr><td colspan=4 style="color:var(--ink-soft)">Every flat is above the threshold 🎉</td></tr>'}
+        </table></div>
+        <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Balance = advance credit held minus any current due — a negative figure means the flat actually owes money, not just running low. This list recalculates live from today's data every time you open it; it isn't a background job, so nothing gets checked or sent unless the app is open.</p>`;
+    }
   } else if(sr==='advances'){
     if(!window.__advDate) window.__advDate = todayISO();
     body = `<div class="field"><label>As At Date</label><input id="adv_date" type="date" value="${window.__advDate}" onchange="window.__advDate=this.value;render();"></div>`;
@@ -2460,7 +2566,27 @@ function renderSettings(){
     <div class="field"><label>Society Name</label><input id="st_name" value="${DB.society.name}"></div>
     <div class="field"><label>Total Society Area (sqft)</label><input id="st_area" type="number" value="${DB.society.totalArea||''}" placeholder="Leave blank to auto-sum flat areas"></div>
     <p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:8px;">Used when apportioning society-wide expenses by area (Billing → Consolidated Bills). Set this explicitly if your total includes common areas, corridors, or clubhouse space not part of any single flat — otherwise it defaults to the sum of all flat areas (currently ${fmt(DB.flats.reduce((s,f)=>s+(f.area||0),0))} sqft).</p>
+    <div class="field"><label>Minimum Balance Threshold ₹</label><input id="st_minbal" type="number" value="${DB.society.minBalanceThreshold||''}" placeholder="e.g. 2000 — leave 0 to disable"></div>
+    <p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:8px;">If a flat's running balance (advance credit minus any due) falls below this amount, it shows up in Reports → Low Balance Alerts so you can nudge them to top up before they go into arrears. Set to 0 to turn this off.</p>
     <button class="btn btn-primary btn-sm" onclick="saveSocietyName()">Save</button>
+  </div>
+  <div class="card"><div class="section-title">Import Formats & Templates</div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Every file format this app accepts, in one place — download a template, fill it in, upload it back from the screen noted.</p>
+    <div style="border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:10px;">
+      <div style="font-weight:700;font-size:13px;">Flats Master</div>
+      <div style="font-size:11.5px;color:var(--ink-soft);margin:3px 0 8px;">Columns: Tower, FlatNo, FlatType, Area, ParkingSlots, Occupancy, OwnerName, OwnerPhone, OwnerEmail, TenantName. Upload from: <b>Flats → Import CSV</b>.</div>
+      <button class="btn btn-outline btn-sm" onclick="downloadFlatCSVTemplate()">⬇ Download Template (CSV)</button>
+    </div>
+    <div style="border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:10px;">
+      <div style="font-weight:700;font-size:13px;">Bill Charges (from another billing app)</div>
+      <div style="font-size:11.5px;color:var(--ink-soft);margin:3px 0 8px;">Columns: Tower, FlatNo, Period, ChargeHead, Amount, GSTAmount. One row per charge line — same Tower+FlatNo+Period combine into one bill. Upload from: <b>Billing → Bills → Import from Other App</b>.</div>
+      <button class="btn btn-outline btn-sm" onclick="downloadBillChargesCSVTemplate()">⬇ Download Template (CSV)</button>
+    </div>
+    <div>
+      <div style="font-weight:700;font-size:13px;">Bank Statement (for reconciliation)</div>
+      <div style="font-size:11.5px;color:var(--ink-soft);margin:3px 0 8px;">Columns: Date, Description, Debit, Credit (most net-banking exports already match this, or close to it — CSV or Excel both work). Upload from: <b>Setup → Bank & FD Accounts → Reconcile</b>.</div>
+      <button class="btn btn-outline btn-sm" onclick="downloadStatementTemplate()">⬇ Download Template (CSV)</button>
+    </div>
   </div>
   <div class="card"><div class="section-title">Opening Balances</div>
     <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">If you're switching to SmartRWA mid-year, bring forward what people already owed/were owed and your account balances as on your cut-over date. Each of these posts a normal voucher through the usual checker approval, same as any other entry.</p>
@@ -2471,10 +2597,10 @@ function renderSettings(){
     </div>
   </div>
   <div class="card"><div class="section-title"><span>Bank & FD Accounts</span>${isReadOnly()?'':'<button class="btn btn-outline btn-sm" onclick="openBankAccountModal()">+ Add Account</button>'}</div>
-    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Register each Savings, Current, or Fixed Deposit account you hold — including which fund it belongs to (General, Sinking, Corpus). This is a reference register you keep up to date manually; it doesn't yet drive the actual receipt/payment entries — see the note below.</p>
-    ${DB.bankAccounts.length? `<div class="tbl-wrap"><table><tr><th>Account</th><th>Fund</th><th class="num-cell">Balance</th></tr>
-      ${DB.bankAccounts.map(b=>`<tr onclick="openBankAccountModal('${b.id}')"><td><b>${b.bankName}</b><div style="font-size:11px;color:var(--ink-soft)">${b.type}${b.accountNumber?' · '+b.accountNumber:''}${b.type==='FD'&&b.maturityDate?' · matures '+b.maturityDate:''}</div></td><td style="font-size:12px;">${b.fund}</td><td class="num-cell">₹${fmt(b.amount)}</td></tr>`).join('')}
-      <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="2">Total</td><td class="num-cell">₹${fmt(DB.bankAccounts.reduce((s,b)=>s+(b.amount||0),0))}</td></tr>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Register each Savings, Current, or Fixed Deposit account you hold — including which fund it belongs to (General, Sinking, Corpus). Receipts, payments, payroll and asset purchases can all be posted directly to a specific account here.</p>
+    ${DB.bankAccounts.length? `<div class="tbl-wrap"><table><tr><th>Account</th><th>Fund</th><th class="num-cell">Balance</th><th></th></tr>
+      ${DB.bankAccounts.map(b=>`<tr><td onclick="openBankAccountModal('${b.id}')"><b>${b.bankName}</b><div style="font-size:11px;color:var(--ink-soft)">${b.type}${b.accountNumber?' · '+b.accountNumber:''}${b.type==='FD'&&b.maturityDate?' · matures '+b.maturityDate:''}${b.lastReconciledDate?' · reconciled to '+b.lastReconciledDate:''}</div></td><td onclick="openBankAccountModal('${b.id}')" style="font-size:12px;">${b.fund}</td><td onclick="openBankAccountModal('${b.id}')" class="num-cell">₹${fmt(b.amount)}</td><td>${b.type!=='FD'?`<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();openBankReconcileModal('${b.id}')">Reconcile</button>`:''}</td></tr>`).join('')}
+      <tr style="font-weight:700;border-top:2px solid var(--ink);"><td colspan="2">Total</td><td class="num-cell">₹${fmt(DB.bankAccounts.reduce((s,b)=>s+(b.amount||0),0))}</td><td></td></tr>
       </table></div>` : `<p style="font-size:12.5px;color:var(--ink-soft)">No bank/FD accounts registered yet.</p>`}
   </div>
   <div class="card"><div class="section-title">Utility Reference Rates</div>
@@ -2539,6 +2665,7 @@ function renderSettings(){
 function saveSocietyName(){
   DB.society.name=document.getElementById('st_name').value.trim()||'My Housing Society';
   DB.society.totalArea = Number(document.getElementById('st_area').value)||0;
+  DB.society.minBalanceThreshold = Number(document.getElementById('st_minbal').value)||0;
   save(); toast('Saved'); render();
 }
 function saveUtilityRates(){
@@ -2591,6 +2718,188 @@ function saveBankAccount(id){
 function deleteBankAccount(id){
   if(!canEdit()) return;
   DB.bankAccounts = DB.bankAccounts.filter(b=>b.id!==id); save(); closeModal(); render();
+}
+
+/* ============ BANK RECONCILIATION ============ */
+function openBankReconcileModal(bankId){
+  syncBankLedgerAccounts();
+  const b = DB.bankAccounts.find(x=>x.id===bankId); if(!b) return;
+  if(!b.clearedVouchers) b.clearedVouchers = [];
+  if(!window.__reconDate) window.__reconDate = todayISO();
+  window.__reconBankId = bankId;
+  drawBankReconcile();
+}
+function drawBankReconcile(){
+  const b = DB.bankAccounts.find(x=>x.id===window.__reconBankId); if(!b) return;
+  const accName = b.ledgerAccountName || bankLedgerName(b);
+  const asAt = window.__reconDate;
+  const entries = [];
+  DB.vouchers.filter(v=>v.status==='approved' && v.date<=asAt).forEach(v=>{
+    v.entries.forEach(e=>{ if(e.account===accName && (e.debit||e.credit)) entries.push({voucherId:v.id, date:v.date, narration:v.narration||v.type, debit:e.debit||0, credit:e.credit||0}); });
+  });
+  entries.sort((a,b2)=>a.date.localeCompare(b2.date));
+  const bookBalance = entries.reduce((s,e)=>s+e.debit-e.credit,0);
+  const cleared = new Set(b.clearedVouchers||[]);
+  const unclearedDr = entries.filter(e=>!cleared.has(e.voucherId)).reduce((s,e)=>s+e.debit,0);
+  const unclearedCr = entries.filter(e=>!cleared.has(e.voucherId)).reduce((s,e)=>s+e.credit,0);
+  const calcStatementBal = bookBalance - unclearedDr + unclearedCr;
+  const enteredStatementBal = window.__reconStatementBal!==undefined? window.__reconStatementBal : (b.lastReconciledBalance||0);
+  const diff = enteredStatementBal - calcStatementBal;
+
+  openModal(`<div class="modal-head"><h2>Reconcile — ${b.bankName}</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="row2">
+      <div class="field"><label>As At Date</label><input id="rec_date" type="date" value="${asAt}" onchange="window.__reconDate=this.value;drawBankReconcile();"></div>
+      <div class="field"><label>Statement Balance ₹ (per bank)</label><input id="rec_stmtbal" type="number" value="${enteredStatementBal||''}" onchange="window.__reconStatementBal=Number(this.value)||0;drawBankReconcile();"></div>
+    </div>
+    <div class="stat-grid" style="margin:10px 0;">
+      <div class="stat"><div class="lbl">Book Balance</div><div class="val">₹${fmt(bookBalance)}</div></div>
+      <div class="stat"><div class="lbl">Calculated Bank Balance</div><div class="val">₹${fmt(calcStatementBal)}</div></div>
+      <div class="stat ${Math.abs(diff)<1?'good':'alert'}"><div class="lbl">Difference vs Entered</div><div class="val">₹${fmt(Math.abs(diff))}</div></div>
+      <div class="stat"><div class="lbl">Uncleared Entries</div><div class="val">${entries.filter(e=>!cleared.has(e.voucherId)).length}</div></div>
+    </div>
+    ${isReadOnly()?'':`<div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:12px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">Upload Bank Statement — Auto-Match</div>
+      <p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:8px;">Upload your bank's statement (CSV or Excel) and matching entries — same date (±3 days) and same amount — are ticked automatically. Needs columns for Date, Debit/Withdrawal, Credit/Deposit (most net-banking exports already have these).</p>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-outline btn-sm" style="flex:1" onclick="downloadStatementTemplate()">⬇ Template</button>
+        <button class="btn btn-outline btn-sm" style="flex:1" onclick="document.getElementById('rec_stmtFile').click()">⬆ Upload Statement</button>
+      </div>
+      <input type="file" id="rec_stmtFile" accept=".csv,.xlsx,.xls" style="display:none" onchange="handleStatementUpload(event)">
+      <div id="rec_uploadStatus"></div>
+    </div>`}
+    <p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:8px;">Or tick manually — anything left unticked is treated as a deposit-in-transit or a payment yet to clear. When Difference reads ₹0, you're reconciled.</p>
+    <div class="tbl-wrap"><table><tr><th></th><th>Date</th><th>Narration</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th></tr>
+    ${entries.map(e=>`<tr><td><input type="checkbox" class="rec_ck" data-vid="${e.voucherId}" ${cleared.has(e.voucherId)?'checked':''} onchange="toggleReconClear(${e.voucherId})" style="width:17px;height:17px;"></td><td style="font-size:11.5px;">${e.date}</td><td style="font-size:12px;">${e.narration}</td><td class="num-cell">${e.debit?'₹'+fmt(e.debit):''}</td><td class="num-cell">${e.credit?'₹'+fmt(e.credit):''}</td></tr>`).join('')||'<tr><td colspan=5 style="color:var(--ink-soft)">No entries in this account yet</td></tr>'}
+    </table></div>
+    ${isReadOnly()?'':`<button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="saveReconciliation()">Save Reconciliation Checkpoint</button>`}
+  `);
+}
+function downloadStatementTemplate(){
+  const csv = ['Date,Description,Debit,Credit',
+    '2026-06-05,NEFT CR-SOCIETY DUES,0,9200',
+    '2026-06-08,CHQ PAID-1234,5000,0'].join('\n');
+  const blob = new Blob([csv],{type:'text/csv'}); const url=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download='bank-statement-template.csv'; a.click();
+  toast('Template downloaded — Date, Description, Debit, Credit columns');
+}
+function parseStatementDate(raw){
+  raw = String(raw).trim();
+  if(/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0,10);
+  const m = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if(m){
+    let [, d, mo, y] = m; if(y.length===2) y = '20'+y;
+    return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  }
+  return raw;
+}
+function daysBetween(d1, d2){ return Math.abs((new Date(d1)-new Date(d2))/86400000); }
+function findColIndex(header, candidates){
+  const lower = header.map(h=>String(h).trim().toLowerCase());
+  for(const c of candidates){ const i = lower.indexOf(c); if(i>=0) return i; }
+  for(const c of candidates){ const i = lower.findIndex(h=>h.includes(c)); if(i>=0) return i; }
+  return -1;
+}
+function processStatementRows(rows){
+  if(!rows.length){ toast('File appears empty'); return; }
+  const header = rows[0];
+  const idxDate = findColIndex(header, ['date','transaction date','txn date','value date']);
+  const idxDesc = findColIndex(header, ['description','narration','particulars','remarks']);
+  const idxDebit = findColIndex(header, ['debit','withdrawal amt','withdrawal','dr']);
+  const idxCredit = findColIndex(header, ['credit','deposit amt','deposit','cr']);
+  if(idxDate<0 || (idxDebit<0 && idxCredit<0)){ toast('Could not find Date/Debit/Credit columns — check the template'); return; }
+
+  const b = DB.bankAccounts.find(x=>x.id===window.__reconBankId); if(!b) return;
+  const accName = b.ledgerAccountName || bankLedgerName(b);
+  const cleared = new Set(b.clearedVouchers||[]);
+  const bookEntries = [];
+  DB.vouchers.filter(v=>v.status==='approved').forEach(v=>{
+    v.entries.forEach(e=>{ if(e.account===accName && (e.debit||e.credit) && !cleared.has(v.id)) bookEntries.push({voucherId:v.id, date:v.date, debit:e.debit||0, credit:e.credit||0}); });
+  });
+  const used = new Set();
+  let matched=0, unmatched=0;
+  const unmatchedRows = [];
+
+  for(let i=1;i<rows.length;i++){
+    const row = rows[i]; if(!row || !row.some(c=>String(c||'').trim())) continue;
+    const date = parseStatementDate(row[idxDate]);
+    const debit = Number(row[idxDebit]) || 0;   // money out of bank
+    const credit = Number(row[idxCredit]) || 0; // money into bank
+    const targetAmt = debit>0? debit : credit;
+    if(!targetAmt) continue;
+    const wantSide = debit>0? 'credit' : 'debit'; // statement debit = book credit (asset decreasing), statement credit = book debit
+    let best=null, bestDiff=Infinity;
+    for(const e of bookEntries){
+      if(used.has(e.voucherId)) continue;
+      const bookAmt = wantSide==='credit'? e.credit : e.debit;
+      if(Math.abs(bookAmt-targetAmt) > 1) continue;
+      const dd = daysBetween(e.date, date);
+      if(dd<=7 && dd<bestDiff){ best=e; bestDiff=dd; }
+    }
+    if(best){ used.add(best.voucherId); matched++; }
+    else { unmatched++; unmatchedRows.push({date, desc: idxDesc>=0? row[idxDesc]: '', amount: targetAmt, side: debit>0?'Debit (out)':'Credit (in)'}); }
+  }
+  used.forEach(vid=>{ if(!cleared.has(vid)) b.clearedVouchers.push(vid); });
+  save();
+
+  const statusEl = document.getElementById('rec_uploadStatus');
+  if(statusEl){
+    statusEl.innerHTML = `<div class="readonly-note" style="margin-top:8px;">✓ ${matched} entr${matched===1?'y':'ies'} auto-matched and ticked. ${unmatched} statement row(s) had no matching book entry within 7 days${unmatched?' — check these are not missed transactions (bank charges, interest, or an entry you forgot to record):':''}.
+      ${unmatchedRows.slice(0,8).map(r=>`<div style="font-size:11px;margin-top:4px;">${r.date} · ${r.desc||'—'} · ₹${fmt(r.amount)} (${r.side})</div>`).join('')}
+      ${unmatchedRows.length>8? `<div style="font-size:11px;margin-top:4px;">…and ${unmatchedRows.length-8} more</div>`:''}
+    </div>`;
+  }
+  drawBankReconcile();
+}
+function handleStatementUpload(ev){
+  const file = ev.target.files[0]; if(!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if(ext==='csv'){
+    const reader = new FileReader();
+    reader.onload = e=>{
+      const lines = e.target.result.split(/\\r?\\n/).filter(l=>l.trim().length);
+      const rows = lines.map(parseCSVLine);
+      processStatementRows(rows);
+    };
+    reader.readAsText(file);
+  } else {
+    loadSheetJS(()=>{
+      const reader = new FileReader();
+      reader.onload = e=>{
+        try{
+          const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(sheet, {header:1, raw:false});
+          processStatementRows(rows);
+        }catch(err){ toast('Could not read this Excel file'); }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+  ev.target.value='';
+}
+function loadSheetJS(callback){
+  if(window.XLSX){ callback(); return; }
+  const statusEl = document.getElementById('rec_uploadStatus');
+  if(statusEl) statusEl.innerHTML = `<p style="font-size:11.5px;color:var(--ink-soft);margin-top:8px;">Loading Excel support…</p>`;
+  const script = document.createElement('script');
+  script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  script.onload = callback;
+  script.onerror = ()=>{ toast('Could not load Excel support — no internet? Save the file as CSV instead.'); if(statusEl) statusEl.innerHTML=''; };
+  document.head.appendChild(script);
+}
+function toggleReconClear(voucherId){
+  const b = DB.bankAccounts.find(x=>x.id===window.__reconBankId); if(!b) return;
+  if(!b.clearedVouchers) b.clearedVouchers=[];
+  const idx = b.clearedVouchers.indexOf(voucherId);
+  if(idx>=0) b.clearedVouchers.splice(idx,1); else b.clearedVouchers.push(voucherId);
+  save(); drawBankReconcile();
+}
+function saveReconciliation(){
+  if(!canEdit()) return;
+  const b = DB.bankAccounts.find(x=>x.id===window.__reconBankId); if(!b) return;
+  b.lastReconciledDate = window.__reconDate;
+  b.lastReconciledBalance = window.__reconStatementBal!==undefined? window.__reconStatementBal : (b.lastReconciledBalance||0);
+  save(); toast('Reconciliation checkpoint saved'); closeModal(); render();
 }
 
 /* ============ OPENING BALANCES ============ */
@@ -3056,7 +3365,13 @@ const FAQ = [
   {k:['sold','new owner','tenant change','ownership','transfer flat'], q:'How do I update a flat when it\'s sold or gets a new tenant?',
    a:'Flats → tap the flat → edit the Owner or Tenant fields directly, then Save. Check for outstanding dues or an advance credit first, since the balance carries over to whoever\'s name is on the flat. Every change is auto-logged — see "View Ownership & Tenancy History" on that flat for the full trail of who changed what and when.'},
   {k:['bank account','multiple bank','fd','fixed deposit','savings'], q:'Can I track multiple bank accounts and FDs?',
-   a:'Setup → Bank & FD Accounts — register each Savings, Current, or FD account with its number, which fund it belongs to (General/Sinking/Corpus), and balance. It\'s a reference register you keep updated manually; receipts and payments still post to the pooled Bank Account for now.'},
+   a:'Setup → Bank & FD Accounts — register each Savings, Current, or FD account with its number, which fund it belongs to (General/Sinking/Corpus), and balance. Every receipt, payment, payroll run, and asset purchase now lets you pick exactly which account it hit, so each one builds its own real ledger.'},
+  {k:['reconcile','reconciliation','statement balance','bank statement','clear'], q:'How do I reconcile a bank account?',
+   a:'Setup → Bank & FD Accounts → "Reconcile" next to any Savings/Current account. Enter your bank statement balance, then either tick entries manually, or upload your actual bank statement (CSV or Excel) and matching entries get ticked automatically by date and amount. Anything left unticked is a deposit-in-transit or a payment not yet cleared. When "Difference" shows ₹0, you are reconciled; save it as a checkpoint.'},
+  {k:['upload statement','auto match','auto-match','excel statement','csv statement'], q:'Can I upload my bank statement to auto-reconcile?',
+   a:'Yes — in the Reconcile screen, "Upload Bank Statement" accepts CSV or Excel. It looks for Date/Debit/Credit-style columns (most net-banking exports already have these), matches each row against your unreconciled entries by date (±3 days) and amount, and ticks the matches automatically. Unmatched statement rows are listed separately — worth checking those aren\'t a bank charge or interest you have not recorded yet. CSV works fully offline; Excel needs a brief one-time internet connection to load a small reader library.'},
+  {k:['minimum balance','low balance','threshold','top up','recharge'], q:'How do low balance alerts work?',
+   a:'Set a Minimum Balance Threshold under Setup → Society Name & Total Area. Any flat whose balance (advance credit minus current due) drops below it appears in Reports → Low Balance Alerts, with WhatsApp/Email reminders and a Dashboard tile showing the count. Worth knowing: this recalculates live whenever you open the app — there\'s no background server checking overnight, and every reminder still needs you to tap Send. It\'s fast and always current, not fully automatic.'},
   {k:['opening','previous balance','carry forward','last year'], q:'How do I enter opening balances?',
    a:'Setup → Opening Balances — three buttons: Flat Opening Dues (what each flat owed), Vendor Opening Dues, and Opening Trial Balance (bank/cash/funds). All post through normal approval.'},
   {k:['backup','export','restore','data safe'], q:'How do I back up my data?',
@@ -3165,7 +3480,9 @@ function renderHelp(){
     ['Advance Payments', `A resident can simply be sent a receipt for more than they currently owe — the extra sits as a credit against that flat and is drawn down automatically as future bills are raised. Reports → Advance Balances lists every flat in credit as at any date you choose, with a running total.`],
     ['Ownership & Tenancy Changes', `When a flat is sold or gets a new tenant, open Flats → that flat and edit the Owner or Tenant fields directly — check for outstanding dues or an advance credit first, since the balance simply carries over to whoever's name is on the flat. Every change is logged automatically; tap <b>"View Ownership & Tenancy History"</b> on the flat to see who changed what, when, and by whom.`],
     ['Sending Bills & Reminders', `Open any bill to find WhatsApp/Email buttons using that flat's saved contact — the message is pre-filled, you just hit send (this app can't send anything silently in the background, by design). Reports → Defaulters has the same per-row buttons plus a <b>"Send Reminders to All"</b> queue that walks you through every resident with dues, one at a time.`],
-    ['Bank & FD Accounts', `Setup → Bank & FD Accounts registers every Savings, Current, or Fixed Deposit account — account number, which fund it belongs to (General/Sinking/Corpus/Other), balance, and FD maturity/interest where relevant. It's a reference register you keep updated by hand; day-to-day receipts and payments still post to the pooled Bank Account ledger.`],
+    ['Bank & FD Accounts', `Setup → Bank & FD Accounts registers every Savings, Current, or Fixed Deposit account — account number, which fund it belongs to (General/Sinking/Corpus/Other), balance, and FD maturity/interest where relevant. Every receipt, payment, payroll run, vendor payment, and asset purchase now lets you choose exactly which account it hit, so each builds a genuine ledger of its own — check any account's activity via Accounts → Ledger.`],
+    ['Bank Reconciliation', `Setup → Bank & FD Accounts → <b>"Reconcile"</b> next to any Savings/Current account (not FDs, since they're not transactional). Enter the balance from your actual bank statement, then either tick entries manually or use <b>"Upload Bank Statement"</b> — accepts CSV or Excel, auto-matches rows against your unreconciled entries by date (±3 days) and amount, and ticks the matches for you. Unmatched statement rows are listed separately, which is a good way to catch a bank charge, interest credit, or a transaction you forgot to enter. The screen shows your Book Balance, the Calculated Bank Balance (working backwards from what's uncleared), and the Difference against what you entered — once that's ₹0, save it as a checkpoint. CSV upload works fully offline; Excel needs a brief internet connection the first time, to load a small reader library — if that fails, just save your statement as CSV instead. It's a running tool: come back next month, tick off what's newly cleared, and repeat.`],
+    ['Low Balance Alerts', `Set a <b>Minimum Balance Threshold</b> under Setup → Society Name & Total Area (e.g. ₹2,000). Any flat whose running balance — advance credit held, minus any current due — drops below that figure shows up in <b>Reports → Low Balance Alerts</b>, with WhatsApp/Email reminder buttons per flat and a "Send Reminders to All" queue, same pattern as Defaulters. A Dashboard tile also shows the count whenever the threshold is set.<br><br><b>Important — this is not a silent background job.</b> There's no server here to check balances overnight or fire off messages while your phone is asleep; everything only recalculates when someone actually opens the app, and every reminder still needs a human tap to WhatsApp/Email it. What this gives you is a fast, always-current list the moment you open the app, and a one-tap-per-resident way to act on it — not a truly automated cron-style alert system.`],
     ['Opening Balances', `Switching to SmartRWA mid-year? Setup → Opening Balances has three tools: <b>Flat Opening Dues</b> (what each flat already owed), <b>Vendor Opening Dues</b>, and <b>Opening Trial Balance</b> (Bank/Cash/Assets/Funds as a balanced journal entry). All three go through the normal checker approval like everything else.`],
     ['Bulk Import (CSV)', `Flats → CSV Template gives you a spreadsheet to fill and re-upload via Import CSV — duplicates and missing data are flagged before anything's added. Billing → Bills → "Import from Other App" does the same for bill amounts already calculated elsewhere: one row per charge line, multiple rows for the same flat+period combine into one bill.`],
     ['Backup, Restore & Data Wipe', `All data lives only on this device — nothing is synced anywhere. Export a backup regularly from Setup → Data (the Dashboard nags you if it's been 7+ days). If you ever need to erase everything and start fresh, Setup → Danger Zone requires a reason and a different role to confirm — a restore point is saved automatically first, recoverable with "Restore Last Wipe".`],
