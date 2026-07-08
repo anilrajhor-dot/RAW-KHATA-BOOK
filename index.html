@@ -309,16 +309,52 @@ if(!DB.inventorySeeded){
   DB.inventorySeeded = true;
   if(DB.inventoryItems.length===0){
     DB.inventoryItems = [
+      // Housekeeping Supplies
       {id:'IT1', name:'Phenyl / Floor Cleaner', category:'Housekeeping Supplies', unit:'L', reorderLevel:20},
       {id:'IT2', name:'Hand Wash / Soap', category:'Housekeeping Supplies', unit:'L', reorderLevel:10},
       {id:'IT3', name:'Garbage Bags', category:'Housekeeping Supplies', unit:'pcs', reorderLevel:100},
-      {id:'IT4', name:'CFL/LED Bulbs', category:'Electrical', unit:'pcs', reorderLevel:15},
-      {id:'IT5', name:'Electrical Wire/Fittings', category:'Electrical', unit:'pcs', reorderLevel:10},
-      {id:'IT6', name:'PVC Pipes & Fittings', category:'Plumbing', unit:'pcs', reorderLevel:10},
-      {id:'IT7', name:'Diesel (DG Reserve)', category:'Fuel', unit:'L', reorderLevel:50},
-      {id:'IT8', name:'A4 Paper / Stationery', category:'Stationery', unit:'Box', reorderLevel:5},
+      {id:'IT4', name:'Toilet Cleaner', category:'Housekeeping Supplies', unit:'L', reorderLevel:10},
+      {id:'IT5', name:'Broom / Mop', category:'Housekeeping Supplies', unit:'pcs', reorderLevel:6},
+      {id:'IT6', name:'Naphthalene Balls', category:'Housekeeping Supplies', unit:'kg', reorderLevel:5},
+      // Electrical
+      {id:'IT7', name:'CFL/LED Bulbs', category:'Electrical', unit:'pcs', reorderLevel:15},
+      {id:'IT8', name:'Electrical Wire/Fittings', category:'Electrical', unit:'pcs', reorderLevel:10},
+      {id:'IT9', name:'MCB / Fuse', category:'Electrical', unit:'pcs', reorderLevel:5},
+      {id:'IT10', name:'Switches & Sockets', category:'Electrical', unit:'pcs', reorderLevel:10},
+      // Plumbing
+      {id:'IT11', name:'PVC Pipes & Fittings', category:'Plumbing', unit:'pcs', reorderLevel:10},
+      {id:'IT12', name:'Taps & Valves', category:'Plumbing', unit:'pcs', reorderLevel:5},
+      {id:'IT13', name:'Teflon Tape / Sealant', category:'Plumbing', unit:'pcs', reorderLevel:10},
+      // Fuel
+      {id:'IT14', name:'Diesel (DG Reserve)', category:'Fuel', unit:'L', reorderLevel:50},
+      {id:'IT15', name:'Engine Oil (DG)', category:'Fuel', unit:'L', reorderLevel:10},
+      // Stationery
+      {id:'IT16', name:'A4 Paper', category:'Stationery', unit:'Box', reorderLevel:5},
+      {id:'IT17', name:'Printer Ink/Toner', category:'Stationery', unit:'pcs', reorderLevel:2},
+      {id:'IT18', name:'Registers & Files', category:'Stationery', unit:'pcs', reorderLevel:10},
+      // Security
+      {id:'IT19', name:'CCTV Hard Disk', category:'Security', unit:'pcs', reorderLevel:2},
+      {id:'IT20', name:'Visitor Slips / Gate Register', category:'Security', unit:'Box', reorderLevel:2},
+      {id:'IT21', name:'Torch & Batteries', category:'Security', unit:'pcs', reorderLevel:5},
+      // Firefighting & Safety
+      {id:'IT22', name:'Fire Extinguisher Refill', category:'Firefighting & Safety', unit:'pcs', reorderLevel:2},
+      {id:'IT23', name:'Safety Signage', category:'Firefighting & Safety', unit:'pcs', reorderLevel:5},
+      // Horticulture
+      {id:'IT24', name:'Manure / Fertiliser', category:'Horticulture', unit:'kg', reorderLevel:20},
+      {id:'IT25', name:'Garden Tools', category:'Horticulture', unit:'pcs', reorderLevel:5},
+      {id:'IT26', name:'Plant Saplings', category:'Horticulture', unit:'pcs', reorderLevel:10},
+      // Pest Control
+      {id:'IT27', name:'Pest Control Spray', category:'Pest Control', unit:'L', reorderLevel:5},
+      // Lift & Elevator
+      {id:'IT28', name:'Lift Lubricant/Grease', category:'Lift & Elevator', unit:'kg', reorderLevel:5},
+      // Water Treatment
+      {id:'IT29', name:'Chlorine Tablets (Water Tank)', category:'Water Treatment', unit:'kg', reorderLevel:5},
+      {id:'IT30', name:'Alum / Water Treatment Chemicals', category:'Water Treatment', unit:'kg', reorderLevel:10},
+      // Painting
+      {id:'IT31', name:'Paint (Common Area)', category:'Painting', unit:'L', reorderLevel:10},
+      {id:'IT32', name:'Paint Brushes/Rollers', category:'Painting', unit:'pcs', reorderLevel:5},
     ];
-    DB.seq.item = 9;
+    DB.seq.item = 33;
   }
 }
 const COMMON_UNITS = ['Pieces (pcs)','Kg','Gram (g)','Litre (L)','Millilitre (ml)','Meter (m)','Box','Roll','Bag','Set','Other'];
@@ -2278,7 +2314,7 @@ function openInventoryTxModal(){
       <div class="field"><label>Reorder Level</label><input id="tx_newReorder" type="number" value="5"></div>
     </div>
     <div id="tx_vendorField" class="field"><label>Vendor (optional, for reference)</label><select id="tx_vendor" onchange="toggleNewVendor()"><option value="">— No specific vendor / cash purchase —</option>${DB.vendors.map(v=>`<option value="${v.id}">${v.name}</option>`).join('')}<option value="__new__">+ New Vendor…</option></select>
-      <p style="font-size:10.5px;color:var(--ink-soft);margin-top:4px;">This screen is for purchases paid straightaway (cash/bank/UPI). For a purchase on credit — to be paid later — use Vendors → Log Vendor Bill instead, which tracks it as a proper payable.</p>
+      <p style="font-size:10.5px;color:var(--ink-soft);margin-top:4px;">This screen is for purchases paid straightaway. Buying on credit, to be paid later? <a href="#" onclick="event.preventDefault();closeModal();openVendorBillModal();">Go to Log Vendor Bill instead →</a></p>
     </div>
     <div id="tx_newVendorFields" style="display:none;border:1px dashed var(--border);border-radius:8px;padding:10px;margin-bottom:12px;">
       <div class="field"><label>New Vendor Name</label><input id="tx_newVendorName"></div>
@@ -2287,10 +2323,16 @@ function openInventoryTxModal(){
     <div class="row2"><div class="field"><label>Quantity</label><input id="tx_qty" type="number" oninput="updateTxAmount()"></div><div class="field" id="tx_rateField"><label>Rate ₹/unit</label><input id="tx_rate" type="number" oninput="updateTxAmount()"></div></div>
     <div id="tx_amountPreview" style="font-size:12.5px;color:var(--ink-soft);margin:-8px 0 12px;"></div>
     <div class="field"><label>Date</label><input id="tx_date" type="date" value="${todayISO()}"></div>
-    <div class="field"><label id="tx_acc_label">Paid Via</label><select id="tx_acc">${paymentAccountOptions().map(a=>`<option>${a}</option>`).join('')}</select></div>
+    <div class="field"><label id="tx_acc_label">Paid Via</label>${paymentAccountSelect('tx_acc', null, 'toggleTxVia()')}</div>
+    <div class="field" id="tx_viaWrap" style="display:none;"><label>Via</label>${paymentViaSelect('tx_via')}</div>
     <div class="field"><label>Note</label><input id="tx_note"></div>
     <button class="btn btn-primary btn-block" onclick="saveInventoryTx()">Save Transaction</button>`);
   setTimeout(()=>{ toggleNewItem(); toggleTxAccount(); },0);
+}
+function toggleTxVia(){
+  const acc = document.getElementById('tx_acc')?.value;
+  const wrap = document.getElementById('tx_viaWrap');
+  if(wrap) wrap.style.display = (acc && acc!=='Cash in Hand')? 'block':'none';
 }
 function filterTxItems(){
   const cat = document.getElementById('tx_cat').value;
@@ -2308,12 +2350,15 @@ function toggleNewVendor(){
 function toggleTxAccount(){
   const type=document.getElementById('tx_type').value; const sel=document.getElementById('tx_acc'); const lbl=document.getElementById('tx_acc_label');
   const vf = document.getElementById('tx_vendorField');
+  const viaWrap = document.getElementById('tx_viaWrap');
   if(type==='purchase'){
     lbl.textContent='Paid Via'; sel.innerHTML=paymentAccountOptions().map(a=>`<option>${a}</option>`).join('');
     vf.style.display='block';
+    toggleTxVia();
   } else {
     lbl.textContent='Expense Account'; sel.innerHTML=window.__expAccs.map(a=>`<option ${a==='Housekeeping Expense'?'selected':''}>${a}</option>`).join('');
     vf.style.display='none';
+    if(viaWrap) viaWrap.style.display='none';
   }
   const rateInput = document.getElementById('tx_rate');
   rateInput.readOnly = (type==='issue');
@@ -2344,6 +2389,7 @@ function saveInventoryTx(){
   const type=document.getElementById('tx_type').value;
   const qty=Number(document.getElementById('tx_qty').value), rate=Number(document.getElementById('tx_rate').value)||0;
   const date=document.getElementById('tx_date').value, acc=document.getElementById('tx_acc').value, note=document.getElementById('tx_note').value.trim();
+  const via = (type==='purchase' && acc!=='Cash in Hand' && document.getElementById('tx_via'))? document.getElementById('tx_via').value : '';
   if(!qty||qty<=0){ toast('Enter valid quantity'); return; }
 
   if(itemId==='__new__'){
@@ -2369,7 +2415,7 @@ function saveInventoryTx(){
   if(amount>0){
     const itemName = DB.inventoryItems.find(i=>i.id===itemId)?.name||'item';
     if(type==='purchase'){
-      addVoucher({type:'Journal', date, narration:`Stock purchase — ${itemName}${vendorId?' — '+getVendor(vendorId).name:''}`, vendorId: vendorId||undefined,
+      addVoucher({type:'Journal', date, narration:`Stock purchase — ${itemName}${vendorId?' — '+getVendor(vendorId).name:''}${via?' ('+via+')':''}`, vendorId: vendorId||undefined,
         entries:[{account:'Inventory Stock',debit:amount,credit:0},{account:acc,debit:0,credit:amount}]});
     } else {
       addVoucher({type:'Journal', date, narration:`Stock issued — ${itemName}${note?' — '+note:''}`, entries:[{account:acc,debit:amount,credit:0},{account:'Inventory Stock',debit:0,credit:amount}]});
