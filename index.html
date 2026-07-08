@@ -2198,8 +2198,9 @@ function renderInventory(){
 function itemCategories(){ return [...new Set(DB.inventoryItems.map(i=>i.category||'General'))].sort(); }
 function categorySelectHTML(id, selected){
   const cats = itemCategories();
-  return `<select id="${id}" onchange="toggleNewCategory('${id}')">${cats.map(c=>`<option ${c===selected?'selected':''}>${c}</option>`).join('')}<option value="__new__">+ New Category…</option></select>
-    <input id="${id}_new" placeholder="New category name" style="display:none;margin-top:6px;">`;
+  const noCatsYet = cats.length===0;
+  return `<select id="${id}" onchange="toggleNewCategory('${id}')">${cats.map(c=>`<option ${c===selected?'selected':''}>${c}</option>`).join('')}<option value="__new__" ${noCatsYet?'selected':''}>+ New Category…</option></select>
+    <input id="${id}_new" placeholder="New category name" value="${noCatsYet?'General':''}" style="display:${noCatsYet?'block':'none'};margin-top:6px;">`;
 }
 function toggleNewCategory(id){
   const sel = document.getElementById(id);
