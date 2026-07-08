@@ -304,6 +304,8 @@ if(!DB.seq.mmr) DB.seq.mmr=1;
 if(!DB.seq.cbill) DB.seq.cbill=1;
 if(!DB.categoryRates) DB.categoryRates = {};
 if(!DB.utilityRates) DB.utilityRates = {govtElectricityRate:0, dgSupplyRate:0};
+DB.inventoryItems.forEach(it=>{ if(!it.category) it.category='General'; });
+const COMMON_UNITS = ['Pieces (pcs)','Kg','Gram (g)','Litre (L)','Millilitre (ml)','Meter (m)','Box','Roll','Bag','Set','Other'];
 if(DB.society.minBalanceThreshold===undefined) DB.society.minBalanceThreshold = 0;
 if(!DB.bankAccounts) DB.bankAccounts = [];
 if(!DB.seq.bank) DB.seq.bank=1;
@@ -1865,9 +1867,13 @@ function openVendorBillModal(){
     <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="vb_isStock" onchange="toggleVBStock()" style="width:auto"> This is a stock/inventory purchase</label></div>
     <div class="field" id="vb_accField"><label>Expense Account</label><select id="vb_acc">${expAccs.map(a=>`<option ${a==='Repairs & Maintenance'?'selected':''}>${a}</option>`).join('')}</select></div>
     <div id="vb_stockFields" style="display:none">
-      <div class="field"><label>Item</label><select id="vb_item">${DB.inventoryItems.map(i=>`<option value="${i.id}">${i.name} (${stockOnHand(i.id)} ${i.unit} in stock)</option>`).join('')}</select></div>
+      <div class="field"><label>Item</label><select id="vb_item" onchange="toggleVBNewItem()"><option value="__new__">+ New Item…</option>${DB.inventoryItems.map(i=>`<option value="${i.id}">${i.name} (${stockOnHand(i.id)} ${i.unit} in stock)</option>`).join('')}</select></div>
+      <div id="vb_newItemFields" style="display:${DB.inventoryItems.length?'none':'block'};border:1px dashed var(--border);border-radius:8px;padding:10px;margin-bottom:12px;">
+        <div class="field"><label>New Item Name</label><input id="vb_newItemName"></div>
+        <div class="field"><label>Category</label>${categorySelectHTML('vb_newItemCat','General')}</div>
+        <div class="field"><label>Unit</label>${unitSelectHTML('vb_newItemUnit','pcs')}</div>
+      </div>
       <div class="row2"><div class="field"><label>Quantity</label><input id="vb_qty" type="number" onchange="updateVBStockAmount()"></div><div class="field"><label>Rate ₹/unit</label><input id="vb_rate" type="number" onchange="updateVBStockAmount()"></div></div>
-      ${!DB.inventoryItems.length?'<p style="font-size:11px;color:var(--brick);">No stock items registered yet — add one under Stock → Items first.</p>':''}
     </div>
     <hr class="divider">
     <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="vb_gst" onchange="document.getElementById('vb_gstField').style.display=this.checked?'block':'none'" style="width:auto"> Vendor has charged GST (claim as Input Tax Credit)</label></div>
@@ -1881,6 +1887,11 @@ function toggleVBStock(){
   const on = document.getElementById('vb_isStock').checked;
   document.getElementById('vb_stockFields').style.display = on? 'block':'none';
   document.getElementById('vb_accField').style.display = on? 'none':'block';
+  if(on) toggleVBNewItem();
+}
+function toggleVBNewItem(){
+  const isNew = document.getElementById('vb_item')?.value==='__new__';
+  const f = document.getElementById('vb_newItemFields'); if(f) f.style.display = isNew? 'block':'none';
 }
 function updateVBStockAmount(){
   if(!document.getElementById('vb_isStock').checked) return;
@@ -1899,7 +1910,14 @@ function saveVendorBill(){
   let itemId=null, qty=0;
   if(isStock){
     itemId = document.getElementById('vb_item')?.value; qty = Number(document.getElementById('vb_qty').value)||0;
-    if(!itemId || !qty){ toast('Select an item and quantity for this stock purchase'); return; }
+    if(!qty){ toast('Enter a quantity for this stock purchase'); return; }
+    if(itemId==='__new__'){
+      const name = document.getElementById('vb_newItemName').value.trim();
+      if(!name){ toast('Enter the new item name'); return; }
+      const newItem = {id:'IT'+nextId('item'), name, category:resolveCategoryValue('vb_newItemCat'), unit:shortUnit(resolveUnitValue('vb_newItemUnit'))||'pcs', reorderLevel:5};
+      DB.inventoryItems.push(newItem); itemId = newItem.id;
+    }
+    if(!itemId){ toast('Select or add an item for this stock purchase'); return; }
   }
   const tdsRate = TDS_SECTIONS[tdsSection]; const tdsAmount = Math.round(amount*tdsRate/100);
   const gstAmount = gstOn? Math.round(amount*gstRate/100) : 0;
@@ -2133,68 +2151,213 @@ function runDepreciation(){
 function stockOnHand(itemId){
   return DB.inventoryTx.filter(t=>t.itemId===itemId).reduce((s,t)=> s + (t.type==='purchase'?t.qty:-t.qty), 0);
 }
+function avgPurchaseRate(itemId){
+  const purchases = DB.inventoryTx.filter(t=>t.itemId===itemId && t.type==='purchase' && t.qty>0);
+  const totalQty = purchases.reduce((s,t)=>s+t.qty,0);
+  const totalAmt = purchases.reduce((s,t)=>s+t.amount,0);
+  return totalQty>0? totalAmt/totalQty : 0;
+}
+function fifoConsumeCost(itemId, qtyToIssue){
+  const txs = DB.inventoryTx.filter(t=>t.itemId===itemId).slice().sort((a,b)=> a.date.localeCompare(b.date) || String(a.id).localeCompare(String(b.id)));
+  const lots = [];
+  txs.forEach(t=>{
+    if(t.type==='purchase' && t.qty>0){ lots.push({remaining:t.qty, rate:t.rate||0}); }
+    else if(t.type==='issue' && t.qty>0){
+      let toConsume = t.qty;
+      for(const lot of lots){ if(toConsume<=0) break; const take=Math.min(lot.remaining,toConsume); lot.remaining-=take; toConsume-=take; }
+    }
+  });
+  let remaining = qtyToIssue, totalCost = 0; const breakdown=[];
+  for(const lot of lots){
+    if(remaining<=0) break; if(lot.remaining<=0) continue;
+    const take = Math.min(lot.remaining, remaining);
+    totalCost += take*lot.rate; breakdown.push({qty:take, rate:lot.rate}); remaining -= take;
+  }
+  if(remaining>0){ const avg=avgPurchaseRate(itemId); totalCost += remaining*avg; breakdown.push({qty:remaining, rate:avg, short:true}); }
+  return {avgRate: qtyToIssue>0? totalCost/qtyToIssue : 0, totalCost, breakdown};
+}
 function renderInventory(){
   const sr = subroute || 'items';
   const tabs=[['items','Items'],['tx','Transactions']];
   let body='';
   if(sr==='items'){
-    body = DB.inventoryItems.length? `<div class="tbl-wrap"><table><tr><th>Item</th><th class="num-cell">Stock</th></tr>
-      ${DB.inventoryItems.map(it=>{ const s=stockOnHand(it.id); const low=s<=it.reorderLevel;
+    const groups={};
+    DB.inventoryItems.forEach(it=>{ (groups[it.category||'General']=groups[it.category||'General']||[]).push(it); });
+    body = DB.inventoryItems.length? Object.entries(groups).sort((a,b)=>a[0].localeCompare(b[0])).map(([cat,items])=>`
+      <div style="font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.3px;color:var(--ink-soft);margin:10px 0 4px;">${cat}</div>
+      <div class="tbl-wrap"><table>${items.map(it=>{ const s=stockOnHand(it.id); const low=s<=it.reorderLevel;
         return `<tr onclick="openInventoryItemModal('${it.id}')"><td><b>${it.name}</b><div style="font-size:11px;color:var(--ink-soft)">Reorder at ${it.reorderLevel} ${it.unit}</div></td><td class="num-cell">${s} ${it.unit} ${low?'<span class="stamp overdue">low</span>':''}</td></tr>`; }).join('')}
-      </table></div>` : `<div class="empty"><div class="ic">▥</div>No stock items yet.</div>`;
+      </table></div>`).join('') : `<div class="empty"><div class="ic">▥</div>No stock items yet.</div>`;
   } else if(sr==='tx'){
-    const rows = DB.inventoryTx.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(t=>{ const it=DB.inventoryItems.find(i=>i.id===t.itemId);
-      return `<tr><td>${t.date}<div style="font-size:11px;color:var(--ink-soft)">${it?it.name:'—'} · ${t.note||''}</div></td><td>${t.type}</td><td class="num-cell">${t.qty}</td><td class="num-cell">₹${fmt(t.amount)}</td></tr>`; }).join('');
+    const rows = DB.inventoryTx.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(t=>{ const it=DB.inventoryItems.find(i=>i.id===t.itemId); const v = t.vendorId? getVendor(t.vendorId) : null;
+      return `<tr><td>${t.date}<div style="font-size:11px;color:var(--ink-soft)">${it?it.name:'—'}${v?' · '+v.name:''} · ${t.note||''}</div></td><td>${t.type}</td><td class="num-cell">${t.qty} ${it?.unit||''}</td><td class="num-cell">₹${fmt(t.amount)}</td></tr>`; }).join('');
     body = `<div class="tbl-wrap"><table><tr><th>Date</th><th>Type</th><th class="num-cell">Qty</th><th class="num-cell">Amount</th></tr>${rows||'<tr><td colspan=4 style="color:var(--ink-soft)">No transactions</td></tr>'}</table></div>`;
   }
   return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('inventory','${t[0]}')">${t[1]}</button>`).join('')}</div><div class="card">${body}</div>`;
 }
+function itemCategories(){ return [...new Set(DB.inventoryItems.map(i=>i.category||'General'))].sort(); }
+function categorySelectHTML(id, selected){
+  const cats = itemCategories();
+  return `<select id="${id}" onchange="toggleNewCategory('${id}')">${cats.map(c=>`<option ${c===selected?'selected':''}>${c}</option>`).join('')}<option value="__new__">+ New Category…</option></select>
+    <input id="${id}_new" placeholder="New category name" style="display:none;margin-top:6px;">`;
+}
+function toggleNewCategory(id){
+  const sel = document.getElementById(id);
+  document.getElementById(id+'_new').style.display = sel.value==='__new__'? 'block':'none';
+}
+function resolveCategoryValue(id){
+  const sel = document.getElementById(id);
+  if(sel.value==='__new__') return document.getElementById(id+'_new').value.trim()||'General';
+  return sel.value;
+}
+function unitSelectHTML(id, selected){
+  const known = COMMON_UNITS.filter(u=>u!=='Other');
+  const matched = known.find(u=>u.toLowerCase().startsWith((selected||'').toLowerCase())) ;
+  return `<select id="${id}" onchange="toggleOtherUnit('${id}')">${COMMON_UNITS.map(u=>`<option ${u===matched||(!matched&&u==='Other')?'selected':''}>${u}</option>`).join('')}</select>
+    <input id="${id}_other" placeholder="Custom unit" value="${!matched?(selected||''):''}" style="display:${!matched?'block':'none'};margin-top:6px;">`;
+}
+function toggleOtherUnit(id){
+  document.getElementById(id+'_other').style.display = document.getElementById(id).value==='Other'? 'block':'none';
+}
+function resolveUnitValue(id){
+  const sel = document.getElementById(id);
+  if(sel.value==='Other') return document.getElementById(id+'_other').value.trim()||'pcs';
+  return sel.value.replace(/\s*\(.*\)/,''); // "Kg" stays "Kg", "Pieces (pcs)" -> "Pieces"... simplify to short form below
+}
+function shortUnit(label){
+  const map = {'Pieces (pcs)':'pcs','Kg':'kg','Gram (g)':'g','Litre (L)':'L','Millilitre (ml)':'ml','Meter (m)':'m'};
+  return map[label] || label;
+}
 function openInventoryItemModal(id){
-  const it = id? DB.inventoryItems.find(x=>x.id===id) : {id:'IT'+nextId('item'), name:'', unit:'pcs', reorderLevel:5};
+  const it = id? DB.inventoryItems.find(x=>x.id===id) : {id:'IT'+nextId('item'), name:'', unit:'pcs', category:'General', reorderLevel:5};
   if(!id) DB.seq.item--;
   openModal(`<div class="modal-head"><h2>${id?'Edit':'Add'} Item</h2><button class="close-x" onclick="closeModal()">×</button></div>
     <div class="field"><label>Item Name</label><input id="it_name" value="${it.name}"></div>
-    <div class="row2"><div class="field"><label>Unit</label><input id="it_unit" value="${it.unit}"></div><div class="field"><label>Reorder Level</label><input id="it_reorder" type="number" value="${it.reorderLevel}"></div></div>
+    <div class="field"><label>Category</label>${categorySelectHTML('it_cat', it.category)}</div>
+    <div class="row2"><div class="field"><label>Unit</label>${unitSelectHTML('it_unit', it.unit)}</div><div class="field"><label>Reorder Level</label><input id="it_reorder" type="number" value="${it.reorderLevel}"></div></div>
     ${isReadOnly()?'<div class="readonly-note">View only — Auditor role cannot modify records.</div>':`<button class="btn btn-primary btn-block" onclick="saveInventoryItem('${it.id}')">Save Item</button>`}`);
 }
 function saveInventoryItem(id){
   if(!canEdit()) return;
-  const data={id, name:document.getElementById('it_name').value.trim(), unit:document.getElementById('it_unit').value.trim()||'pcs', reorderLevel:Number(document.getElementById('it_reorder').value)||0};
+  const unitLabel = resolveUnitValue('it_unit');
+  const data={id, name:document.getElementById('it_name').value.trim(), unit: shortUnit(unitLabel)||'pcs',
+    category: resolveCategoryValue('it_cat'), reorderLevel:Number(document.getElementById('it_reorder').value)||0};
   if(!data.name){ toast('Name required'); return; }
   const idx=DB.inventoryItems.findIndex(x=>x.id===id);
   if(idx>=0) DB.inventoryItems[idx]=data; else { DB.seq.item++; DB.inventoryItems.push(data); }
   save(); closeModal(); toast('Item saved'); render();
 }
 function openInventoryTxModal(){
-  if(!DB.inventoryItems.length){ toast('Add a stock item first'); go('inventory','items'); return; }
   const expAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense');
+  window.__expAccs = expAccs;
   openModal(`<div class="modal-head"><h2>Stock Transaction</h2><button class="close-x" onclick="closeModal()">×</button></div>
-    <div class="field"><label>Item</label><select id="tx_item">${DB.inventoryItems.map(i=>`<option value="${i.id}">${i.name} (${stockOnHand(i.id)} ${i.unit} in stock)</option>`).join('')}</select></div>
     <div class="field"><label>Type</label><select id="tx_type" onchange="toggleTxAccount()"><option value="purchase">Purchase (stock in)</option><option value="issue">Issue / Consumption (stock out)</option></select></div>
-    <div class="row2"><div class="field"><label>Quantity</label><input id="tx_qty" type="number"></div><div class="field"><label>Rate ₹/unit</label><input id="tx_rate" type="number"></div></div>
+    <div class="field"><label>Category</label><select id="tx_cat" onchange="filterTxItems()">${['All Categories',...itemCategories()].map(c=>`<option>${c}</option>`).join('')}</select></div>
+    <div class="field"><label>Item</label><select id="tx_item" onchange="toggleNewItem();updateTxAmount();"><option value="__new__">+ New Item…</option>${DB.inventoryItems.map(i=>`<option value="${i.id}" data-cat="${i.category||'General'}">${i.name} (${stockOnHand(i.id)} ${i.unit} in stock)</option>`).join('')}</select></div>
+    <div id="tx_newItemFields" style="display:${DB.inventoryItems.length?'none':'block'};border:1px dashed var(--border);border-radius:8px;padding:10px;margin-bottom:12px;">
+      <div class="field"><label>New Item Name</label><input id="tx_newName"></div>
+      <div class="field"><label>Category</label>${categorySelectHTML('tx_newCat','General')}</div>
+      <div class="field"><label>Unit</label>${unitSelectHTML('tx_newUnit','pcs')}</div>
+      <div class="field"><label>Reorder Level</label><input id="tx_newReorder" type="number" value="5"></div>
+    </div>
+    <div id="tx_vendorField" class="field"><label>Vendor (optional)</label><select id="tx_vendor" onchange="toggleNewVendor()"><option value="">— No specific vendor / cash purchase —</option>${DB.vendors.map(v=>`<option value="${v.id}">${v.name}</option>`).join('')}<option value="__new__">+ New Vendor…</option></select></div>
+    <div id="tx_newVendorFields" style="display:none;border:1px dashed var(--border);border-radius:8px;padding:10px;margin-bottom:12px;">
+      <div class="field"><label>New Vendor Name</label><input id="tx_newVendorName"></div>
+      <div class="row2"><div class="field"><label>Phone</label><input id="tx_newVendorPhone"></div><div class="field"><label>GSTIN (optional)</label><input id="tx_newVendorGstin"></div></div>
+    </div>
+    <div class="row2"><div class="field"><label>Quantity</label><input id="tx_qty" type="number" oninput="updateTxAmount()"></div><div class="field" id="tx_rateField"><label>Rate ₹/unit</label><input id="tx_rate" type="number" oninput="updateTxAmount()"></div></div>
+    <div id="tx_amountPreview" style="font-size:12.5px;color:var(--ink-soft);margin:-8px 0 12px;"></div>
     <div class="field"><label>Date</label><input id="tx_date" type="date" value="${todayISO()}"></div>
     <div class="field"><label id="tx_acc_label">Paid Via</label><select id="tx_acc">${['Vendor Creditors',...paymentAccountOptions()].map(a=>`<option>${a}</option>`).join('')}</select></div>
     <div class="field"><label>Note</label><input id="tx_note"></div>
     <button class="btn btn-primary btn-block" onclick="saveInventoryTx()">Save Transaction</button>`);
-  window.__expAccs = expAccs;
+  setTimeout(()=>{ toggleNewItem(); toggleTxAccount(); },0);
+}
+function filterTxItems(){
+  const cat = document.getElementById('tx_cat').value;
+  document.querySelectorAll('#tx_item option[data-cat]').forEach(o=>{
+    o.style.display = (cat==='All Categories' || o.dataset.cat===cat)? 'block':'none';
+  });
+}
+function toggleNewItem(){
+  const isNew = document.getElementById('tx_item').value==='__new__';
+  document.getElementById('tx_newItemFields').style.display = isNew? 'block':'none';
+}
+function toggleNewVendor(){
+  document.getElementById('tx_newVendorFields').style.display = document.getElementById('tx_vendor').value==='__new__'? 'block':'none';
 }
 function toggleTxAccount(){
   const type=document.getElementById('tx_type').value; const sel=document.getElementById('tx_acc'); const lbl=document.getElementById('tx_acc_label');
-  if(type==='purchase'){ lbl.textContent='Paid Via'; sel.innerHTML=['Vendor Creditors',...paymentAccountOptions()].map(a=>`<option>${a}</option>`).join(''); }
-  else { lbl.textContent='Expense Account'; sel.innerHTML=window.__expAccs.map(a=>`<option ${a==='Housekeeping Expense'?'selected':''}>${a}</option>`).join(''); }
+  const vf = document.getElementById('tx_vendorField');
+  if(type==='purchase'){
+    lbl.textContent='Paid Via'; sel.innerHTML=['Vendor Creditors',...paymentAccountOptions()].map(a=>`<option>${a}</option>`).join('');
+    vf.style.display='block';
+  } else {
+    lbl.textContent='Expense Account'; sel.innerHTML=window.__expAccs.map(a=>`<option ${a==='Housekeeping Expense'?'selected':''}>${a}</option>`).join('');
+    vf.style.display='none';
+  }
+  const rateInput = document.getElementById('tx_rate');
+  rateInput.readOnly = (type==='issue');
+  rateInput.style.background = (type==='issue')? 'var(--paper)' : '';
+  updateTxAmount();
+}
+function updateTxAmount(){
+  const type = document.getElementById('tx_type')?.value;
+  const itemId = document.getElementById('tx_item')?.value;
+  const qty = Number(document.getElementById('tx_qty')?.value)||0;
+  const rateInput = document.getElementById('tx_rate');
+  const preview = document.getElementById('tx_amountPreview');
+  if(!rateInput || !preview) return;
+  if(type==='issue' && itemId && itemId!=='__new__'){
+    const {avgRate, breakdown} = fifoConsumeCost(itemId, qty||0);
+    rateInput.value = qty>0? avgRate.toFixed(2) : '';
+    const lots = breakdown.filter(b=>b.qty>0);
+    const lotNote = lots.length>1? ` (drawn from ${lots.length} purchase lots at different rates — FIFO)` : (lots.length===1 && lots[0].short? ' (no purchase history — using overall average)' : ' (FIFO cost of oldest stock in hand)');
+    preview.innerHTML = qty>0? `Auto-calculated: <b>₹${fmt(Math.round(qty*avgRate))}</b>${lotNote}` : '';
+  } else {
+    const amt = qty*Number(rateInput.value||0);
+    preview.innerHTML = (qty>0 && rateInput.value)? `Amount: <b>₹${fmt(Math.round(amt))}</b>` : '';
+  }
 }
 function saveInventoryTx(){
   if(!canEdit()) return;
-  const itemId=document.getElementById('tx_item').value, type=document.getElementById('tx_type').value;
+  let itemId = document.getElementById('tx_item').value;
+  const type=document.getElementById('tx_type').value;
   const qty=Number(document.getElementById('tx_qty').value), rate=Number(document.getElementById('tx_rate').value)||0;
   const date=document.getElementById('tx_date').value, acc=document.getElementById('tx_acc').value, note=document.getElementById('tx_note').value.trim();
   if(!qty||qty<=0){ toast('Enter valid quantity'); return; }
+
+  if(itemId==='__new__'){
+    const name = document.getElementById('tx_newName').value.trim();
+    if(!name){ toast('Enter the new item name'); return; }
+    const newItem = {id:'IT'+nextId('item'), name, category:resolveCategoryValue('tx_newCat'), unit:shortUnit(resolveUnitValue('tx_newUnit'))||'pcs', reorderLevel:Number(document.getElementById('tx_newReorder').value)||0};
+    DB.inventoryItems.push(newItem); itemId = newItem.id;
+  }
+
+  let vendorId = type==='purchase'? document.getElementById('tx_vendor').value : '';
+  if(vendorId==='__new__'){
+    const vname = document.getElementById('tx_newVendorName').value.trim();
+    if(!vname){ toast('Enter the new vendor name'); return; }
+    const newVendor = {id:'V'+nextId('vendor'), name:vname, phone:document.getElementById('tx_newVendorPhone').value.trim(), gstin:document.getElementById('tx_newVendorGstin').value.trim(), pan:'', email:'', category:''};
+    DB.vendors.push(newVendor); vendorId = newVendor.id;
+  }
+
   const amount = Math.round(qty*rate);
-  DB.inventoryTx.push({id:'ITX'+nextId('itx'), itemId, date, type, qty, rate, amount, note});
+  const txRecord = {id:'ITX'+nextId('itx'), itemId, date, type, qty, rate, amount, note};
+  if(vendorId) txRecord.vendorId = vendorId;
+  DB.inventoryTx.push(txRecord);
+
   if(amount>0){
     const itemName = DB.inventoryItems.find(i=>i.id===itemId)?.name||'item';
-    if(type==='purchase') addVoucher({type:'Journal', date, narration:`Stock purchase — ${itemName}`, entries:[{account:'Inventory Stock',debit:amount,credit:0},{account:acc,debit:0,credit:amount}]});
-    else addVoucher({type:'Journal', date, narration:`Stock issued — ${itemName}${note?' — '+note:''}`, entries:[{account:acc,debit:amount,credit:0},{account:'Inventory Stock',debit:0,credit:amount}]});
+    if(type==='purchase'){
+      addVoucher({type:'Journal', date, narration:`Stock purchase — ${itemName}${vendorId?' — '+getVendor(vendorId).name:''}`, vendorId: vendorId||undefined,
+        entries:[{account:'Inventory Stock',debit:amount,credit:0},{account:acc,debit:0,credit:amount}]});
+      if(vendorId && acc==='Vendor Creditors'){
+        DB.vendorBills.push({id:'VB'+nextId('vbill'), vendorId, date, description:`Stock purchase — ${itemName}`, amount, tdsSection:'None', tdsRate:0, tdsAmount:0, gstAmount:0, gstRate:0, netPayable:amount, paid:0, status:'unpaid'});
+      }
+    } else {
+      addVoucher({type:'Journal', date, narration:`Stock issued — ${itemName}${note?' — '+note:''}`, entries:[{account:acc,debit:amount,credit:0},{account:'Inventory Stock',debit:0,credit:amount}]});
+    }
     toast('Transaction saved — posting awaits approval');
   } else toast('Transaction saved');
   save(); closeModal(); render();
@@ -3460,8 +3623,10 @@ const FAQ = [
    a:'Setup → Danger Zone → Request Full Data Wipe (reason required) — a different role must confirm. A restore point is saved automatically and can be recovered with "Restore Last Wipe".'},
   {k:['gst','input credit','itc','return'], q:'How does the GST module work?',
    a:'The GST tab shows Output GST collected minus Input Tax Credit = Net Payable (GSTR-3B style), outward supplies by rate slab, and an ITC register. Tick "Vendor has charged GST" when logging vendor bills to claim ITC. It prepares figures — filing is still via the portal/your CA.'},
-  {k:['stock','inventory','consumption','purchase item'], q:'How do I manage stock?',
-   a:'Stock → Items to register items (any unit — pcs, kg, litre). Purchases: Stock → Transactions → Purchase, or tick "stock purchase" on a vendor bill. Consumption: Transactions → Issue/Consumption, charged to an expense account. Stock on hand updates live.'},
+  {k:['stock','inventory','consumption','purchase item','fifo','category','categories'], q:'How do I manage stock?',
+   a:'Stock → Transactions is now the one-stop screen: pick Purchase or Issue/Consumption, then add a New Item or New Vendor right there if they do not exist yet — no separate screen needed. Categories work the same way (pick existing or type a new one) and can filter the Item list. Consumption cost is calculated automatically using FIFO — it values what you use from the oldest purchase batch still in stock, not a number you type in. Stock on hand updates the instant you save, before approval even happens.'},
+  {k:['multiple device','multiple computer','same computer','different laptop','multi user','sync'], q:'Can different people work from different devices at the same time?',
+   a:'Not yet, and this is a real limitation worth knowing before relying on it for a live committee. All data lives only in the browser you are using — nothing is shared automatically between devices. For maker-checker to actually work with different people, either everyone uses the same device by turns, or you manually export/import a backup between sessions (Setup → Data). True multi-device, multi-person simultaneous use would need a real backend server and accounts — a bigger, separate project from what exists today.'},
   {k:['tds','vendor','contractor'], q:'How does vendor TDS work?',
    a:'When logging a vendor bill, pick the TDS section (194C/194J/194I/194H) — TDS is withheld on the taxable amount and sits in TDS Payable until you deposit it. The vendor is paid net of TDS.'},
   {k:['payroll','salary','pf','esi'], q:'How do I run payroll?',
@@ -3565,7 +3730,9 @@ function renderHelp(){
     ['Printing Statements as PDF', `Trial Balance, Income & Expenditure, Receipts & Payments, and Balance Sheet (Reports tab) each have a <b>"Print / Save as PDF"</b> button at the top — it uses your phone's own print system, so it works fully offline. On iPhone: tap it, then in the print preview <b>pinch to zoom in</b> — that switches to a full-page view with a share icon at top right; tap it → <b>Save to Files</b> → PDF. The printed page hides all app menus and shows only the clean statement, complete with signature lines for Treasurer/Secretary/Chairman/Auditor, ready for physical signing.`],
     ['Health Check', `Tap the ♡ icon at the top anytime to run a diagnostic: it checks that your Trial Balance and Balance Sheet tally, flags stale pending approvals, flats without owners, negative stock, overdue vendor dues, and other data issues — so small mistakes get caught early.`],
     ['Ask SmartRWA (Chat)', `Tap the 💬 icon at the top for quick answers — it's a built-in FAQ assistant (no AI, works offline) covering how-to questions across the app, and it can answer a few live questions directly from your data, like "how much is outstanding" or "pending approvals?".`],
-    ['Modules at a Glance', `<b>Flats</b> — owners, tenants, areas, parking, history · <b>Billing</b> — bills, meter readings, consolidated bills · <b>Receipts</b> — payments received · <b>Vendors</b> — bills, TDS, GST input credit, payments · <b>Payroll</b> — salary, PF, ESI · <b>Assets</b> — register & depreciation · <b>Stock</b> — inventory in/out · <b>Accounts</b> — vouchers, ledgers, deletions · <b>Approve</b> — maker-checker queue, queries, audit log · <b>Issues</b> — complaints · <b>Reports</b> — Trial Balance, I&E, Receipts & Payments, Balance Sheet, Defaulters, Advance Balances, Flat Ledger · <b>GST</b> — returns & ITC · <b>Audit</b> — auditor workspace · <b>Setup</b> — everything above lives here.`],
+    ['Stock Management — Categories, Vendors & FIFO', `Stock → Transactions is the single screen for both directions. <b>Purchase</b>: pick an existing Item or use "+ New Item…" to add one on the spot (name, category, unit, reorder level) — same for Vendor ("+ New Vendor…"), and if you pay via Vendor Creditors it automatically becomes a proper payable you can settle later through the normal Vendor Payment screen. <b>Categories</b> work the same way everywhere — pick one or type a new one, and a Category filter narrows the Item list once you have several. <b>Units</b> are a dropdown (Kg, Litre, Pieces, Meter, etc., with "Other" for anything unusual) instead of free text, so the same unit is not recorded three different ways by accident.<br><br>For <b>Issue/Consumption</b>, the Rate field locks and fills itself in automatically using <b>FIFO costing</b> — it works out what remains in your oldest purchase batches (after accounting for everything already consumed) and values this consumption from those, oldest stock first, blending across batches if needed. This is the standard method auditors expect, and it means you never have to guess or manually type a consumption cost. Stock on hand updates the instant you save — before the entry is even approved.`],
+    ['A Real Limitation — One Device at a Time', `Everything in this app lives only in the browser you are using — there is no shared server behind it. This means <b>two different people on two different devices do not see the same data</b>, even if both are using this exact app. For maker-checker to work as intended (a different person approving what someone else raised), you currently need to either share one physical device between roles, or manually export a backup after each session and import it before the next person continues (Setup → Data). This is a genuine constraint, not a bug — letting multiple people work live from separate devices would need a proper backend server and real user accounts, which is a substantially bigger project than the offline, zero-cost app built so far. Worth planning around deliberately rather than discovering mid-use.`],
+    ['Modules at a Glance', `<b>Flats</b> — owners, tenants, areas, parking, history · <b>Billing</b> — bills, meter readings, consolidated bills · <b>Receipts</b> — payments received · <b>Vendors</b> — bills, TDS, GST input credit, payments · <b>Payroll</b> — salary, PF, ESI · <b>Assets</b> — register & depreciation · <b>Stock</b> — inventory in/out, categories, FIFO · <b>Accounts</b> — vouchers, ledgers, deletions · <b>Approve</b> — maker-checker queue, queries, audit log · <b>Issues</b> — complaints · <b>Reports</b> — Trial Balance, I&E, Receipts & Payments, Balance Sheet, Defaulters, Advance Balances, Flat Ledger · <b>GST</b> — returns & ITC · <b>Audit</b> — auditor workspace · <b>Setup</b> — everything above lives here.`],
   ];
   return sections.map(([title,body])=>`<div class="card"><div class="section-title">${title}</div><p style="font-size:13px;line-height:1.6;">${body}</p></div>`).join('') +
     `<p style="font-size:10px;color:var(--ink-soft);text-align:center;margin-top:4px;">Developed by Anil Sharma, Former General Manager, Central Bank of India.</p>`;
