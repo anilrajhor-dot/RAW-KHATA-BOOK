@@ -429,9 +429,16 @@ function syncBankLedgerAccounts(){
 function paymentAccountOptions(){
   syncBankLedgerAccounts();
   const banks = DB.bankAccounts.filter(b=>b.type!=='FD' && b.ledgerAccountName);
-  const opts = ['Cash in Hand', ...banks.map(b=>b.ledgerAccountName)];
+  const opts = ['Cash in Hand', 'UPI', ...banks.map(b=>b.ledgerAccountName)];
   if(!banks.length) opts.push('Bank Account');
   return opts;
+}
+function resolvePaymentAccount(rawValue){
+  if(rawValue==='UPI'){
+    const banks = DB.bankAccounts.filter(b=>b.type!=='FD' && b.ledgerAccountName);
+    return banks.length? banks[0].ledgerAccountName : 'Bank Account';
+  }
+  return rawValue;
 }
 function paymentAccountSelect(id, selected, onchangeExtra){
   const opts = paymentAccountOptions();
@@ -1269,7 +1276,7 @@ function saveConsolidatedBill(){
   const tower = scope==='tower'? document.getElementById('cb_tower').value.trim() : '';
   let apportionMethod = document.getElementById('cb_method').value;
   const expAcc = document.getElementById('cb_exp').value;
-  const mode = document.getElementById('cb_mode').value;
+  const mode = resolvePaymentAccount(document.getElementById('cb_mode').value);
   const useMMR = document.getElementById('cb_mmr').checked;
   if(scope==='tower' && !tower){ toast('Enter the tower name'); return; }
 
@@ -1729,14 +1736,14 @@ function openReceiptModal(){
 function toggleReceiptVia(){
   const acc = document.getElementById('rc_acc')?.value;
   const wrap = document.getElementById('rc_viaWrap');
-  if(wrap) wrap.style.display = (acc && acc!=='Cash in Hand')? 'block':'none';
+  if(wrap) wrap.style.display = (acc && acc!=='Cash in Hand' && acc!=='UPI')? 'block':'none';
 }
 function saveReceipt(){
   if(!canEdit()) return;
   const flatId = document.getElementById('rc_flat').value;
   const amount = Number(document.getElementById('rc_amount').value);
   const date = document.getElementById('rc_date').value;
-  const acc = document.getElementById('rc_acc').value;
+  const acc = resolvePaymentAccount(document.getElementById('rc_acc').value);
   const via = acc!=='Cash in Hand'? document.getElementById('rc_via').value : 'Cash';
   const narr = document.getElementById('rc_narr').value.trim();
   if(!amount || amount<=0){ toast('Enter valid amount'); return; }
@@ -2004,7 +2011,7 @@ function openVendorPaymentModal(){
 function toggleVPVia(){
   const acc = document.getElementById('vp_acc')?.value;
   const wrap = document.getElementById('vp_viaWrap');
-  if(wrap) wrap.style.display = (acc && acc!=='Cash in Hand')? 'block':'none';
+  if(wrap) wrap.style.display = (acc && acc!=='Cash in Hand' && acc!=='UPI')? 'block':'none';
 }
 function drawVendorOutstanding(){
   const vendorId = document.getElementById('vp_vendor')?.value; if(!vendorId) return;
@@ -2018,7 +2025,7 @@ function drawVendorOutstanding(){
 function saveVendorPayment(){
   if(!canEdit()) return;
   const vendorId=document.getElementById('vp_vendor').value, amount=Number(document.getElementById('vp_amt').value);
-  const date=document.getElementById('vp_date').value, acc=document.getElementById('vp_acc').value;
+  const date=document.getElementById('vp_date').value, acc=resolvePaymentAccount(document.getElementById('vp_acc').value);
   const via = acc!=='Cash in Hand'? document.getElementById('vp_via').value : 'Cash';
   if(!amount||amount<=0){ toast('Enter valid amount'); return; }
   addVoucher({type:'VendorPayment', vendorId, date, narration:`Payment to ${getVendor(vendorId).name} (${via} → ${acc})`,
@@ -2101,7 +2108,7 @@ function processPayroll(){
   const period = document.getElementById('pr_period').value;
   if(!period){ toast('Select period'); return; }
   if(DB.payrollRuns.some(r=>r.period===period)){ toast('Payroll already processed for this period'); return; }
-  const disburseAcc = document.getElementById('pr_acc').value;
+  const disburseAcc = resolvePaymentAccount(document.getElementById('pr_acc').value);
   const items = DB.employees.map(e=>{
     const gross = empGross(e); const pfWage = Math.min(e.basic||0,15000);
     const pfEmp = e.pfApplicable? Math.round(pfWage*0.12):0; const pfEmployer = e.pfApplicable? Math.round(pfWage*0.12):0;
@@ -2177,7 +2184,7 @@ function saveAsset(id){
     warrantyExpiry:document.getElementById('as_warr').value, amcExpiry:document.getElementById('as_amc').value};
   if(!data.name||data.cost<=0){ toast('Enter name & valid cost'); return; }
   if(isNew){
-    const mode=document.getElementById('as_pay').value;
+    const mode=resolvePaymentAccount(document.getElementById('as_pay').value);
     const payAcc = mode==='Credit'?'Vendor Creditors':mode;
     DB.seq.asset++; DB.assets.push(data);
     addVoucher({type:'Journal', assetRef:data.id, date:data.purchaseDate, narration:`Asset purchase — ${data.name}`,
@@ -2313,8 +2320,8 @@ function openInventoryTxModal(){
       <div class="field"><label>Unit</label>${unitSelectHTML('tx_newUnit','pcs')}</div>
       <div class="field"><label>Reorder Level</label><input id="tx_newReorder" type="number" value="5"></div>
     </div>
-    <div id="tx_vendorField" class="field"><label>Vendor (optional, for reference)</label><select id="tx_vendor" onchange="toggleNewVendor()"><option value="">— No specific vendor / cash purchase —</option>${DB.vendors.map(v=>`<option value="${v.id}">${v.name}</option>`).join('')}<option value="__new__">+ New Vendor…</option></select>
-      <p style="font-size:10.5px;color:var(--ink-soft);margin-top:4px;">This screen is for purchases paid straightaway. Buying on credit, to be paid later? <a href="#" onclick="event.preventDefault();closeModal();openVendorBillModal();">Go to Log Vendor Bill instead →</a></p>
+    <div id="tx_vendorField" class="field"><label>Vendor</label><select id="tx_vendor" onchange="toggleNewVendor()"><option value="">— No specific vendor / cash purchase —</option>${DB.vendors.map(v=>`<option value="${v.id}">${v.name}</option>`).join('')}<option value="__new__">+ New Vendor…</option></select>
+      <p id="tx_vendorRequiredHint" style="display:none;font-size:10.5px;color:var(--brick);margin-top:4px;">Required when paying on credit — this becomes a payable, visible and settled from Vendors → Pay Vendor.</p>
     </div>
     <div id="tx_newVendorFields" style="display:none;border:1px dashed var(--border);border-radius:8px;padding:10px;margin-bottom:12px;">
       <div class="field"><label>New Vendor Name</label><input id="tx_newVendorName"></div>
@@ -2332,7 +2339,10 @@ function openInventoryTxModal(){
 function toggleTxVia(){
   const acc = document.getElementById('tx_acc')?.value;
   const wrap = document.getElementById('tx_viaWrap');
-  if(wrap) wrap.style.display = (acc && acc!=='Cash in Hand')? 'block':'none';
+  if(wrap) wrap.style.display = (acc && acc!=='Cash in Hand' && acc!=='UPI' && acc!=='Credit — Pay Vendor Later')? 'block':'none';
+  const vendorSel = document.getElementById('tx_vendor');
+  const vendorHint = document.getElementById('tx_vendorRequiredHint');
+  if(vendorHint) vendorHint.style.display = (acc==='Credit — Pay Vendor Later')? 'block':'none';
 }
 function filterTxItems(){
   const cat = document.getElementById('tx_cat').value;
@@ -2352,7 +2362,7 @@ function toggleTxAccount(){
   const vf = document.getElementById('tx_vendorField');
   const viaWrap = document.getElementById('tx_viaWrap');
   if(type==='purchase'){
-    lbl.textContent='Paid Via'; sel.innerHTML=paymentAccountOptions().map(a=>`<option>${a}</option>`).join('');
+    lbl.textContent='Paid Via'; sel.innerHTML=[...paymentAccountOptions(),'Credit — Pay Vendor Later'].map(a=>`<option>${a}</option>`).join('');
     vf.style.display='block';
     toggleTxVia();
   } else {
@@ -2388,7 +2398,7 @@ function saveInventoryTx(){
   let itemId = document.getElementById('tx_item').value;
   const type=document.getElementById('tx_type').value;
   const qty=Number(document.getElementById('tx_qty').value), rate=Number(document.getElementById('tx_rate').value)||0;
-  const date=document.getElementById('tx_date').value, acc=document.getElementById('tx_acc').value, note=document.getElementById('tx_note').value.trim();
+  const date=document.getElementById('tx_date').value, acc=resolvePaymentAccount(document.getElementById('tx_acc').value), note=document.getElementById('tx_note').value.trim();
   const via = (type==='purchase' && acc!=='Cash in Hand' && document.getElementById('tx_via'))? document.getElementById('tx_via').value : '';
   if(!qty||qty<=0){ toast('Enter valid quantity'); return; }
 
@@ -2406,6 +2416,8 @@ function saveInventoryTx(){
     const newVendor = {id:'V'+nextId('vendor'), name:vname, phone:document.getElementById('tx_newVendorPhone').value.trim(), gstin:document.getElementById('tx_newVendorGstin').value.trim(), pan:'', email:'', category:''};
     DB.vendors.push(newVendor); vendorId = newVendor.id;
   }
+  const onCredit = acc==='Credit — Pay Vendor Later';
+  if(onCredit && !vendorId){ toast('Select (or add) the vendor you are buying on credit from'); return; }
 
   const amount = Math.round(qty*rate);
   const txRecord = {id:'ITX'+nextId('itx'), itemId, date, type, qty, rate, amount, note};
@@ -2415,8 +2427,12 @@ function saveInventoryTx(){
   if(amount>0){
     const itemName = DB.inventoryItems.find(i=>i.id===itemId)?.name||'item';
     if(type==='purchase'){
-      addVoucher({type:'Journal', date, narration:`Stock purchase — ${itemName}${vendorId?' — '+getVendor(vendorId).name:''}${via?' ('+via+')':''}`, vendorId: vendorId||undefined,
-        entries:[{account:'Inventory Stock',debit:amount,credit:0},{account:acc,debit:0,credit:amount}]});
+      const postAcc = onCredit? 'Vendor Creditors' : acc;
+      addVoucher({type:'Journal', date, narration:`Stock purchase — ${itemName}${vendorId?' — '+getVendor(vendorId).name:''}${onCredit?' (on credit)':via?' ('+via+')':''}`, vendorId: vendorId||undefined,
+        entries:[{account:'Inventory Stock',debit:amount,credit:0},{account:postAcc,debit:0,credit:amount}]});
+      if(onCredit){
+        DB.vendorBills.push({id:'VB'+nextId('vbill'), vendorId, date, description:`Stock purchase — ${itemName}`, amount, tdsSection:'None', tdsRate:0, tdsAmount:0, gstAmount:0, gstRate:0, netPayable:amount, paid:0, status:'unpaid'});
+      }
     } else {
       addVoucher({type:'Journal', date, narration:`Stock issued — ${itemName}${note?' — '+note:''}`, entries:[{account:acc,debit:amount,credit:0},{account:'Inventory Stock',debit:0,credit:amount}]});
     }
@@ -3686,7 +3702,9 @@ const FAQ = [
   {k:['gst','input credit','itc','return'], q:'How does the GST module work?',
    a:'The GST tab shows Output GST collected minus Input Tax Credit = Net Payable (GSTR-3B style), outward supplies by rate slab, and an ITC register. Tick "Vendor has charged GST" when logging vendor bills to claim ITC. It prepares figures — filing is still via the portal/your CA.'},
   {k:['stock','inventory','consumption','purchase item','fifo','category','categories'], q:'How do I manage stock?',
-   a:'Stock → Transactions is now the one-stop screen: pick Purchase or Issue/Consumption, then add a New Item or New Vendor right there if they do not exist yet — no separate screen needed. Categories work the same way (pick existing or type a new one) and can filter the Item list. Consumption cost is calculated automatically using FIFO — it values what you use from the oldest purchase batch still in stock, not a number you type in. Stock on hand updates the instant you save, before approval even happens.'},
+   a:'Stock → Transactions is the one-stop screen: pick Purchase or Issue/Consumption, then add a New Item, New Category, or New Vendor right there if they do not exist yet — no separate screen needed, and a starter catalog of 32 common items across 12 categories is already pre-filled on a fresh install. "Paid Via" for a purchase includes Cash, UPI, every bank account you have registered, and "Credit — Pay Vendor Later" (which requires picking the vendor and creates a real payable, settled later from Vendors → Pay Vendor). Consumption cost is calculated automatically using FIFO — it values what you use from the oldest purchase batch still in stock. Stock on hand updates the instant you save, before approval even happens.'},
+  {k:['upi','payment method','paid via','bank dropdown','which bank'], q:'How do payment methods and bank accounts work across the app?',
+   a:'Every screen that involves money moving (Receipts, Vendor Payments, Stock Purchases, Payroll, Asset purchases, Consolidated Bills) shares the same "Paid Via" dropdown: Cash in Hand, UPI (posts straight to your primary bank account, no extra step needed), every bank account you have registered under Setup → Bank & FD Accounts by name, and — where relevant — Credit. If you registered zero bank accounts, you will only see Cash and a generic "Bank Account" fallback; add your Savings/Current accounts under Setup first and they appear everywhere immediately.'},
   {k:['multiple device','multiple computer','same computer','different laptop','multi user','sync'], q:'Can different people work from different devices at the same time?',
    a:'Not yet, and this is a real limitation worth knowing before relying on it for a live committee. All data lives only in the browser you are using — nothing is shared automatically between devices. For maker-checker to actually work with different people, either everyone uses the same device by turns, or you manually export/import a backup between sessions (Setup → Data). True multi-device, multi-person simultaneous use would need a real backend server and accounts — a bigger, separate project from what exists today.'},
   {k:['tds','vendor','contractor'], q:'How does vendor TDS work?',
@@ -3792,7 +3810,7 @@ function renderHelp(){
     ['Printing Statements as PDF', `Trial Balance, Income & Expenditure, Receipts & Payments, and Balance Sheet (Reports tab) each have a <b>"Print / Save as PDF"</b> button at the top — it uses your phone's own print system, so it works fully offline. On iPhone: tap it, then in the print preview <b>pinch to zoom in</b> — that switches to a full-page view with a share icon at top right; tap it → <b>Save to Files</b> → PDF. The printed page hides all app menus and shows only the clean statement, complete with signature lines for Treasurer/Secretary/Chairman/Auditor, ready for physical signing.`],
     ['Health Check', `Tap the ♡ icon at the top anytime to run a diagnostic: it checks that your Trial Balance and Balance Sheet tally, flags stale pending approvals, flats without owners, negative stock, overdue vendor dues, and other data issues — so small mistakes get caught early.`],
     ['Ask SmartRWA (Chat)', `Tap the 💬 icon at the top for quick answers — it's a built-in FAQ assistant (no AI, works offline) covering how-to questions across the app, and it can answer a few live questions directly from your data, like "how much is outstanding" or "pending approvals?".`],
-    ['Stock Management — Categories, Vendors & FIFO', `Stock → Transactions is the single screen for both directions. <b>Purchase</b>: pick an existing Item or use "+ New Item…" to add one on the spot (name, category, unit, reorder level) — same for Vendor ("+ New Vendor…"), and if you pay via Vendor Creditors it automatically becomes a proper payable you can settle later through the normal Vendor Payment screen. <b>Categories</b> work the same way everywhere — pick one or type a new one, and a Category filter narrows the Item list once you have several. <b>Units</b> are a dropdown (Kg, Litre, Pieces, Meter, etc., with "Other" for anything unusual) instead of free text, so the same unit is not recorded three different ways by accident.<br><br>For <b>Issue/Consumption</b>, the Rate field locks and fills itself in automatically using <b>FIFO costing</b> — it works out what remains in your oldest purchase batches (after accounting for everything already consumed) and values this consumption from those, oldest stock first, blending across batches if needed. This is the standard method auditors expect, and it means you never have to guess or manually type a consumption cost. Stock on hand updates the instant you save — before the entry is even approved.`],
+    ['Stock Management — Categories, Vendors, Payment & FIFO', `Stock → Transactions is the single screen for both directions, and a fresh install already starts with <b>32 common items across 12 categories</b> (Housekeeping, Electrical, Plumbing, Fuel, Stationery, Security, Firefighting & Safety, Horticulture, Pest Control, Lift & Elevator, Water Treatment, Painting) — nothing to set up before your first purchase. <b>Purchase</b>: pick an existing Item/Category/Vendor or add a new one right there with "+ New…". "Paid Via" offers Cash, UPI, every bank account registered under Setup → Bank & FD Accounts, and <b>"Credit — Pay Vendor Later"</b> — pick Credit and the Vendor field becomes required; it creates a real payable, settled later from Vendors → Pay Vendor (full or partial payment both work — pay less than the total and the remainder just stays due, visible next time). <b>Units</b> are a dropdown (Kg, Litre, Pieces, Meter, etc., with "Other" for anything unusual).<br><br>For <b>Issue/Consumption</b>, the Rate field locks and fills itself in automatically using <b>FIFO costing</b> — the standard method auditors expect, valuing what you use from the oldest purchase batch still in stock rather than a number you type in. Stock on hand updates the instant you save, before approval even happens.`],
     ['A Real Limitation — One Device at a Time', `Everything in this app lives only in the browser you are using — there is no shared server behind it. This means <b>two different people on two different devices do not see the same data</b>, even if both are using this exact app. For maker-checker to work as intended (a different person approving what someone else raised), you currently need to either share one physical device between roles, or manually export a backup after each session and import it before the next person continues (Setup → Data). This is a genuine constraint, not a bug — letting multiple people work live from separate devices would need a proper backend server and real user accounts, which is a substantially bigger project than the offline, zero-cost app built so far. Worth planning around deliberately rather than discovering mid-use.`],
     ['Modules at a Glance', `<b>Flats</b> — owners, tenants, areas, parking, history · <b>Billing</b> — bills, meter readings, consolidated bills · <b>Receipts</b> — payments received · <b>Vendors</b> — bills, TDS, GST input credit, payments · <b>Payroll</b> — salary, PF, ESI · <b>Assets</b> — register & depreciation · <b>Stock</b> — inventory in/out, categories, FIFO · <b>Accounts</b> — vouchers, ledgers, deletions · <b>Approve</b> — maker-checker queue, queries, audit log · <b>Issues</b> — complaints · <b>Reports</b> — Trial Balance, I&E, Receipts & Payments, Balance Sheet, Defaulters, Advance Balances, Flat Ledger · <b>GST</b> — returns & ITC · <b>Audit</b> — auditor workspace · <b>Setup</b> — everything above lives here.`],
   ];
