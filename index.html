@@ -1873,9 +1873,27 @@ function approveVoucher(id, note){
 function authoriseTicked(){
   const boxes = Array.from(document.querySelectorAll('.pend_ck:checked'));
   if(!boxes.length){ toast('Tick at least one entry to authorise'); return; }
+  openAuthoriseConfirmModal(boxes.map(b=>Number(b.dataset.id)));
+}
+function openAuthoriseConfirmModal(ids){
+  const vouchers = ids.map(id=>DB.vouchers.find(v=>v.id===id)).filter(Boolean);
+  if(!vouchers.length){ toast('Nothing to authorise'); return; }
+  const total = vouchers.reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
+  openModal(`<div class="modal-head"><h2>Confirm Authorisation</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">You're about to authorise <b>${vouchers.length}</b> entr${vouchers.length===1?'y':'ies'} totalling <b>₹${fmt(total)}</b>. Once approved, each posts straight to the ledger — undoing it afterward means a Reversal with a remark, not a delete. Please review before confirming:</p>
+    <div class="tbl-wrap" style="max-height:280px;overflow-y:auto;"><table><tr><th>Type</th><th>Raised By</th><th>Narration</th><th class="num-cell">Amount</th></tr>
+    ${vouchers.map(v=>`<tr><td style="font-size:12px;">${v.type}</td><td style="font-size:11.5px;">${actorLabel(v.maker,v.makerName)}</td><td style="font-size:12px;">${v.narration||''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td></tr>`).join('')}
+    <tr style="font-weight:700;border-top:2px solid var(--ink)"><td colspan="3">Total</td><td class="num-cell">₹${fmt(total)}</td></tr>
+    </table></div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button class="btn btn-primary" style="flex:1" onclick="confirmAuthoriseTicked([${ids.join(',')}])">Yes, Authorise ${vouchers.length===1?'This':'All '+vouchers.length}</button>
+      <button class="btn btn-outline" style="flex:1" onclick="closeModal()">Cancel</button>
+    </div>`);
+}
+function confirmAuthoriseTicked(ids){
   let count=0;
-  boxes.forEach(b=>{ if(approveVoucherCore(Number(b.dataset.id))) count++; });
-  save(); render();
+  ids.forEach(id=>{ if(approveVoucherCore(id)) count++; });
+  save(); closeModal(); render();
   toast(`${count} entr${count===1?'y':'ies'} authorised & posted to ledger`);
 }
 function toggleSelectAllPending(master){
@@ -6707,7 +6725,7 @@ const FAQ = [
   {k:['advance','excess','credit balance'], q:'How do advance payments work?',
    a:'Record a normal receipt for the full amount — anything beyond current dues sits as a credit and auto-adjusts against future bills. See Reports → Advance Balances for all flats in credit on any date.'},
   {k:['approve','authorise','pending','maker','checker'], q:'How does approval work?',
-   a:'Every entry needs a second person. Go to Approve → tick the entries you\'re satisfied with → "Authorise Ticked". Use "Call for Explanation" to query an entry without rejecting it; the maker responds and you approve when satisfied. You cannot approve your own entries.'},
+   a:'Every entry needs a second person. Go to Approve → tick the entries you\'re satisfied with → "Authorise Ticked". That opens a review screen first — every entry you\'re about to approve, who raised it, and the total — before anything actually posts; nothing is approved until you confirm on that screen. Use "Call for Explanation" to query an entry without rejecting it; the maker responds and you approve when satisfied. You cannot approve your own entries.'},
   {k:['query','explanation','clarify','call for explanation'], q:'What does "Call for Explanation" do?',
    a:'It lets a checker flag an entry as needing clarification without rejecting it outright. The maker sees the question and can "Respond to Query" with an answer — the whole exchange stays visible on the entry. Once satisfied, the checker just ticks it as normal and authorises.'},
   {k:['delete','wrong entry','remove','mistake','reverse','reversal'], q:'How do I correct a wrong entry?',
