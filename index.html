@@ -56,8 +56,11 @@ body.dark #topbar{background:var(--surface-dark); border-color:var(--border-dark
 #topbar h1{font-size:18px; margin:0; font-weight:600;}
 #topbar .soc{font-size:11.5px; color:var(--ink-soft); font-family:'Inter';}
 .top-actions{display:flex; gap:8px; align-items:center;}
-.icon-btn{background:none; border:1px solid var(--border); border-radius:8px; padding:7px 9px; font-size:15px; color:var(--ink);}
+.icon-btn{background:none; border:1px solid var(--border); border-radius:8px; padding:7px 9px; font-size:15px; color:var(--ink); position:relative;}
 body.dark .icon-btn{border-color:var(--border-dark); color:var(--ink-dark);}
+.icon-btn.chat-highlight{background:var(--amber-soft); border-color:var(--gold); animation:chatPulse 2.2s ease-in-out infinite;}
+.icon-btn.chat-highlight::after{content:''; position:absolute; top:-3px; right:-3px; width:9px; height:9px; border-radius:50%; background:var(--brick); border:2px solid var(--paper);}
+@keyframes chatPulse{ 0%,100%{ box-shadow:0 0 0 0 rgba(176,141,47,.45); } 50%{ box-shadow:0 0 0 6px rgba(176,141,47,0); } }
 
 #content{padding:16px; padding-bottom:70px; max-width:980px; margin:0 auto; width:100%;}
 
@@ -260,7 +263,7 @@ body.dark .chat-input-row{border-color:var(--border-dark);}
       <div class="top-actions">
         <span class="role-badge" id="roleBadge"></span>
         <button class="icon-btn" onclick="openChangeMyPinModal()" title="Change My PIN">🔑</button>
-        <button class="icon-btn" onclick="openChatBot()" title="Ask SmartRWA">💬</button>
+        <button class="icon-btn" id="chatIconBtn" onclick="openChatBot()" title="Ask SmartRWA">💬</button>
         <button class="icon-btn" onclick="openHealthCheckModal()" title="Health Check">♡</button>
         <button class="icon-btn" onclick="toggleTheme()">◐</button>
         <button class="icon-btn" onclick="logout()">⏻</button>
@@ -2094,6 +2097,13 @@ function renderDashboard(){
 
   return `
   ${backupBanner}
+  ${!localStorage.getItem('smartrwa_chat_banner_dismissed')? `<div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--amber-soft);border:1px solid var(--gold);">
+    <div style="font-size:12.5px;"><b>💬 New here?</b> Tap the chat icon (top right) and just ask — <i>"how do I record a receipt"</i>, <i>"how do I add a vendor bill"</i> — or type a report name like <i>"trial balance"</i> to open it directly.</div>
+    <div style="display:flex;flex-direction:column;gap:4px;flex:0 0 auto;">
+      <button class="btn btn-primary btn-sm" onclick="openChatBot()">Try it</button>
+      <button class="btn btn-outline btn-sm" onclick="dismissChatBanner()">Dismiss</button>
+    </div>
+  </div>` : ''}
   ${(()=>{ const ahs = computeAccountingHealthScore(); const c = ahs.score>=90?'var(--moss)':ahs.score>=75?'var(--gold)':'var(--brick)';
     return `<div class="card" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;border:2px solid ${c};" onclick="go('audit')">
       <div><div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.05em;">Accounting Health Score</div><div style="font-size:11px;color:var(--ink-soft);">Grade ${ahs.grade} · tap for the full breakdown</div></div>
@@ -6763,7 +6773,11 @@ const FAQ = [
   {k:['pwa','install','home screen','offline'], q:'Can I install this as an app?',
    a:'Yes — in Safari tap Share → "Add to Home Screen". It opens full-screen like a native app and works fully offline. Data stays on the device.'},
 ];
+function dismissChatBanner(){ localStorage.setItem('smartrwa_chat_banner_dismissed','1'); render(); }
 function openChatBot(){
+  localStorage.setItem('smartrwa_chat_used', '1');
+  localStorage.setItem('smartrwa_chat_banner_dismissed', '1');
+  document.getElementById('chatIconBtn')?.classList.remove('chat-highlight');
   document.getElementById('chatModal').classList.add('show');
   const msgs = document.getElementById('chatMessages');
   if(!msgs.children.length){
@@ -6776,7 +6790,9 @@ function closeChatBot(){ document.getElementById('chatModal').classList.remove('
 function renderChatChips(){
   const pickByKeyword = kw => FAQ.find(f=>f.k.includes(kw));
   const picks = [pickByKeyword('generate'), pickByKeyword('reminder'), pickByKeyword('sold'), pickByKeyword('consolidated'), pickByKeyword('backup')].filter(Boolean);
-  document.getElementById('chatChips').innerHTML = picks.map(f=>`<button class="chat-chip" onclick="askChat('${f.q.replace(/'/g,"\'")}')">${f.q}</button>`).join('');
+  const chips = picks.map(f=>`<button class="chat-chip" onclick="askChat('${f.q.replace(/'/g,"\'")}')">${f.q}</button>`);
+  chips.push(`<button class="chat-chip" onclick="askChat('trial balance')">Show me trial balance</button>`);
+  document.getElementById('chatChips').innerHTML = chips.join('');
 }
 function addChatMsg(who, text){
   const el = document.createElement('div');
@@ -7057,6 +7073,7 @@ function startAutoLogoutTimer(){
 /* ============ INIT ============ */
 syncBankLedgerAccounts();
 window.__originalLockCardHTML = document.querySelector('.lock-card')?.innerHTML || '';
+if(!localStorage.getItem('smartrwa_chat_used')) document.getElementById('chatIconBtn')?.classList.add('chat-highlight');
 const savedRole = sessionStorage.getItem('smartrwa_role');
 if(savedRole && ALLOWED_ROLES.includes(savedRole)){
   enterApp(savedRole);
