@@ -6767,7 +6767,7 @@ function openChatBot(){
   document.getElementById('chatModal').classList.add('show');
   const msgs = document.getElementById('chatMessages');
   if(!msgs.children.length){
-    addChatMsg('bot', `Namaste! I can answer questions about using SmartRWA — billing, receipts, approvals, GST, backups and more. Tap a suggestion below or type your question.`);
+    addChatMsg('bot', `Namaste! I can answer questions about using SmartRWA — billing, receipts, approvals, GST, backups and more. You can also just type a screen name — like "trial balance" or "overdue statement" — and I'll open it directly. Tap a suggestion below or type your question.`);
     renderChatChips();
   }
   setTimeout(()=>document.getElementById('chatInput').focus(), 100);
@@ -6806,12 +6806,78 @@ function liveDataAnswer(qLower){
   }
   return null;
 }
+/* ============ CHAT "SHOW ME X" NAVIGATION ============
+   If the message reads like a command/label ("show me trial balance", "overdue statement") rather
+   than a question ("how do I...", "what does..."), jump straight to that screen instead of just
+   answering about it. */
+const NAV_COMMANDS = [
+  {k:['schedule wise balance sheet','schedule-wise balance sheet'], route:'reports', sub:'bsschedule', label:'Schedule-wise Balance Sheet'},
+  {k:['trial balance'], route:'reports', sub:'trial', label:'Trial Balance'},
+  {k:['balance sheet'], route:'reports', sub:'bs', label:'Balance Sheet'},
+  {k:['income and expenditure','income & expenditure','i&e statement','i and e statement'], route:'reports', sub:'ie', label:'Income & Expenditure'},
+  {k:['receipts and payments','receipts & payments'], route:'reports', sub:'rp', label:'Receipts & Payments'},
+  {k:['general ledger'], route:'reports', sub:'genledger', label:'General Ledger'},
+  {k:['cash book'], route:'reports', sub:'cashbook', label:'Cash Book'},
+  {k:['bank book'], route:'reports', sub:'bankbook', label:'Bank Book'},
+  {k:['day book'], route:'reports', sub:'daybook', label:'Day Book'},
+  {k:['journal register'], route:'reports', sub:'journal', label:'Journal Register'},
+  {k:['financial ratios'], route:'reports', sub:'ratios', label:'Financial Ratios'},
+  {k:['5 year trend','five year trend','5-year trend','trend analysis'], route:'reports', sub:'trends', label:'5-Year Trends'},
+  {k:['budget vs actual','budget report'], route:'reports', sub:'budget', label:'Budget vs Actual'},
+  {k:['unreconciled items','unreconciled'], route:'reports', sub:'unreconciled', label:'Unreconciled Items'},
+  {k:['advance balance','advances held','advance list'], route:'reports', sub:'advances', label:'Advance Balances'},
+  {k:['low balance alert','low balance'], route:'reports', sub:'lowbalance', label:'Low Balance Alerts'},
+  {k:['flat ledger'], route:'reports', sub:'flatledger', label:'Flat Ledger'},
+  {k:['smart insights'], route:'reports', sub:'insights', label:'Smart Insights'},
+  {k:['agm pack','agm report'], route:'reports', sub:'agm', label:'AGM Pack'},
+  {k:['overdue statement','overdue list','defaulter list','defaulters list','defaulters'], route:'reports', sub:'defaulters', label:'Defaulters'},
+  {k:['dashboard','home screen'], route:'dashboard', sub:null, label:'Dashboard'},
+  {k:['voucher list','vouchers screen','all vouchers'], route:'accounts', sub:'vouchers', label:'Vouchers'},
+  {k:['account ledger','the ledger'], route:'accounts', sub:'ledger', label:'Ledger'},
+  {k:['pending approvals','approval queue'], route:'approvals', sub:'pending', label:'Pending Approvals'},
+  {k:['audit trail'], route:'audit', sub:'trail', label:'Audit Trail'},
+  {k:['exception report','fraud pattern report'], route:'audit', sub:'exceptions', label:'Exception Reports'},
+  {k:['audit objections','audit observations'], route:'audit', sub:'observations', label:'Audit Observations'},
+  {k:['compliance tracker'], route:'audit', sub:'compliance', label:'Compliance Tracker'},
+  {k:['internal controls checklist','internal control checklist'], route:'audit', sub:'checklist', label:'Internal Controls'},
+  {k:['statutory registers'], route:'audit', sub:'statutory', label:'Statutory Registers'},
+  {k:['asset verification'], route:'audit', sub:'assetverify', label:'Asset Verification'},
+  {k:['cash verification'], route:'audit', sub:'cashverify', label:'Cash Verification'},
+  {k:['legal cases'], route:'audit', sub:'legal', label:'Legal Cases'},
+  {k:['inspect society'], route:'audit', sub:'inspect', label:'Inspect Society'},
+  {k:['flats list','flats screen'], route:'flats', sub:null, label:'Flats'},
+  {k:['billing screen','generate bills screen'], route:'billing', sub:'bills', label:'Billing'},
+  {k:['receipts screen'], route:'receipts', sub:null, label:'Receipts'},
+  {k:['vendors list','vendor list'], route:'vendors', sub:'list', label:'Vendors'},
+  {k:['payroll screen'], route:'payroll', sub:'employees', label:'Payroll'},
+  {k:['assets register','assets screen'], route:'assets', sub:null, label:'Assets'},
+  {k:['stock screen','inventory screen'], route:'inventory', sub:'items', label:'Stock'},
+  {k:['gst summary','gst returns'], route:'gst', sub:'summary', label:'GST'},
+  {k:['complaints list','issues list'], route:'complaints', sub:null, label:'Complaints'},
+  {k:['documents screen','document vault'], route:'documents', sub:null, label:'Documents'},
+];
+function tryNavCommand(qLower){
+  if(/\b(how|why|what|when|does|explain|difference|meaning|can i|should i)\b/.test(qLower)) return null; // sounds like a question, not a command
+  let best=null, bestScore=0;
+  NAV_COMMANDS.forEach(cmd=>{
+    let score=0;
+    cmd.k.forEach(kw=>{ if(qLower.includes(kw)) score = Math.max(score, kw.length); });
+    if(score>bestScore){ bestScore=score; best=cmd; }
+  });
+  return bestScore>=8? best : null; // require a fairly specific match, not just one short word
+}
 function sendChat(){
   const input = document.getElementById('chatInput');
   const q = input.value.trim(); if(!q) return;
   input.value = '';
   addChatMsg('user', q.replace(/</g,'&lt;'));
   const qLower = q.toLowerCase();
+  const nav = tryNavCommand(qLower);
+  if(nav){
+    addChatMsg('bot', `Opening <b>${nav.label}</b>…`);
+    setTimeout(()=>{ closeChatBot(); go(nav.route, nav.sub); }, 450);
+    return;
+  }
   const live = liveDataAnswer(qLower);
   if(live){ addChatMsg('bot', live); return; }
   let best=null, bestScore=0;
@@ -6823,7 +6889,7 @@ function sendChat(){
   if(best && bestScore>2){
     addChatMsg('bot', best.a);
   } else {
-    addChatMsg('bot', `I don't have a ready answer for that. Try the <b>Help</b> tab for detailed guides, or rephrase using words like "bill", "receipt", "approve", "GST", "backup", "stock", "payroll"…`);
+    addChatMsg('bot', `I don't have a ready answer for that. Try the <b>Help</b> tab for detailed guides, or rephrase using words like "bill", "receipt", "approve", "GST", "backup", "stock", "payroll"… or just type a screen name like "trial balance" or "overdue statement" to jump straight there.`);
   }
 }
 
@@ -6854,7 +6920,7 @@ function renderHelp(){
     ['Backup, Restore & Data Wipe', `All data lives only on this device — nothing is synced anywhere. Export a backup regularly from Setup → Data (the Dashboard nags you if it's been 7+ days). <b>Importing a backup replaces everything currently in the app</b>, so it's protected the same way as a full wipe: the person importing it stages the file, a <i>different</i> role has to confirm before it actually takes effect, and whatever was there beforehand is saved automatically as a restore point ("Restore Pre-Import Backup"). If you ever need to erase everything and start fresh instead, Setup → Danger Zone requires a reason and a different role to confirm — a restore point is saved automatically first, recoverable with "Restore Last Wipe".`],
     ['Printing Statements as PDF', `Trial Balance, Income & Expenditure, Receipts & Payments, and Balance Sheet (Reports tab) each have a <b>"Print / Save as PDF"</b> button at the top — it uses your phone's own print system, so it works fully offline. On iPhone: tap it, then in the print preview <b>pinch to zoom in</b> — that switches to a full-page view with a share icon at top right; tap it → <b>Save to Files</b> → PDF. The printed page hides all app menus and shows only the clean statement, complete with signature lines for Treasurer/Secretary/Chairman/Auditor, ready for physical signing.`],
     ['Health Check', `Tap the ♡ icon at the top anytime to run a diagnostic: it checks that your Trial Balance and Balance Sheet tally, flags stale pending approvals, flats without owners, negative stock, overdue vendor dues, and other data issues — so small mistakes get caught early. The score reflects your actual data, not a fixed number — for example, it only shows "No negative stock balances" as passing once every item's stock on hand is zero or higher; since Issue/Consumption transactions can no longer push stock negative, that check should stay green going forward. If it's still below 100%, open the modal and work through whichever specific line items show ⚠️ — each one names exactly what needs fixing.`],
-    ['Ask SmartRWA (Chat)', `Tap the 💬 icon at the top for quick answers — it's a built-in FAQ assistant (no AI, works offline) covering how-to questions across the app, and it can answer a few live questions directly from your data, like "how much is outstanding" or "pending approvals?".`],
+    ['Ask SmartRWA (Chat)', `Tap the 💬 icon at the top for quick answers — it's a built-in FAQ assistant (no AI, works offline) covering how-to questions across the app, and it can answer a few live questions directly from your data, like "how much is outstanding" or "pending approvals?". It also understands direct commands: type a screen or report name — "trial balance", "overdue statement", "budget vs actual", "inspect society" — and it opens that screen right away instead of just talking about it. Phrase it as a question ("how do I...", "what is...") and it'll explain instead of navigating.`],
     ['Stock Management — Categories, Vendors, Payment & FIFO', `Stock → Transactions is the single screen for both directions, and a fresh install already starts with <b>32 common items across 12 categories</b> (Housekeeping, Electrical, Plumbing, Fuel, Stationery, Security, Firefighting & Safety, Horticulture, Pest Control, Lift & Elevator, Water Treatment, Painting) — nothing to set up before your first purchase. <b>Purchase</b>: pick an existing Item/Category/Vendor or add a new one right there with "+ New…". "Paid Via" offers Cash, UPI, every bank account registered under Setup → Bank & FD Accounts, and <b>"Credit — Pay Vendor Later"</b> — pick Credit and the Vendor field becomes required; it creates a real payable, settled later from Vendors → Pay Vendor (full or partial payment both work — pay less than the total and the remainder just stays due, visible next time). <b>Units</b> are a dropdown (Kg, Litre, Pieces, Meter, etc., with "Other" for anything unusual).<br><br>For <b>Issue/Consumption</b>, the Rate field locks and fills itself in automatically using <b>FIFO costing</b> — the standard method auditors expect, valuing what you use from the oldest purchase batch still in stock rather than a number you type in. Stock on hand updates the instant you save, before approval even happens. The app now blocks the save outright if the quantity you're issuing is more than what's on hand, so stock can never be driven negative.`],
     ['A Real Limitation — One Device at a Time', `Everything in this app lives only in the browser you are using — there is no shared server behind it. This means <b>two different people on two different devices do not see the same data</b>, even if both are using this exact app. For maker-checker to work as intended (a different person approving what someone else raised), you currently need to either share one physical device between roles, or manually export a backup after each session and import it before the next person continues (Setup → Data). This is a genuine constraint, not a bug — letting multiple people work live from separate devices would need a proper backend server and real user accounts, which is a substantially bigger project than the offline, zero-cost app built so far. Worth planning around deliberately rather than discovering mid-use.`],
     ['Modules at a Glance', `<b>Flats</b> — owners, tenants, areas, parking, history · <b>Billing</b> — bills, meter readings, consolidated bills · <b>Receipts</b> — payments received · <b>Vendors</b> — bills, TDS, GST input credit, payments · <b>Payroll</b> — salary, PF, ESI · <b>Assets</b> — register & depreciation · <b>Stock</b> — inventory in/out, categories, FIFO · <b>Accounts</b> — vouchers, ledgers, reversals · <b>Approve</b> — maker-checker queue, queries, audit log · <b>Issues</b> — complaints · <b>Reports</b> — Trial Balance, I&E, Receipts & Payments, Balance Sheet, Defaulters, Advance Balances, Flat Ledger · <b>GST</b> — returns & ITC · <b>Audit</b> — auditor workspace · <b>Docs</b> — bye-laws, insurance, AGM minutes, contracts, and other records · <b>Setup</b> — everything above lives here.`],
