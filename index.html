@@ -3975,8 +3975,8 @@ function renderInventory(){
       </table></div>`).join('') : `<div class="empty"><div class="ic">▥</div>No stock items yet.</div>`;
   } else if(sr==='tx'){
     const rows = DB.inventoryTx.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(t=>{ const it=DB.inventoryItems.find(i=>i.id===t.itemId); const v = t.vendorId? getVendor(t.vendorId) : null;
-      return `<tr><td>${t.date}<div style="font-size:11px;color:var(--ink-soft)">${it?it.name:'—'}${v?' · '+v.name:''} · ${t.note||''}</div></td><td>${t.type}</td><td class="num-cell">${t.qty} ${it?.unit||''}</td><td class="num-cell">₹${fmt(t.amount)}</td></tr>`; }).join('');
-    body = `<div class="tbl-wrap"><table><tr><th>Date</th><th>Type</th><th class="num-cell">Qty</th><th class="num-cell">Amount</th></tr>${rows||'<tr><td colspan=4 style="color:var(--ink-soft)">No transactions</td></tr>'}</table></div>`;
+      return `<tr><td>${t.date}<div style="font-size:11px;color:var(--ink-soft)">${it?it.name:'—'}${v?' · '+v.name:''} · ${t.note||''}</div></td><td>${t.type}</td><td class="num-cell">${t.qty} ${it?.unit||''}</td><td class="num-cell">₹${fmt(t.amount)}</td><td class="num-cell">${t.gstAmount?'₹'+fmt(t.gstAmount)+' ('+t.gstRate+'%)':'—'}</td></tr>`; }).join('');
+    body = `<div class="tbl-wrap"><table><tr><th>Date</th><th>Type</th><th class="num-cell">Qty</th><th class="num-cell">Amount</th><th class="num-cell">GST</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No transactions</td></tr>'}</table></div>`;
   }
   return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('inventory','${t[0]}')">${t[1]}</button>`).join('')}</div><div class="card">${body}</div>`;
 }
@@ -4054,6 +4054,10 @@ function openInventoryTxModal(){
       <div class="row2"><div class="field"><label>Phone</label><input id="tx_newVendorPhone"></div><div class="field"><label>GSTIN (optional)</label><input id="tx_newVendorGstin"></div></div>
     </div>
     <div class="row2"><div class="field"><label>Quantity</label><input id="tx_qty" type="number" oninput="updateTxAmount()"></div><div class="field" id="tx_rateField"><label>Rate ₹/unit</label><input id="tx_rate" type="number" oninput="updateTxAmount()"></div></div>
+    <div id="tx_gstWrap" style="display:none;">
+      <div class="field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;"><input type="checkbox" id="tx_gst" onchange="document.getElementById('tx_gstRateField').style.display=this.checked?'block':'none';updateTxAmount();" style="width:auto"> Vendor has charged GST (claim as Input Tax Credit)</label></div>
+      <div class="field" id="tx_gstRateField" style="display:none"><label>GST Rate %</label><input id="tx_gstRate" type="number" value="18" oninput="updateTxAmount()"></div>
+    </div>
     <div id="tx_amountPreview" style="font-size:12.5px;color:var(--ink-soft);margin:-8px 0 12px;"></div>
     <div class="field"><label>Date</label><input id="tx_date" type="date" value="${todayISO()}"></div>
     <div class="field"><label id="tx_acc_label">Paid Via</label>${paymentAccountSelect('tx_acc', null, 'toggleTxVia()')}</div>
@@ -4090,15 +4094,18 @@ function toggleTxAccount(){
   const vf = document.getElementById('tx_vendorField');
   const viaWrap = document.getElementById('tx_viaWrap');
   const rateInput = document.getElementById('tx_rate');
+  const gstWrap = document.getElementById('tx_gstWrap');
   if(!typeEl || !sel || !lbl || !vf || !rateInput) return;
   const type = typeEl.value;
   if(type==='purchase'){
     lbl.textContent='Paid Via'; sel.innerHTML=[...paymentAccountOptions(),'Credit — Pay Vendor Later'].map(a=>`<option>${a}</option>`).join('');
     vf.style.display='block';
+    if(gstWrap) gstWrap.style.display='block';
     toggleTxVia();
   } else {
     lbl.textContent='Expense Account'; sel.innerHTML=window.__expAccs.map(a=>`<option ${a==='Housekeeping Expense'?'selected':''}>${a}</option>`).join('');
     vf.style.display='none';
+    if(gstWrap) gstWrap.style.display='none';
     if(viaWrap) viaWrap.style.display='none';
   }
   rateInput.readOnly = (type==='issue');
@@ -4120,7 +4127,14 @@ function updateTxAmount(){
     preview.innerHTML = qty>0? `Auto-calculated: <b>₹${fmt(Math.round(qty*avgRate))}</b>${lotNote}` : '';
   } else {
     const amt = qty*Number(rateInput.value||0);
-    preview.innerHTML = (qty>0 && rateInput.value)? `Amount: <b>₹${fmt(Math.round(amt))}</b>` : '';
+    const gstOn = document.getElementById('tx_gst')?.checked;
+    const gstRate = gstOn? Number(document.getElementById('tx_gstRate')?.value)||0 : 0;
+    const gstAmt = gstOn? Math.round(amt*gstRate/100) : 0;
+    if(qty>0 && rateInput.value){
+      preview.innerHTML = gstOn
+        ? `Taxable value: <b>₹${fmt(Math.round(amt))}</b> + GST @${gstRate}%: <b>₹${fmt(gstAmt)}</b> = Total payable: <b>₹${fmt(Math.round(amt)+gstAmt)}</b><br>Stock is recorded at the taxable value; GST is claimed separately as Input Tax Credit.`
+        : `Amount: <b>₹${fmt(Math.round(amt))}</b>`;
+    } else preview.innerHTML = '';
   }
 }
 function saveInventoryTx(){
@@ -4156,24 +4170,31 @@ function saveInventoryTx(){
   const onCredit = acc==='Credit — Pay Vendor Later';
   if(onCredit && !vendorId){ toast('Select (or add) the vendor you are buying on credit from'); return; }
 
-  const amount = Math.round(qty*rate);
+  const amount = Math.round(qty*rate); // taxable value — GST, if any, is tracked separately below
+  const gstOn = type==='purchase' && document.getElementById('tx_gst')?.checked;
+  const gstRate = gstOn? Number(document.getElementById('tx_gstRate')?.value)||0 : 0;
+  const gstAmount = gstOn? Math.round(amount*gstRate/100) : 0;
+  const totalPayable = amount + gstAmount;
   const txRecord = {id:'ITX'+nextId('itx'), itemId, date, type, qty, rate, amount, note};
   if(vendorId) txRecord.vendorId = vendorId;
+  if(gstAmount>0){ txRecord.gstAmount = gstAmount; txRecord.gstRate = gstRate; }
   DB.inventoryTx.push(txRecord);
 
   if(amount>0){
     const itemName = DB.inventoryItems.find(i=>i.id===itemId)?.name||'item';
     if(type==='purchase'){
       const postAcc = onCredit? 'Vendor Creditors' : acc;
-      addVoucher({type:'Journal', date, narration:`Stock purchase — ${itemName}${vendorId?' — '+getVendor(vendorId).name:''}${onCredit?' (on credit)':via?' ('+via+')':''}`, vendorId: vendorId||undefined,
-        entries:[{account:'Inventory Stock',debit:amount,credit:0},{account:postAcc,debit:0,credit:amount}]});
+      const entries = [{account:'Inventory Stock',debit:amount,credit:0}];
+      if(gstAmount>0) entries.push({account:'GST Input Credit',debit:gstAmount,credit:0});
+      entries.push({account:postAcc,debit:0,credit:totalPayable});
+      addVoucher({type:'Journal', date, narration:`Stock purchase — ${itemName}${vendorId?' — '+getVendor(vendorId).name:''}${gstAmount>0?` (+GST ₹${fmt(gstAmount)})`:''}${onCredit?' (on credit)':via?' ('+via+')':''}`, vendorId: vendorId||undefined, entries});
       if(onCredit){
-        DB.vendorBills.push({id:'VB'+nextId('vbill'), vendorId, date, description:`Stock purchase — ${itemName}`, amount, tdsSection:'None', tdsRate:0, tdsAmount:0, gstAmount:0, gstRate:0, netPayable:amount, paid:0, status:'unpaid'});
+        DB.vendorBills.push({id:'VB'+nextId('vbill'), vendorId, date, description:`Stock purchase — ${itemName}`, amount, tdsSection:'None', tdsRate:0, tdsAmount:0, gstAmount, gstRate, netPayable:totalPayable, paid:0, status:'unpaid'});
       }
     } else {
       addVoucher({type:'Journal', date, narration:`Stock issued — ${itemName}${note?' — '+note:''}`, entries:[{account:acc,debit:amount,credit:0},{account:'Inventory Stock',debit:0,credit:amount}]});
     }
-    toast('Transaction saved — awaiting approval');
+    toast(gstAmount>0? `Transaction saved (₹${fmt(amount)} + GST ₹${fmt(gstAmount)}) — awaiting approval` : 'Transaction saved — awaiting approval');
   } else toast('Transaction saved');
   save(); closeModal(); render();
 }
@@ -5028,12 +5049,14 @@ function renderGST(){
         <tr style="font-weight:700;"><td>Total</td><td class="num-cell">₹${fmt(d.taxable)}</td><td class="num-cell">₹${fmt(d.gst)}</td></tr></table></div></div>`;
     });
   } else if(sr==='itc'){
-    const bills = DB.vendorBills.filter(b=>b.gstAmount>0).sort((a,b)=>b.date.localeCompare(a.date));
-    body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Vendor bills where GST was charged and claimed as Input Tax Credit — reconcile this against your GSTR-2B before claiming.</p>`;
-    body += bills.length? `<div class="tbl-wrap"><table><tr><th>Vendor / Bill</th><th class="num-cell">Taxable</th><th class="num-cell">GST</th></tr>
-      ${bills.map(b=>{ const v=getVendor(b.vendorId); return `<tr><td>${b.date}<div style="font-size:11px;color:var(--ink-soft)">${v?v.name:'—'}${v?.gstin?' · '+v.gstin:''} · ${b.description||''}</div></td><td class="num-cell">₹${fmt(b.amount)}</td><td class="num-cell">₹${fmt(b.gstAmount)}</td></tr>`; }).join('')}
-      <tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total ITC</td><td class="num-cell">₹${fmt(bills.reduce((s,b)=>s+b.amount,0))}</td><td class="num-cell">₹${fmt(bills.reduce((s,b)=>s+b.gstAmount,0))}</td></tr></table></div>`
-      : `<div class="empty"><div class="ic">%</div>No input-credit-bearing vendor bills yet. Tick "GST charged" when logging a vendor bill to start claiming ITC.</div>`;
+    const bills = DB.vendorBills.filter(b=>b.gstAmount>0).map(b=>{ const v=getVendor(b.vendorId); return {date:b.date, party:v?v.name:'—', partyGstin:v?.gstin||'', desc:b.description||'', taxable:b.amount, gst:b.gstAmount}; });
+    const stockTx = DB.inventoryTx.filter(t=>t.gstAmount>0).map(t=>{ const item=DB.inventoryItems.find(i=>i.id===t.itemId); const v=t.vendorId?getVendor(t.vendorId):null; return {date:t.date, party:v?v.name:'Cash/Bank purchase', partyGstin:v?.gstin||'', desc:`Stock — ${item?item.name:'item'}`, taxable:t.amount, gst:t.gstAmount}; });
+    const combined = [...bills, ...stockTx].sort((a,b)=>b.date.localeCompare(a.date));
+    body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Every vendor bill and stock purchase where GST was charged and claimed as Input Tax Credit — reconcile this against your GSTR-2B before claiming.</p>`;
+    body += combined.length? `<div class="tbl-wrap"><table><tr><th>Source</th><th class="num-cell">Taxable</th><th class="num-cell">GST</th></tr>
+      ${combined.map(b=>`<tr><td>${b.date}<div style="font-size:11px;color:var(--ink-soft)">${b.party}${b.partyGstin?' · '+b.partyGstin:''} · ${b.desc}</div></td><td class="num-cell">₹${fmt(b.taxable)}</td><td class="num-cell">₹${fmt(b.gst)}</td></tr>`).join('')}
+      <tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total ITC</td><td class="num-cell">₹${fmt(combined.reduce((s,b)=>s+b.taxable,0))}</td><td class="num-cell">₹${fmt(combined.reduce((s,b)=>s+b.gst,0))}</td></tr></table></div>`
+      : `<div class="empty"><div class="ic">%</div>No input-credit-bearing bills or stock purchases yet. Tick "GST charged" when logging a vendor bill, or "Vendor has charged GST" on a stock purchase, to start claiming ITC.</div>`;
   } else if(sr==='ledger'){
     body = `<div class="field"><label>Ledger</label><select id="gl_acc" onchange="go('gst','ledger')"><option value="GST Payable" ${window.__gstLdgAcc==='GST Input Credit'?'':'selected'}>GST Payable (Output)</option><option value="GST Input Credit" ${window.__gstLdgAcc==='GST Input Credit'?'selected':''}>GST Input Credit (ITC)</option></select></div>`;
     const accName = window.__gstLdgAcc || 'GST Payable';
@@ -6778,6 +6801,8 @@ const FAQ = [
    a:'Audit \u2192 Legal Cases \u2014 title, court/forum, filed date, status (Ongoing/Closed), next hearing date, and notes. Ongoing cases show as a count on the Dashboard so the President sees it without digging.'},
   {k:['diagnose tallying','diagnose difference','find the difference','not tallying','not matching','tally issue','tallying problem'], q:'Is there a screen to diagnose a tallying problem, not just ask the chat?',
    a:'Yes — Reports \u2192 Diagnose Tallying. One click recomputes, live, whether Trial Balance, Balance Sheet, and Cash Flow (Receipts & Payments) vs the Balance Sheet\'s cash figure all agree, plus each bank account\'s reconciliation status \u2014 and for anything that doesn\'t tally, it names the specific cause (like a mistyped account name) and what to do about it, not just that there\'s a problem. The same shortcut appears right on the Trial Balance and Balance Sheet pages themselves whenever they don\'t tally, and from the \u2661 Health Check modal. It\'s the same analysis the chat assistant gives if you ask \"why is my balance sheet not matching\" \u2014 just as a screen instead of a conversation.'},
+  {k:['gst on stock','gst on purchase','stock gst','purchase gst','issue gst','input tax credit stock'], q:'How is GST shown when purchasing or issuing stock?',
+   a:'On a stock <b>Purchase</b>, tick "Vendor has charged GST" and set the rate — the amount preview then shows the taxable value, the GST separately, and the total payable, all computed live. Stock itself is recorded at the taxable value only; the GST posts separately to GST Input Credit (an asset, reclaimable), exactly like a vendor bill\'s ITC handling. This works whichever way you pay — cash, bank, or on credit to a vendor — and either way it shows up in GST → ITC alongside your vendor bills. On <b>Issue/Consumption</b>, there\'s no GST at all, since issuing from stock you already own isn\'t a new purchase — no new tax event happens, it\'s simply moving cost from Inventory Stock to an expense account at FIFO cost.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
