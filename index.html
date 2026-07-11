@@ -4643,7 +4643,7 @@ function applyBudgetSuggestions(fyId){
 
 function renderReports(){
   const sr = subroute || 'trial';
-  const tabs=[['trial','Trial Balance'],['genledger','General Ledger'],['daybook','Day Book'],['cashbook','Cash Book'],['bankbook','Bank Book'],['journal','Journal Register'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['bsschedule','Schedule-wise B/S'],['ratios','Financial Ratios'],['trends','5-Year Trends'],['budget','Budget vs Actual'],['unreconciled','Unreconciled Items'],['defaulters','Defaulters'],['advances','Advance Balances'],['lowbalance','Low Balance Alerts'],['flatledger','Flat Ledger'],['insights','Smart Insights'],['agm','AGM Pack']];
+  const tabs=[['trial','Trial Balance'],['diagnose','Diagnose Tallying'],['genledger','General Ledger'],['daybook','Day Book'],['cashbook','Cash Book'],['bankbook','Bank Book'],['journal','Journal Register'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['bsschedule','Schedule-wise B/S'],['ratios','Financial Ratios'],['trends','5-Year Trends'],['budget','Budget vs Actual'],['unreconciled','Unreconciled Items'],['defaulters','Defaulters'],['advances','Advance Balances'],['lowbalance','Low Balance Alerts'],['flatledger','Flat Ledger'],['insights','Smart Insights'],['agm','AGM Pack']];
   const isFinancialStatement = ['trial','ie','rp','bs','genledger','daybook','cashbook','bankbook','journal','bsschedule'].includes(sr);
   if(!window.__reportFrom) window.__reportFrom = fyStart();
   if(!window.__reportTo) window.__reportTo = todayISO();
@@ -4666,7 +4666,25 @@ function renderReports(){
         <tr style="font-style:italic;color:var(--ink-soft);"><td style="padding-left:18px;">Subtotal</td><td class="num-cell">₹${fmt(gDr)}</td><td class="num-cell">₹${fmt(gCr)}</td></tr>`;
     }).join('');
     body = statementHeader('Trial Balance', `As at ${to}`) + `<div class="tbl-wrap"><table><tr><th>Account</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th></tr>${rows||'<tr><td colspan=3 style="color:var(--ink-soft)">No approved entries yet</td></tr>'}
-      <tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total</td><td class="num-cell">₹${fmt(totDr)}</td><td class="num-cell">₹${fmt(totCr)}</td></tr></table></div>` + statementFooter();
+      <tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total</td><td class="num-cell">₹${fmt(totDr)}</td><td class="num-cell">₹${fmt(totCr)}</td></tr></table></div>
+      <p style="font-size:11.5px;color:var(--ink-soft);margin-top:10px;">${Math.abs(totDr-totCr)<1?'✓ Trial Balance tallies.':'⚠ Difference ₹'+fmt(Math.abs(totDr-totCr))+'. <a href="#" onclick="event.preventDefault();go(\'reports\',\'diagnose\')">Diagnose this →</a>'}</p>` + statementFooter();
+  } else if(sr==='diagnose'){
+    const sections = computeStatementDiagnosis();
+    const allOk = sections.every(s=>s.ok);
+    body = statementHeader('Diagnose Tallying', `As at ${todayISO()}`) +
+      `<div class="card" style="text-align:center;border:2px solid ${allOk?'var(--moss)':'var(--brick)'};margin-bottom:12px;">
+        <div style="font-size:32px;">${allOk?'✅':'⚠️'}</div>
+        <div style="font-size:13px;font-weight:600;">${allOk? 'Everything checked here tallies.' : `${sections.filter(s=>!s.ok).length} of ${sections.length} check(s) need attention.`}</div>
+      </div>
+      ${sections.map(s=>`<div class="card" style="border-left:4px solid ${s.ok?'var(--moss)':'var(--brick)'};margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:start;">
+          <div style="font-weight:700;font-size:13.5px;">${s.ok?'✅':'⚠️'} ${s.title}</div>
+        </div>
+        <div style="font-size:12.5px;margin-top:4px;">${s.summary}</div>
+        <div style="font-size:11.5px;color:var(--ink-soft);margin-top:6px;">${s.detail}</div>
+        ${s.fix?`<div style="font-size:11.5px;margin-top:6px;padding:6px 8px;background:var(--amber-soft);border-radius:6px;"><b>Fix:</b> ${s.fix}</div>`:''}
+      </div>`).join('')}
+      <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Tap this anytime — it recomputes live from your current data, nothing is cached. You can also just ask the 💬 chat assistant "why is my balance sheet not matching" for the same analysis in conversational form.</p>` + statementFooter();
   } else if(sr==='genledger'){
     const accsWithActivity = Object.keys(ACCOUNTS).filter(a=>{
       return DB.vouchers.some(v=>v.status==='approved' && v.date>=from && v.date<=to && v.entries.some(e=>e.account===a));
@@ -4774,7 +4792,7 @@ function renderReports(){
     body = statementHeader('Balance Sheet', `As at ${to}`) +
     `<h3 style="font-size:13px">Liabilities & Fund Balance</h3><div class="tbl-wrap"><table>${renderGroupTable(liabGroups)}<tr><td>Accumulated Surplus (Income & Expenditure)</td><td class="num-cell">₹${fmt(surplus)}</td></tr><tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total</td><td class="num-cell">₹${fmt(totLiab)}</td></tr></table></div>
     <h3 style="font-size:13px;margin-top:14px">Assets</h3><div class="tbl-wrap"><table>${renderGroupTable(assetGroups)}<tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total Assets</td><td class="num-cell">₹${fmt(totAssets)}</td></tr></table></div>
-    <p style="font-size:11.5px;color:var(--ink-soft);margin-top:10px;">${Math.abs(totAssets-totLiab)<1?'✓ Balance Sheet tallies.':'⚠ Difference ₹'+fmt(Math.abs(totAssets-totLiab))+' — check for unbalanced or unapproved entries.'} Figures assume no opening balances were carried forward beyond what has been entered as opening journal(s).</p>` + statementFooter();
+    <p style="font-size:11.5px;color:var(--ink-soft);margin-top:10px;">${Math.abs(totAssets-totLiab)<1?'✓ Balance Sheet tallies.':'⚠ Difference ₹'+fmt(Math.abs(totAssets-totLiab))+' — check for unbalanced or unapproved entries. <a href="#" onclick="event.preventDefault();go(\'reports\',\'diagnose\')">Diagnose this →</a>'} Figures assume no opening balances were carried forward beyond what has been entered as opening journal(s).</p>` + statementFooter();
   } else if(sr==='bsschedule'){
     const assetGroups = groupedRows(Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Asset'), a=>accBalance(a,{upto:to}).net);
     const liabGroups = groupedRows(Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Liability'), a=>-accBalance(a,{upto:to}).net);
@@ -6659,7 +6677,8 @@ function openHealthCheckModal(){
       <span style="font-size:15px;">${c.ok?'✅':'⚠️'}</span>
       <div><div style="font-weight:600;font-size:13.5px;">${c.label}</div><div style="font-size:12px;color:var(--ink-soft);">${c.detail}</div></div>
     </div></div>`).join('')}
-    <p style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Run this anytime from the ♡ icon at the top of the app.</p>`);
+    <p style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Run this anytime from the ♡ icon at the top of the app.</p>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="closeModal();go('reports','diagnose');">Diagnose Tallying Issues →</button>`);
   logAction('Health Check', `Score ${score}% (${passCount}/${checks.length} checks passed)`);
 }
 
@@ -6728,6 +6747,8 @@ const FAQ = [
    a:'Setup \u2192 Financial Year now shows a step-by-step checklist before you close a year: verify cash, verify & reconcile every bank account, check outstanding dues, pass year-end adjustments (depreciation), generate and review the Trial Balance and Balance Sheet, clear all pending approvals, then lock the year \u2014 each step links straight to the right screen and shows done/not-done at a glance.<br><br>Separately, Audit \u2192 Inspect Society is a one-click deep audit: it checks <i>every</i> approved voucher (sequential numbering, not back-dated, approved by a different role), <i>every</i> flat (owner on file), <i>every</i> vendor (PAN/GSTIN where relevant), <i>every</i> bank account (reconciled), <i>every</i> asset (physically verified, AMC current) individually \u2014 not just category summaries \u2014 plus statutory registers, depreciation, and the core Health Score checks. For a real dataset this runs into hundreds of control points, honestly counted rather than padded to hit a number. It produces a Risk Grade (A\u2013D), a Compliance Status breakdown by category, and a Corrective Action List, all printable as an Inspection Report.'},
   {k:['legal cases','legal case tracker','court case','litigation'], q:'How do I track legal cases?',
    a:'Audit \u2192 Legal Cases \u2014 title, court/forum, filed date, status (Ongoing/Closed), next hearing date, and notes. Ongoing cases show as a count on the Dashboard so the President sees it without digging.'},
+  {k:['diagnose tallying','diagnose difference','find the difference','not tallying','not matching','tally issue','tallying problem'], q:'Is there a screen to diagnose a tallying problem, not just ask the chat?',
+   a:'Yes — Reports \u2192 Diagnose Tallying. One click recomputes, live, whether Trial Balance, Balance Sheet, and Cash Flow (Receipts & Payments) vs the Balance Sheet\'s cash figure all agree, plus each bank account\'s reconciliation status \u2014 and for anything that doesn\'t tally, it names the specific cause (like a mistyped account name) and what to do about it, not just that there\'s a problem. The same shortcut appears right on the Trial Balance and Balance Sheet pages themselves whenever they don\'t tally, and from the \u2661 Health Check modal. It\'s the same analysis the chat assistant gives if you ask \"why is my balance sheet not matching\" \u2014 just as a screen instead of a conversation.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
@@ -6802,6 +6823,98 @@ function addChatMsg(who, text){
   el.scrollIntoView({behavior:'smooth', block:'end'});
 }
 function askChat(q){ document.getElementById('chatInput').value = q; sendChat(); }
+/* ============ CHAT: DIAGNOSE A STATEMENT DIFFERENCE ============
+   When someone asks about a mismatch/difference, actually recompute the figures live and point at
+   the specific cause — not just a canned "here's how tallying works" explanation. */
+function computeStatementDiagnosis(){
+  const sections = [];
+
+  // 1. Trial Balance — every voucher is built balanced at entry time, so a real mismatch here would
+  // mean something bypassed that (a manually edited data file, or an old/foreign import).
+  let totDr=0, totCr=0;
+  const unbalancedVouchers = [];
+  DB.vouchers.filter(v=>v.status==='approved').forEach(v=>{
+    const dr = v.entries.reduce((s,e)=>s+(e.debit||0),0);
+    const cr = v.entries.reduce((s,e)=>s+(e.credit||0),0);
+    totDr+=dr; totCr+=cr;
+    if(Math.abs(dr-cr)>=1) unbalancedVouchers.push({voucherNo:v.voucherNo||('#'+v.id), dr, cr});
+  });
+  const tbDiff = Math.abs(totDr-totCr);
+  if(tbDiff<1){
+    sections.push({ok:true, title:'Trial Balance', summary:`Debit ₹${fmt(totDr)} = Credit ₹${fmt(totCr)}`, detail:'Tallies exactly.'});
+  } else if(unbalancedVouchers.length){
+    sections.push({ok:false, title:'Trial Balance', summary:`Off by ₹${fmt(tbDiff)} (Debit ₹${fmt(totDr)} vs Credit ₹${fmt(totCr)})`,
+      detail:`Found the cause — ${unbalancedVouchers.length} voucher(s) aren't internally balanced: ${unbalancedVouchers.slice(0,5).map(v=>`${v.voucherNo} (Dr ₹${fmt(v.dr)} / Cr ₹${fmt(v.cr)})`).join(', ')}${unbalancedVouchers.length>5?', …':''}. This shouldn't normally be possible since every entry is built balanced automatically, so it usually means the data file was hand-edited or came from an old/different export.`,
+      fix:'Reverse each voucher listed above (Accounts → Vouchers → Request Reversal) and re-enter it correctly.'});
+  } else {
+    sections.push({ok:false, title:'Trial Balance', summary:`Off by ₹${fmt(tbDiff)} (Debit ₹${fmt(totDr)} vs Credit ₹${fmt(totCr)})`,
+      detail:'Every individual voucher is internally balanced, so this shouldn\'t be possible.',
+      fix:'Check Setup → Data → Export Backup and review the raw file — something outside the app may have altered it.'});
+  }
+
+  // 2. Balance Sheet — the classic cause is an account name used in a voucher that isn't recognised
+  // in the chart of accounts, so Trial Balance counts it but the Balance Sheet's grouping skips it.
+  const assets = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Asset').reduce((s,a)=>s+accBalance(a).net,0);
+  const liab = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Liability').reduce((s,a)=>s-accBalance(a).net,0);
+  const incomeAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income'), expAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense');
+  const surplus = incomeAccs.reduce((s,a)=>{ const b=accBalance(a); return s+(b.cr-b.dr); },0) - expAccs.reduce((s,a)=>{ const b=accBalance(a); return s+(b.dr-b.cr); },0);
+  const bsDiff = Math.abs(assets-(liab+surplus));
+  const usedAccounts = new Set();
+  DB.vouchers.filter(v=>v.status==='approved').forEach(v=>v.entries.forEach(e=>usedAccounts.add(e.account)));
+  const unclassified = [...usedAccounts].filter(a=>!ACCOUNTS[a]);
+  if(bsDiff<1){
+    sections.push({ok:true, title:'Balance Sheet', summary:`Assets ₹${fmt(assets)} = Liabilities + Surplus ₹${fmt(liab+surplus)}`, detail:'Tallies exactly.'});
+  } else if(unclassified.length){
+    sections.push({ok:false, title:'Balance Sheet', summary:`Off by ₹${fmt(bsDiff)}`,
+      detail:`Found the likely cause — ${unclassified.length} account name(s) used in vouchers aren't recognised in the chart of accounts, so they count toward the Trial Balance but get skipped by the Balance Sheet's grouping: ${unclassified.join(', ')}.`,
+      fix:'Check Accounts → Ledger for each name above (likely a typo\'d or manually-added account) and reverse/correct whichever voucher used it.'});
+  } else {
+    sections.push({ok:false, title:'Balance Sheet', summary:`Off by ₹${fmt(bsDiff)}`,
+      detail:'Every account used is properly classified, so this is unusual.',
+      fix:'Open Reports → Schedule-wise Balance Sheet to see the full detail behind each figure — that\'s the next place to look.'});
+  }
+
+  // 3. Cash Flow (Receipts & Payments) vs Balance Sheet — both come from the same cash/bank ledger
+  // accounts via different code paths, so they should always agree exactly; a difference is a real
+  // integrity signal, most often a bank account's details changed after it already had transactions
+  // (which would split its history across two ledger account names without anyone noticing).
+  const fy = currentFY();
+  const cfTo = todayISO()<fy.endDate? todayISO() : fy.endDate;
+  const rp = receiptsPaymentsStatement(fy.startDate, cfTo);
+  const bsCash = totalCashAndBank({upto:cfTo});
+  const cashDiff = Math.abs(rp.closing - bsCash);
+  if(cashDiff<1){
+    sections.push({ok:true, title:'Cash Flow vs Balance Sheet', summary:`Receipts & Payments closing ₹${fmt(rp.closing)} = Balance Sheet Cash & Bank ₹${fmt(bsCash)}`, detail:'Tallies exactly.'});
+  } else {
+    sections.push({ok:false, title:'Cash Flow vs Balance Sheet', summary:`Off by ₹${fmt(cashDiff)} (Receipts & Payments closing ₹${fmt(rp.closing)} vs Balance Sheet Cash & Bank ₹${fmt(bsCash)})`,
+      detail:'These are built from the same cash/bank ledger accounts through different code paths, so they should always match exactly — a difference usually means a bank account\'s details (like the account number) were changed after it already had transactions, which silently splits its history across two ledger names.',
+      fix:'Check Setup → Bank & FD Accounts for any account edited after it had activity, and Accounts → Ledger for two similarly-named cash/bank accounts that should really be one.'});
+  }
+
+  // 4. Bank reconciliation status per account
+  syncBankLedgerAccounts();
+  const banks = DB.bankAccounts.filter(b=>b.type!=='FD');
+  banks.forEach(b=>{
+    if(b.lastReconciledDate){
+      const daysSince = Math.floor((new Date()-new Date(b.lastReconciledDate))/86400000);
+      sections.push({ok:true, title:`Bank: ${b.bankName}`, summary:`Last reconciled ${b.lastReconciledDate} (${daysSince}d ago)`,
+        detail:'If your physical bank statement shows a different balance now, some entries since then are still uncleared.',
+        fix:'Setup → Bank & FD Accounts → Reconcile will show exactly which entries are still uncleared.'});
+    } else {
+      sections.push({ok:false, title:`Bank: ${b.bankName}`, summary:'Never reconciled',
+        detail:'Every transaction on this account shows as outstanding until a first reconciliation is done — this is expected, not necessarily a problem.',
+        fix:'Setup → Bank & FD Accounts → Reconcile, then tick off (or auto-match via statement upload) whatever your bank statement actually shows as cleared.'});
+    }
+  });
+
+  return sections;
+}
+function diagnoseStatementDifference(){
+  return computeStatementDiagnosis().map(s=>{
+    const icon = s.ok? '✅' : (s.title.startsWith('Bank')&&!s.ok? '🏦':'⚠️');
+    return `${icon} <b>${s.title}</b> — ${s.summary}<br>${s.detail}${s.fix?' <b>Fix:</b> '+s.fix:''}`;
+  }).join('<br><br>');
+}
 function liveDataAnswer(qLower){
   if(/how much|total.*due|outstanding|kitna/.test(qLower) && /due|outstanding|baki/.test(qLower)){
     const total = DB.bills.reduce((s,b)=>s+billOutstanding(b),0);
@@ -6888,6 +7001,10 @@ function sendChat(){
   input.value = '';
   addChatMsg('user', q.replace(/</g,'&lt;'));
   const qLower = q.toLowerCase();
+  if(/differen|not match|mismatch|not tally|not tallying|doesn.t match|doesn.t tally|out of balance|reconcil.*(problem|issue|error|wrong)|find.*(difference|error|mistake)|why.*(not match|mismatch|different|wrong|off by)/.test(qLower)){
+    addChatMsg('bot', diagnoseStatementDifference());
+    return;
+  }
   const nav = tryNavCommand(qLower);
   if(nav){
     addChatMsg('bot', `Opening <b>${nav.label}</b>…`);
