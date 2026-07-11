@@ -114,6 +114,13 @@ body.dark .btn-outline{border-color:var(--border-dark); color:var(--ink-dark);}
   position:fixed; right:18px; bottom:22px; width:54px; height:54px; border-radius:50%;
   background:var(--teal); color:#fff; font-size:26px; border:none; box-shadow:0 4px 14px rgba(0,0,0,0.25); z-index:20;
 }
+#fabChatWrap{ position:fixed; left:18px; bottom:22px; z-index:21; display:flex; flex-direction:column; align-items:flex-start; gap:8px;
+  transition:opacity .5s ease, transform .5s ease; }
+#fabChatWrap.settling{ opacity:0; transform:translateY(12px) scale(.85); pointer-events:none; }
+#fabChatLabel{ background:var(--ink); color:#fff; font-size:12.5px; padding:8px 12px; border-radius:10px; box-shadow:0 4px 14px rgba(0,0,0,0.2); max-width:200px; }
+body.dark #fabChatLabel{ background:var(--surface-dark); border:1px solid var(--border-dark); }
+#fabChatBtn{ width:54px; height:54px; border-radius:50%; background:var(--gold); color:#fff; font-size:24px; border:none;
+  box-shadow:0 4px 14px rgba(0,0,0,0.25); animation:chatPulse 2.2s ease-in-out infinite; }
 
 /* Forms */
 .field{margin-bottom:12px;}
@@ -273,6 +280,10 @@ body.dark .chat-input-row{border-color:var(--border-dark);}
   </div>
 </div>
 <button class="fab" id="fabBtn" onclick="handleFab()">+</button>
+<div id="fabChatWrap" style="display:none;">
+  <div id="fabChatLabel">💬 Need help? Ask me how to make an entry or find a statement!</div>
+  <button id="fabChatBtn" onclick="openChatBotFromFab()">💬</button>
+</div>
 <div class="modal-bg" id="modalBg"><div class="modal" id="modalBody"></div></div>
 <div id="chatModal"><div class="chat-box">
   <div class="chat-head"><b>Ask SmartRWA</b><button class="close-x" onclick="closeChatBot()">×</button></div>
@@ -6795,10 +6806,30 @@ const FAQ = [
    a:'Yes — in Safari tap Share → "Add to Home Screen". It opens full-screen like a native app and works fully offline. Data stays on the device.'},
 ];
 function dismissChatBanner(){ localStorage.setItem('smartrwa_chat_banner_dismissed','1'); render(); }
+let __fabChatSettleTimer = null;
+function showFabChatBubble(){
+  if(localStorage.getItem('smartrwa_chat_used')) return; // already discovered — stays resting in the topbar menu only
+  const wrap = document.getElementById('fabChatWrap'); if(!wrap) return;
+  wrap.style.display = 'flex';
+  wrap.classList.remove('settling');
+  clearTimeout(__fabChatSettleTimer);
+  __fabChatSettleTimer = setTimeout(settleFabChat, 7000); // floats for a few seconds, then quietly rests on the topbar icon
+}
+function settleFabChat(){
+  const wrap = document.getElementById('fabChatWrap'); if(!wrap) return;
+  clearTimeout(__fabChatSettleTimer);
+  wrap.classList.add('settling');
+  setTimeout(()=>{ wrap.style.display='none'; }, 550);
+}
+function openChatBotFromFab(){
+  settleFabChat();
+  openChatBot();
+}
 function openChatBot(){
   localStorage.setItem('smartrwa_chat_used', '1');
   localStorage.setItem('smartrwa_chat_banner_dismissed', '1');
   document.getElementById('chatIconBtn')?.classList.remove('chat-highlight');
+  settleFabChat();
   document.getElementById('chatModal').classList.add('show');
   const msgs = document.getElementById('chatMessages');
   if(!msgs.children.length){
@@ -7150,6 +7181,7 @@ function enterApp(role){
     return;
   }
   go('dashboard');
+  showFabChatBubble();
 }
 function openForcedPinChangeModal(role){
   const expired = DB.security.mustChangePinReason && DB.security.mustChangePinReason[role]==='expired';
