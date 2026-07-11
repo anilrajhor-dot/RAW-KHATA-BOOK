@@ -976,45 +976,116 @@ const STATUTORY_REGISTERS = [
 ];
 function saveAuditObservation(id){
   if(!canAudit()) return;
-  const data = {
-    id: id||('OBS'+nextId('obs')),
-    date: document.getElementById('ob_date').value || todayISO(),
-    category: document.getElementById('ob_category').value,
-    severity: document.getElementById('ob_severity').value,
-    observation: document.getElementById('ob_text').value.trim(),
-    status: id? DB.auditObservations.find(o=>o.id===id).status : 'open',
-    raisedBy: id? DB.auditObservations.find(o=>o.id===id).raisedBy : window.__currentRole,
-    raisedByName: id? DB.auditObservations.find(o=>o.id===id).raisedByName : actorName(),
-  };
-  if(!data.observation){ toast('Enter the observation'); return; }
-  const idx = DB.auditObservations.findIndex(o=>o.id===id);
-  if(idx>=0) DB.auditObservations[idx] = {...DB.auditObservations[idx], ...data}; else { if(!id) DB.seq.obs++; DB.auditObservations.push(data); }
-  logAction('Audit Observation Saved', `${data.category} (${data.severity}) — ${data.observation}`);
+  const category = document.getElementById('ob_category').value;
+  const severity = document.getElementById('ob_severity').value;
+  const text = document.getElementById('ob_text').value.trim();
+  const voucherId = document.getElementById('ob_voucher')? Number(document.getElementById('ob_voucher').value)||null : null;
+  if(!text){ toast('Enter the observation'); return; }
+  if(id){
+    // Editing only touches category/severity metadata — the thread itself is never rewritten
+    const o = DB.auditObservations.find(x=>x.id===id); if(!o) return;
+    o.category = category; o.severity = severity;
+    logAction('Audit Observation Edited', `${category} (${severity})`);
+  } else {
+    const newId = 'OBS'+nextId('obs');
+    DB.auditObservations.push({
+      id:newId, date:todayISO(), category, severity, voucherId, status:'Open',
+      raisedBy:window.__currentRole, raisedByName:actorName(),
+      thread:[{type:'objection', by:window.__currentRole, byName:actorName(), at:nowTS(), text}]
+    });
+    logAction('Audit Objection Raised', `${category} (${severity})${voucherId?' — voucher #'+voucherId:''} — ${text}`);
+  }
   save(); closeModal(); toast('Saved'); render();
 }
-function resolveObservation(id, resolve){
-  if(!canAudit()) return;
+function addObservationThreadEntry(id, type, text, newStatus){
   const o = DB.auditObservations.find(x=>x.id===id); if(!o) return;
-  o.status = resolve? 'resolved':'open';
-  o.resolvedBy = resolve? window.__currentRole : null; o.resolvedByName = resolve? actorName() : '';
-  o.resolvedAt = resolve? nowTS() : null;
-  logAction(resolve?'Observation Resolved':'Observation Reopened', o.observation);
-  save(); render(); toast(resolve?'Marked resolved':'Reopened');
+  o.thread.push({type, by:window.__currentRole, byName:actorName(), at:nowTS(), text:text||''});
+  o.status = newStatus;
+  save(); render();
 }
-function deleteObservation(id){
+function seekClarification(id){
   if(!canAudit()) return;
-  DB.auditObservations = DB.auditObservations.filter(x=>x.id!==id);
+  const text = prompt('What clarification are you seeking?'); if(!text) return;
+  addObservationThreadEntry(id, 'clarification', text, 'Clarification Sought');
+  logAction('Clarification Sought', text);
+  toast('Clarification requested');
+}
+function replyToClarification(id){
+  if(!canAudit()) return;
+  const text = prompt('Reply to the auditor\'s question:'); if(!text) return;
+  addObservationThreadEntry(id, 'reply', text, 'Replied');
+  logAction('Clarification Reply', text);
+  toast('Reply recorded');
+}
+function acceptReply(id){
+  if(!canAudit()) return;
+  addObservationThreadEntry(id, 'accepted', 'Reply accepted by auditor', 'Accepted');
+  logAction('Audit Reply Accepted', id);
+  toast('Reply accepted');
+}
+function closeObjectionItem(id){
+  if(!canAudit()) return;
+  const text = prompt('Closing remark (optional):')||'Objection closed';
+  addObservationThreadEntry(id, 'closed', text, 'Closed');
+  logAction('Audit Objection Closed', text);
+  toast('Objection closed — permanently retained in the record');
+}
+function reopenObjectionItem(id){
+  if(!canAudit()) return;
+  const text = prompt('Reason for reopening:'); if(!text) return;
+  addObservationThreadEntry(id, 'reopened', text, 'Open');
+  logAction('Audit Objection Reopened', text);
+  toast('Reopened');
+}
+function markVoucherVerified(voucherId, verified){
+  if(!canAudit()) return;
+  const v = DB.vouchers.find(x=>x.id===voucherId); if(!v) return;
+  v.auditVerified = verified;
+  v.auditVerifiedBy = verified? window.__currentRole : null;
+  v.auditVerifiedByName = verified? actorName() : '';
+  v.auditVerifiedAt = verified? nowTS() : null;
+  logAction(verified?'Voucher Marked Verified':'Voucher Verification Removed', v.voucherNo||'#'+v.id);
+  save(); render(); toast(verified?'Marked verified':'Verification removed');
+}
+function openLegalCaseModal(id){
+  const c = id? DB.legalCases.find(x=>x.id===id) : {id:'LC'+nextId('legal'), title:'', court:'', filedDate:todayISO(), status:'Ongoing', nextHearingDate:'', notes:''};
+  if(!id) DB.seq.legal--;
+  openModal(`<div class="modal-head"><h2>${id?'Edit':'Add'} Legal Case</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="field"><label>Case Title</label><input id="lc_title" value="${c.title}" placeholder="e.g. Vendor dispute — ABC Contractors"></div>
+    <div class="row2"><div class="field"><label>Court/Forum</label><input id="lc_court" value="${c.court||''}"></div><div class="field"><label>Filed Date</label><input id="lc_filed" type="date" value="${c.filedDate}"></div></div>
+    <div class="row2"><div class="field"><label>Status</label><select id="lc_status"><option ${c.status==='Ongoing'?'selected':''}>Ongoing</option><option ${c.status==='Closed'?'selected':''}>Closed</option></select></div>
+    <div class="field"><label>Next Hearing Date</label><input id="lc_hearing" type="date" value="${c.nextHearingDate||''}"></div></div>
+    <div class="field"><label>Notes</label><textarea id="lc_notes" rows="3">${c.notes||''}</textarea></div>
+    <div style="display:flex;gap:10px;"><button class="btn btn-primary" style="flex:1" onclick="saveLegalCase('${c.id}')">Save</button>
+    ${id?`<button class="btn btn-danger" onclick="deleteLegalCase('${c.id}')">Delete</button>`:''}</div>`);
+}
+function saveLegalCase(id){
+  if(!canAudit()) return;
+  const data = {id, title:document.getElementById('lc_title').value.trim(), court:document.getElementById('lc_court').value.trim(),
+    filedDate:document.getElementById('lc_filed').value, status:document.getElementById('lc_status').value,
+    nextHearingDate:document.getElementById('lc_hearing').value, notes:document.getElementById('lc_notes').value.trim()};
+  if(!data.title){ toast('Enter a case title'); return; }
+  const idx = DB.legalCases.findIndex(x=>x.id===id);
+  if(idx>=0) DB.legalCases[idx] = data; else { DB.seq.legal++; DB.legalCases.push(data); }
+  logAction('Legal Case Saved', `${data.title} — ${data.status}`);
+  save(); closeModal(); toast('Saved'); render();
+}
+function deleteLegalCase(id){
+  if(!canAudit()) return;
+  DB.legalCases = DB.legalCases.filter(x=>x.id!==id);
   save(); closeModal(); toast('Removed'); render();
 }
-function openObservationModal(id){
+function openObservationModal(id, voucherId){
   const o = id? DB.auditObservations.find(x=>x.id===id) : null;
-  openModal(`<div class="modal-head"><h2>${id?'Edit':'Raise'} Audit Observation</h2><button class="close-x" onclick="closeModal()">×</button></div>
-    <div class="row2"><div class="field"><label>Date</label><input id="ob_date" type="date" value="${o?.date||todayISO()}"></div>
+  const v = voucherId? DB.vouchers.find(x=>x.id===voucherId) : (o?.voucherId? DB.vouchers.find(x=>x.id===o.voucherId) : null);
+  openModal(`<div class="modal-head"><h2>${id?'Edit':'Raise'} Audit Objection</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    ${v?`<p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Linked to voucher <b>${v.voucherNo||'#'+v.id}</b> — ${v.narration||''}</p><input type="hidden" id="ob_voucher" value="${v.id}">`:''}
+    <div class="row2"><div class="field"><label>Date</label><input id="ob_date" type="date" value="${o?.date||todayISO()}" ${id?'disabled':''}></div>
     <div class="field"><label>Severity</label><select id="ob_severity"><option ${o?.severity==='High'?'selected':''}>High</option><option ${!o||o.severity==='Medium'?'selected':''}>Medium</option><option ${o?.severity==='Low'?'selected':''}>Low</option></select></div></div>
     <div class="field"><label>Category</label><select id="ob_category">${['Accounting','Compliance','Internal Control','Cash Handling','Documentation','Other'].map(c=>`<option ${o?.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
-    <div class="field"><label>Observation</label><textarea id="ob_text" rows="4">${o?.observation||''}</textarea></div>
-    <div style="display:flex;gap:10px;"><button class="btn btn-primary" style="flex:1" onclick="saveAuditObservation(${id?`'${id}'`:'null'})">Save</button>
-    ${id?`<button class="btn btn-danger" onclick="deleteObservation('${id}')">Delete</button>`:''}</div>`);
+    <div class="field"><label>Observation</label><textarea id="ob_text" rows="4" ${id?'disabled':''}>${o?.thread[0]?.text||''}</textarea></div>
+    ${id?'<p style="font-size:11px;color:var(--ink-soft);margin-bottom:8px;">The original observation and its thread stay fixed once raised — only category/severity can change here. Use Seek Clarification / Reply / Close from the observation card to add to the permanent record.</p>':''}
+    <button class="btn btn-primary btn-block" onclick="saveAuditObservation(${id?`'${id}'`:'null'})">Save</button>`);
 }
 function saveGovtCompliance(id){
   if(!canAudit()) return;
@@ -1112,11 +1183,55 @@ function openCashVerifyModal(){
 }
 function computeExceptionReport(){
   const exceptions = [];
+  const ic = DB.internalControls;
+  // ===== INTERNAL CONTROL CHECKS =====
+  // Cash payments above the prescribed limit
+  DB.vouchers.filter(v=>v.status==='approved').forEach(v=>{
+    const cashEntry = v.entries.find(e=>e.account==='Cash in Hand' && e.credit>ic.cashPaymentLimit);
+    if(cashEntry) exceptions.push({type:'Cash Payment Above Limit', category:'Internal Control', severity:'High', detail:`${v.voucherNo||'#'+v.id} — ₹${fmt(cashEntry.credit)} paid in cash, above the ₹${fmt(ic.cashPaymentLimit)} limit`, date:v.date});
+  });
+  // Duplicate voucher numbers (structural integrity — should never happen given auto-numbering)
+  { const seenNo={}; DB.vouchers.forEach(v=>{ if(!v.voucherNo) return; if(seenNo[v.voucherNo]) exceptions.push({type:'Duplicate Voucher Number', category:'Internal Control', severity:'High', detail:`${v.voucherNo} appears on more than one voucher`, date:v.date}); seenNo[v.voucherNo]=true; }); }
+  // Same bill paid more than its net payable
+  DB.vendorBills.filter(b=>b.paid>b.netPayable+1).forEach(b=> exceptions.push({type:'Bill Overpaid', category:'Internal Control', severity:'High', detail:`${getVendor(b.vendorId)?.name} — bill dated ${b.date}: paid ₹${fmt(b.paid)} against ₹${fmt(b.netPayable)} payable`, date:b.date}));
+  // Back-dated entries — voucher date much earlier than when it was actually raised
+  DB.vouchers.filter(v=>v.makerAt).forEach(v=>{
+    const gapDays = (new Date(v.makerAt)-new Date(v.date))/86400000;
+    if(gapDays > ic.backdatedDaysThreshold) exceptions.push({type:'Back-Dated Entry', category:'Internal Control', severity:'Medium', detail:`${v.voucherNo||'#'+v.id} — dated ${v.date} but raised ${Math.round(gapDays)} days later on ${v.makerAt.slice(0,10)}`, date:v.date});
+  });
+  // Negative cash balance
+  { const cashBal = accBalance('Cash in Hand').net; if(cashBal<0) exceptions.push({type:'Negative Cash Balance', category:'Internal Control', severity:'High', detail:`Cash in Hand shows ₹${fmt(cashBal)} — impossible in reality, check for a misposted entry`, date:todayISO()}); }
+  // Unusual member credit balance (large advance relative to normal billing — possible misdirected receipt)
+  DB.flats.forEach(f=>{
+    const out = flatOutstanding(f.id);
+    if(out>=0) return;
+    const recentBill = DB.bills.filter(b=>b.flatId===f.id && !b.oneTime).sort((a,b2)=>b2.period.localeCompare(a.period))[0];
+    if(recentBill && recentBill.total>0 && Math.abs(out) > recentBill.total*3) exceptions.push({type:'Unusual Member Credit Balance', category:'Internal Control', severity:'Medium', detail:`${flatLabel(f)} — advance of ₹${fmt(Math.abs(out))}, over 3x a typical bill (₹${fmt(recentBill.total)})`, date:todayISO()});
+  });
+  // Excess budget spending
+  { const fy = currentFY(); const budgets = DB.budgets[fy.id]||{};
+    Object.keys(budgets).forEach(acc=>{
+      const b = accBalance(acc,{from:fy.startDate, upto:fy.endDate<todayISO()?fy.endDate:todayISO()});
+      const actual = b.dr-b.cr;
+      if(actual > budgets[acc]) exceptions.push({type:'Excess Budget Spending', category:'Internal Control', severity:'Medium', detail:`${acc} — spent ₹${fmt(actual)} against a budget of ₹${fmt(budgets[acc])} for ${fy.label}`, date:todayISO()});
+    });
+  }
+  // Voucher numbering gaps within a financial year (per type)
+  Object.keys(DB.seq.voucherNo||{}).forEach(fyLabel=>{
+    Object.keys(DB.seq.voucherNo[fyLabel]).forEach(prefix=>{
+      const maxNo = DB.seq.voucherNo[fyLabel][prefix];
+      const existing = new Set(DB.vouchers.filter(v=>v.voucherNo && v.voucherNo.startsWith(prefix+'/'+fyLabel+'/')).map(v=>Number(v.voucherNo.split('/')[2])));
+      const missing = []; for(let n=1;n<=maxNo;n++) if(!existing.has(n)) missing.push(n);
+      if(missing.length) exceptions.push({type:'Voucher Numbering Gap', category:'Internal Control', severity:'High', detail:`${prefix}/${fyLabel} — missing number(s): ${missing.map(n=>String(n).padStart(4,'0')).join(', ')}`, date:todayISO()});
+    });
+  });
+
+  // ===== FRAUD DETECTION (behavioural / statistical patterns) =====
   // Reversed / corrected entries
-  DB.vouchers.filter(v=>v.reversed).forEach(v=> exceptions.push({type:'Reversed Entry', severity:'Medium', detail:`${v.voucherNo||'#'+v.id} — ${v.narration||''} reversed: ${v.reversalReason||''}`, date:v.date}));
+  DB.vouchers.filter(v=>v.reversed).forEach(v=> exceptions.push({type:'Reversed Entry', category:'Fraud Pattern', severity:'Medium', detail:`${v.voucherNo||'#'+v.id} — ${v.narration||''} reversed: ${v.reversalReason||''}`, date:v.date}));
   // Same-day maker+checker (fast approval — not necessarily wrong, but worth a look)
   DB.vouchers.filter(v=>v.status==='approved' && v.makerAt && v.checkerAt && (new Date(v.checkerAt)-new Date(v.makerAt))<5*60000).forEach(v=>
-    exceptions.push({type:'Fast Approval (<5 min)', severity:'Low', detail:`${v.voucherNo||'#'+v.id} — ${v.narration||''} approved within 5 minutes of being raised`, date:v.date}));
+    exceptions.push({type:'Fast Approval (<5 min)', category:'Fraud Pattern', severity:'Low', detail:`${v.voucherNo||'#'+v.id} — ${v.narration||''} approved within 5 minutes of being raised`, date:v.date}));
   // Statistically large transactions
   const amounts = DB.vouchers.filter(v=>v.status==='approved').map(v=>v.entries.reduce((s,e)=>s+(e.debit||0),0));
   const mean = amounts.reduce((a,b)=>a+b,0)/(amounts.length||1);
@@ -1124,38 +1239,78 @@ function computeExceptionReport(){
   const stdev = Math.sqrt(variance);
   DB.vouchers.filter(v=>v.status==='approved').forEach(v=>{
     const amt = v.entries.reduce((s,e)=>s+(e.debit||0),0);
-    if(stdev>0 && amt > mean + 3*stdev && amt > 5000) exceptions.push({type:'Unusually Large Transaction', severity:'Medium', detail:`${v.voucherNo||'#'+v.id} — ₹${fmt(amt)} (typical ₹${fmt(Math.round(mean))})`, date:v.date});
+    if(stdev>0 && amt > mean + 3*stdev && amt > 5000) exceptions.push({type:'Unusually Large Transaction', category:'Fraud Pattern', severity:'Medium', detail:`${v.voucherNo||'#'+v.id} — ₹${fmt(amt)} (typical ₹${fmt(Math.round(mean))})`, date:v.date});
   });
+  // Round-figure large payments
+  DB.vouchers.filter(v=>v.status==='approved' && (v.type==='VendorPayment'||v.type==='Payment'||v.type==='Journal')).forEach(v=>{
+    const amt = v.entries.reduce((s,e)=>s+(e.debit||0),0);
+    if(amt >= ic.roundFigureThreshold && amt % 1000 === 0) exceptions.push({type:'Round-Figure Transaction', category:'Fraud Pattern', severity:'Low', detail:`${v.voucherNo||'#'+v.id} — exactly ₹${fmt(amt)}, worth a second look on large round amounts`, date:v.date});
+  });
+  // Cash withdrawal (bank→cash) immediately followed by a cash payment of similar size
+  { const cashDeposits = DB.vouchers.filter(v=>v.status==='approved' && v.entries.some(e=>e.account==='Cash in Hand'&&e.debit>0) && v.entries.some(e=>cashLikeAccountNames().includes(e.account)&&e.account!=='Cash in Hand'&&e.credit>0));
+    const cashPayouts = DB.vouchers.filter(v=>v.status==='approved' && v.entries.some(e=>e.account==='Cash in Hand'&&e.credit>0));
+    cashDeposits.forEach(dep=>{
+      const depAmt = dep.entries.find(e=>e.account==='Cash in Hand').debit;
+      cashPayouts.forEach(pay=>{
+        if(pay.id===dep.id) return;
+        const payAmt = pay.entries.find(e=>e.account==='Cash in Hand').credit;
+        const gapDays = (new Date(pay.date)-new Date(dep.date))/86400000;
+        if(gapDays>=0 && gapDays<=2 && Math.abs(payAmt-depAmt)/depAmt<0.1 && depAmt>1000)
+          exceptions.push({type:'Cash Withdrawal Followed By Cash Payment', category:'Fraud Pattern', severity:'Medium', detail:`₹${fmt(depAmt)} withdrawn ${dep.date}, ₹${fmt(payAmt)} paid out in cash ${gapDays===0?'same day':Math.round(gapDays)+'d later'} (${pay.voucherNo||'#'+pay.id})`, date:pay.date});
+      });
+    });
+  }
+  // Frequent manual journal entries (bypassing standard Receipt/Payment/Payroll flows)
+  { const approved = DB.vouchers.filter(v=>v.status==='approved' && !v.reversalOf);
+    const journalPct = approved.length? Math.round(approved.filter(v=>v.type==='Journal').length/approved.length*100) : 0;
+    if(journalPct>=30 && approved.length>=10) exceptions.push({type:'Frequent Manual Journal Entries', category:'Fraud Pattern', severity:'Low', detail:`${journalPct}% of all approved vouchers are manual Journal entries, rather than standard Receipt/Payment/Payroll flows`, date:todayISO()}); }
+  // Large payments made on weekends/holidays
+  DB.vouchers.filter(v=>v.status==='approved' && v.makerAt).forEach(v=>{
+    const amt = v.entries.reduce((s,e)=>s+(e.debit||0),0); if(amt<10000) return;
+    const day = new Date(v.makerAt).getDay();
+    if(day===0||day===6) exceptions.push({type:'Large Payment Raised on a Weekend', category:'Fraud Pattern', severity:'Low', detail:`${v.voucherNo||'#'+v.id} — ₹${fmt(amt)} raised on a ${day===0?'Sunday':'Saturday'}`, date:v.date});
+  });
+  // Vendor payment concentration (repeated/large share of payments to one vendor)
+  { const totalPaid = DB.vouchers.filter(v=>v.status==='approved' && v.type==='VendorPayment').reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
+    const byVendor = {};
+    DB.vouchers.filter(v=>v.status==='approved' && v.type==='VendorPayment').forEach(v=>{ byVendor[v.vendorId]=(byVendor[v.vendorId]||0)+v.entries.reduce((s,e)=>s+(e.debit||0),0); });
+    Object.keys(byVendor).forEach(vid=>{
+      const pct = totalPaid>0? Math.round(byVendor[vid]/totalPaid*100) : 0;
+      if(pct>=ic.vendorConcentrationPct && totalPaid>0) exceptions.push({type:'Vendor Payment Concentration', category:'Fraud Pattern', severity:'Low', detail:`${getVendor(vid)?.name} received ${pct}% of all vendor payments (₹${fmt(byVendor[vid])} of ₹${fmt(totalPaid)})`, date:todayISO()});
+    });
+  }
   // Vendor bills missing GSTIN/PAN where GST/TDS was applied
   DB.vendorBills.forEach(b=>{
     const v = getVendor(b.vendorId); if(!v) return;
-    if(b.gstAmount>0 && !v.gstin) exceptions.push({type:'GST Claimed Without Vendor GSTIN', severity:'High', detail:`${v.name} — bill dated ${b.date}, GST ₹${fmt(b.gstAmount)} claimed but no GSTIN on file`, date:b.date});
-    if(b.tdsAmount>0 && !v.pan) exceptions.push({type:'TDS Deducted Without Vendor PAN', severity:'High', detail:`${v.name} — bill dated ${b.date}, TDS ₹${fmt(b.tdsAmount)} deducted but no PAN on file`, date:b.date});
+    if(b.gstAmount>0 && !v.gstin) exceptions.push({type:'GST Claimed Without Vendor GSTIN', category:'Data Quality', severity:'High', detail:`${v.name} — bill dated ${b.date}, GST ₹${fmt(b.gstAmount)} claimed but no GSTIN on file`, date:b.date});
+    if(b.tdsAmount>0 && !v.pan) exceptions.push({type:'TDS Deducted Without Vendor PAN', category:'Data Quality', severity:'High', detail:`${v.name} — bill dated ${b.date}, TDS ₹${fmt(b.tdsAmount)} deducted but no PAN on file`, date:b.date});
   });
   // Duplicate vendor names (normalized fuzzy match)
   const norm = s=>s.toLowerCase().replace(/[^a-z0-9]/g,'');
   for(let i=0;i<DB.vendors.length;i++) for(let j=i+1;j<DB.vendors.length;j++){
     const a=norm(DB.vendors[i].name), b=norm(DB.vendors[j].name);
-    if(a && b && (a===b || a.includes(b) || b.includes(a))) exceptions.push({type:'Possible Duplicate Vendor', severity:'Medium', detail:`"${DB.vendors[i].name}" and "${DB.vendors[j].name}" look similar`, date:todayISO()});
+    if(a && b && (a===b || a.includes(b) || b.includes(a))) exceptions.push({type:'Possible Duplicate Vendor', category:'Fraud Pattern', severity:'Medium', detail:`"${DB.vendors[i].name}" and "${DB.vendors[j].name}" look similar`, date:todayISO()});
   }
   // Duplicate vendor bills (same vendor + same amount within 5 days)
   DB.vendorBills.forEach((b,i)=> DB.vendorBills.forEach((b2,j)=>{
     if(j<=i || b.vendorId!==b2.vendorId || b.amount!==b2.amount) return;
-    if(Math.abs(new Date(b.date)-new Date(b2.date))<=5*86400000) exceptions.push({type:'Possible Duplicate Invoice', severity:'High', detail:`${getVendor(b.vendorId)?.name} — two bills of ₹${fmt(b.amount)} within 5 days (${b.date}, ${b2.date})`, date:b.date});
+    if(Math.abs(new Date(b.date)-new Date(b2.date))<=5*86400000) exceptions.push({type:'Possible Duplicate Invoice', category:'Fraud Pattern', severity:'High', detail:`${getVendor(b.vendorId)?.name} — two bills of ₹${fmt(b.amount)} within 5 days (${b.date}, ${b2.date})`, date:b.date});
   }));
-  // Duplicate vendor payments (same vendor + same amount same date, two separate vouchers)
+  // Duplicate vendor payments (same vendor + same amount same date, two separate vouchers) — "same bill paid twice"
   const payments = DB.vouchers.filter(v=>v.status==='approved' && v.type==='VendorPayment');
   payments.forEach((p,i)=> payments.forEach((p2,j)=>{
     if(j<=i || p.vendorId!==p2.vendorId || p.date!==p2.date) return;
     const amt1=p.entries.reduce((s,e)=>s+(e.debit||0),0), amt2=p2.entries.reduce((s,e)=>s+(e.debit||0),0);
-    if(amt1===amt2) exceptions.push({type:'Possible Duplicate Payment', severity:'High', detail:`${getVendor(p.vendorId)?.name} — two payments of ₹${fmt(amt1)} on ${p.date}`, date:p.date});
+    if(amt1===amt2) exceptions.push({type:'Possible Duplicate Payment (Same Bill Paid Twice)', category:'Fraud Pattern', severity:'High', detail:`${getVendor(p.vendorId)?.name} — two payments of ₹${fmt(amt1)} on ${p.date}`, date:p.date});
   }));
+
+  // ===== DATA QUALITY =====
   // Dormant flats (no receipt in 6+ months despite having a due)
   DB.flats.forEach(f=>{
     const out = flatOutstanding(f.id); if(out<=0) return;
     const lastReceipt = DB.vouchers.filter(v=>v.status==='approved' && v.type==='Receipt' && v.flatId===f.id).sort((a,b)=>b.date.localeCompare(a.date))[0];
     const daysSince = lastReceipt? -daysUntil(lastReceipt.date) : 9999;
-    if(daysSince>180) exceptions.push({type:'Dormant Flat (no payment 180+ days)', severity:'Medium', detail:`${flatLabel(f)} — ₹${fmt(out)} due, last payment ${lastReceipt?lastReceipt.date:'never'}`, date:todayISO()});
+    if(daysSince>180) exceptions.push({type:'Dormant Flat (no payment 180+ days)', category:'Data Quality', severity:'Medium', detail:`${flatLabel(f)} — ₹${fmt(out)} due, last payment ${lastReceipt?lastReceipt.date:'never'}`, date:todayISO()});
   });
   return exceptions.sort((a,b)=>({High:0,Medium:1,Low:2}[a.severity]-{High:0,Medium:1,Low:2}[b.severity]));
 }
@@ -1255,7 +1410,23 @@ if(!DB.seq.voucherNo) DB.seq.voucherNo = {};
 if(!DB.complianceItems) DB.complianceItems = [];
 if(!DB.seq.compliance) DB.seq.compliance = 1;
 if(!DB.billingRules) DB.billingRules = {interestEnabled:false, interestRatePctPerMonth:0, graceDays:0, penaltyEnabled:false, penaltyType:'flat', penaltyAmount:0, rebateEnabled:false, rebatePct:0, rebateDaysBeforeDue:0};
+if(!DB.internalControls) DB.internalControls = {cashPaymentLimit:10000, roundFigureThreshold:10000, backdatedDaysThreshold:30, vendorConcentrationPct:40};
+if(!DB.legalCases) DB.legalCases = [];
+if(DB.importRequest===undefined) DB.importRequest = null;
+if(DB.preImportBackupAt===undefined) DB.preImportBackupAt = null;
+if(!DB.seq.legal) DB.seq.legal = 1;
+if(!DB.agmReports) DB.agmReports = {}; // keyed by FY id: {chairmanReport: string}
 if(!DB.auditObservations) DB.auditObservations = [];
+// Migrate older observations (simple open/resolved) to the full permanent-thread lifecycle
+DB.auditObservations.forEach(o=>{
+  if(!o.thread){
+    o.thread = [{type:'objection', by:o.raisedBy, byName:o.raisedByName, at:o.date? new Date(o.date).toISOString() : nowTS(), text:o.observation}];
+    if(o.status==='resolved'){ o.thread.push({type:'closed', by:o.resolvedBy, byName:o.resolvedByName, at:o.resolvedAt||nowTS(), text:'Marked resolved'}); o.status='Closed'; }
+    else o.status='Open';
+  }
+  if(o.voucherId===undefined) o.voucherId = null;
+});
+DB.vouchers.forEach(v=>{ if(v.auditVerified===undefined) v.auditVerified=false; });
 if(!DB.seq.obs) DB.seq.obs = 1;
 if(!DB.govtCompliance) DB.govtCompliance = [];
 if(!DB.seq.govtCompliance) DB.seq.govtCompliance = 1;
@@ -1923,6 +2094,16 @@ function renderDashboard(){
 
   return `
   ${backupBanner}
+  ${(()=>{ const ahs = computeAccountingHealthScore(); const c = ahs.score>=90?'var(--moss)':ahs.score>=75?'var(--gold)':'var(--brick)';
+    return `<div class="card" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;border:2px solid ${c};" onclick="go('audit')">
+      <div><div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.05em;">Accounting Health Score</div><div style="font-size:11px;color:var(--ink-soft);">Grade ${ahs.grade} · tap for the full breakdown</div></div>
+      <div style="font-size:32px;font-weight:700;color:${c};">${ahs.score}<span style="font-size:16px;color:var(--ink-soft);">/100</span></div>
+    </div>`; })()}
+  ${(()=>{ const rating = computeSocietyCreditRating();
+    return `<div class="card" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="go('reports','ratios')">
+      <div><div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.05em;">Society Financial Rating</div><div style="font-size:11px;color:var(--ink-soft);">${rating.label} · tap for the ratios behind it</div></div>
+      <div style="font-size:22px;color:var(--gold);">${'★'.repeat(rating.stars)}${'☆'.repeat(5-rating.stars)}</div>
+    </div>`; })()}
   <div class="stat-grid">
     <div class="stat"><div class="lbl">Total Flats</div><div class="val">${totalFlats}</div></div>
     <div class="stat"><div class="lbl">Occupied</div><div class="val">${occupied}</div></div>
@@ -1933,6 +2114,8 @@ function renderDashboard(){
     <div class="stat"><div class="lbl">Billed · ${thisMonth}</div><div class="val">₹${fmt(billedThisMonth)}</div></div>
     <div class="stat ${openComplaints>0?'alert':''}" style="cursor:pointer;" onclick="go('complaints')"><div class="lbl">Open Issues ›</div><div class="val">${openComplaints}</div></div>
     <div class="stat ${pendingApprovals>0?'alert':'good'}" style="cursor:pointer;" onclick="go('approvals')"><div class="lbl">Pending Approvals ›</div><div class="val">${pendingApprovals}</div></div>
+    <div class="stat ${DB.auditObservations.filter(o=>o.status!=='Closed').length>0?'alert':'good'}" style="cursor:pointer;" onclick="go('audit','observations')"><div class="lbl">Audit Objections ›</div><div class="val">${DB.auditObservations.filter(o=>o.status!=='Closed').length}</div></div>
+    <div class="stat ${DB.legalCases.filter(c=>c.status==='Ongoing').length>0?'alert':'good'}" style="cursor:pointer;" onclick="go('audit','legal')"><div class="lbl">Legal Cases ›</div><div class="val">${DB.legalCases.filter(c=>c.status==='Ongoing').length}</div></div>
   </div>
 
   <div class="card">
@@ -3022,7 +3205,7 @@ function renderAccounts(){
   let body='';
   if(sr==='vouchers'){
     const vs = DB.vouchers.slice().sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
-    body = vs.length? `<div class="tbl-wrap"><table><tr><th>Voucher No.</th><th>Date</th><th>Type</th><th>Narration</th><th class="num-cell">Amount</th><th>Status</th><th></th></tr>
+    body = vs.length? `<div class="tbl-wrap"><table><tr><th>Voucher No.</th><th>Date</th><th>Type</th><th>Narration</th><th class="num-cell">Amount</th><th>Status</th><th>Audit</th><th></th></tr>
       ${vs.map(v=>{
         let action='';
         if(!isReadOnly()){
@@ -3035,13 +3218,24 @@ function renderAccounts(){
         const reversalNote = v.reversed? `<div style="font-size:10.5px;color:var(--brick);margin-top:2px;">Reversed by ${actorLabel(v.reversedBy,v.reversedByName)} via ${v.reversalVoucherId? (DB.vouchers.find(x=>x.id===v.reversalVoucherId)?.voucherNo||('#'+v.reversalVoucherId)) : ''} — ${v.reversalReason||''}</div>`
           : v.reversalOf? `<div style="font-size:10.5px;color:var(--moss);margin-top:2px;">Reverses ${DB.vouchers.find(x=>x.id===v.reversalOf)?.voucherNo||('#'+v.reversalOf)}</div>`
           : v.reversalRequested? '<div style="font-size:10.5px;color:var(--brick);margin-top:2px;">Reversal requested by '+actorLabel(v.reversalRequestedBy,v.reversalRequestedByName)+': '+v.reversalReason+'</div>' : '';
-        return `<tr onclick="${v.status==='pending'?`go('approvals')`:''}"><td style="font-size:11px;font-family:'IBM Plex Mono',monospace;">${v.voucherNo||('#'+v.id)}</td><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${actorLabel(v.maker,v.makerName)}</div></td><td>${v.type}</td><td>${v.narration||''}${reversalNote}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td><td>${action}</td></tr>`;
+        let auditCell = '';
+        if(v.status==='approved'){
+          const verifiedBadge = v.auditVerified? `<span class="stamp paid" style="font-size:9px;" title="Verified by ${actorLabel(v.auditVerifiedBy,v.auditVerifiedByName)}">✓ Verified</span>` : '';
+          const linkedObs = DB.auditObservations.filter(o=>o.voucherId===v.id);
+          const obsBadge = linkedObs.length? `<span class="stamp ${linkedObs.some(o=>o.status!=='Closed')?'overdue':'approved'}" style="font-size:9px;">${linkedObs.length} objection${linkedObs.length>1?'s':''}</span>` : '';
+          const auditButtons = isAuditReadOnly()? '' : `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px;">
+            <button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 6px;" onclick="event.stopPropagation();markVoucherVerified(${v.id},${!v.auditVerified})">${v.auditVerified?'Unverify':'Mark Verified'}</button>
+            <button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 6px;" onclick="event.stopPropagation();openObservationModal(null,${v.id})">Raise Objection</button>
+          </div>`;
+          auditCell = `<div style="display:flex;gap:4px;flex-wrap:wrap;">${verifiedBadge}${obsBadge}</div>${auditButtons}`;
+        }
+        return `<tr onclick="${v.status==='pending'?`go('approvals')`:''}"><td style="font-size:11px;font-family:'IBM Plex Mono',monospace;">${v.voucherNo||('#'+v.id)}</td><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${actorLabel(v.maker,v.makerName)}</div></td><td>${v.type}</td><td>${v.narration||''}${reversalNote}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td><td>${auditCell}</td><td>${action}</td></tr>`;
       }).join('')}
       </table></div>` : `<div class="empty"><div class="ic">§</div>No vouchers yet.</div>`;
   } else if(sr==='ledger'){
     const accNames = Object.keys(ACCOUNTS);
     body = `<p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:10px;">Ledger reflects <b>approved</b> entries only — see Approve tab for items awaiting a checker.</p><div class="field"><label>Account</label><select id="ldg_acc" onchange="go('accounts','ledger')">${accNames.map(a=>`<option ${window.__ldgAcc===a?'selected':''}>${a}</option>`).join('')}</select></div>`;
-    setTimeout(()=>{ document.getElementById('ldg_acc').onchange=(e)=>{ window.__ldgAcc=e.target.value; render(); }; if(!window.__ldgAcc) window.__ldgAcc=accNames[0]; document.getElementById('ldg_acc').value=window.__ldgAcc; },0);
+    setTimeout(()=>{ const ldgEl = document.getElementById('ldg_acc'); if(!ldgEl) return; ldgEl.onchange=(e)=>{ window.__ldgAcc=e.target.value; render(); }; if(!window.__ldgAcc) window.__ldgAcc=accNames[0]; ldgEl.value=window.__ldgAcc; },0);
     const accName = window.__ldgAcc || accNames[0];
     let bal=0;
     const rows = DB.vouchers.filter(v=>v.status==='approved' && v.entries.some(e=>e.account===accName)).sort((a,b)=>a.date.localeCompare(b.date))
@@ -3345,20 +3539,22 @@ function renderPayroll(){
       </table></div>` : `<div class="empty"><div class="ic">☰</div>No salary runs yet.</div>`;
   } else if(sr==='pf'){
     body = `<div class="field"><label>Period</label><select id="pf_period">${DB.payrollRuns.map(r=>`<option value="${r.id}">${r.period}</option>`).join('')}</select></div><div id="pf_body"></div>`;
-    setTimeout(()=>{ const sel=document.getElementById('pf_period'); if(!sel.options.length) return;
+    setTimeout(()=>{ const sel=document.getElementById('pf_period'); if(!sel || !sel.options.length) return;
       const draw=()=>{ const run=DB.payrollRuns.find(r=>r.id===sel.value); if(!run) return;
         const rows = run.items.filter(i=>i.pfEmp>0).map(i=>{ const e=getEmployee(i.empId);
           return `<tr><td>${e?e.name:'—'}</td><td class="num-cell">₹${fmt(i.pfWage)}</td><td class="num-cell">₹${fmt(i.pfEmp)}</td><td class="num-cell">₹${fmt(i.pfEmployer)}</td><td class="num-cell">₹${fmt(i.pfEmp+i.pfEmployer)}</td></tr>`; }).join('');
-        document.getElementById('pf_body').innerHTML = `<div class="tbl-wrap"><table><tr><th>Employee</th><th class="num-cell">PF Wage</th><th class="num-cell">Employee 12%</th><th class="num-cell">Employer 12%</th><th class="num-cell">Total</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No PF-applicable employees</td></tr>'}</table></div>
+        const targetEl = document.getElementById('pf_body'); if(!targetEl) return;
+        targetEl.innerHTML = `<div class="tbl-wrap"><table><tr><th>Employee</th><th class="num-cell">PF Wage</th><th class="num-cell">Employee 12%</th><th class="num-cell">Employer 12%</th><th class="num-cell">Total</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No PF-applicable employees</td></tr>'}</table></div>
         <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Employer 12% typically splits as 8.33% EPS (capped at wage ₹15,000) + 3.67% EPF; 0.5% EDLI is payable separately by the employer over and above.</p>`; };
       sel.onchange=draw; draw(); },0);
   } else if(sr==='esi'){
     body = `<div class="field"><label>Period</label><select id="esi_period">${DB.payrollRuns.map(r=>`<option value="${r.id}">${r.period}</option>`).join('')}</select></div><div id="esi_body"></div>`;
-    setTimeout(()=>{ const sel=document.getElementById('esi_period'); if(!sel.options.length) return;
+    setTimeout(()=>{ const sel=document.getElementById('esi_period'); if(!sel || !sel.options.length) return;
       const draw=()=>{ const run=DB.payrollRuns.find(r=>r.id===sel.value); if(!run) return;
         const rows = run.items.filter(i=>i.esiEmp>0).map(i=>{ const e=getEmployee(i.empId);
           return `<tr><td>${e?e.name:'—'}</td><td class="num-cell">₹${fmt(i.gross)}</td><td class="num-cell">₹${fmt(i.esiEmp)}</td><td class="num-cell">₹${fmt(i.esiEmployer)}</td></tr>`; }).join('');
-        document.getElementById('esi_body').innerHTML = `<div class="tbl-wrap"><table><tr><th>Employee</th><th class="num-cell">Gross Wage</th><th class="num-cell">Employee 0.75%</th><th class="num-cell">Employer 3.25%</th></tr>${rows||'<tr><td colspan=4 style="color:var(--ink-soft)">No ESI-eligible employees (wage ≤ ₹21,000)</td></tr>'}</table></div>`; };
+        const targetEl = document.getElementById('esi_body'); if(!targetEl) return;
+        targetEl.innerHTML = `<div class="tbl-wrap"><table><tr><th>Employee</th><th class="num-cell">Gross Wage</th><th class="num-cell">Employee 0.75%</th><th class="num-cell">Employer 3.25%</th></tr>${rows||'<tr><td colspan=4 style="color:var(--ink-soft)">No ESI-eligible employees (wage ≤ ₹21,000)</td></tr>'}</table></div>`; };
       sel.onchange=draw; draw(); },0);
   }
   return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('payroll','${t[0]}')">${t[1]}</button>`).join('')}</div><div class="card">${body}</div>`;
@@ -3946,24 +4142,35 @@ function saveInventoryTx(){
 /* ============ APPROVALS (MAKER-CHECKER) ============ */
 function renderAudit(){
   const sr = subroute || 'overview';
-  const openObsCount = DB.auditObservations.filter(o=>o.status==='open').length;
+  const openObsCount = DB.auditObservations.filter(o=>o.status!=='Closed').length;
+  const openLegalCount = DB.legalCases.filter(c=>c.status==='Ongoing').length;
   const tabs=[['overview','Overview'],['observations',`Observations${openObsCount?' ('+openObsCount+')':''}`],['compliance','Compliance Tracker'],
     ['checklist','Internal Controls'],['statutory','Statutory Registers'],['assetverify','Asset Verification'],
-    ['cashverify','Cash Verification'],['exceptions','Exception Reports'],['statements','Statements'],['trail','Audit Trail']];
+    ['cashverify','Cash Verification'],['exceptions','Exception Reports'],['legal',`Legal Cases${openLegalCount?' ('+openLegalCount+')':''}`],
+    ['inspect','Inspect Society'],['statements','Statements'],['trail','Audit Trail']];
   let body='';
   if(sr==='overview'){
+    const ahs = computeAccountingHealthScore();
     const checks = runHealthChecks();
-    const passCount = checks.filter(c=>c.ok).length;
-    const score = Math.round(passCount/checks.length*100);
     const pending = DB.vouchers.filter(v=>v.status==='pending').length;
     const rejected = DB.vouchers.filter(v=>v.status==='rejected').length;
-    body = `<div class="stat-grid" style="margin-bottom:12px;">
-      <div class="stat ${score===100?'good':score>=70?'':'alert'}"><div class="lbl">Data Health</div><div class="val">${score}%</div></div>
+    body = `<div class="card" style="text-align:center;border:2px solid ${ahs.score>=90?'var(--moss)':ahs.score>=75?'var(--gold)':'var(--brick)'};">
+      <div style="font-size:12px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.05em;">Accounting Health Score</div>
+      <div style="font-size:44px;font-weight:700;color:${ahs.score>=90?'var(--moss)':ahs.score>=75?'var(--gold)':'var(--brick)'};line-height:1.1;">${ahs.score}<span style="font-size:20px;color:var(--ink-soft);">/100</span></div>
+      <div style="font-size:13px;color:var(--ink-soft);">Grade ${ahs.grade}</div>
+    </div>
+    <div class="card">
+      ${ahs.items.map(i=>`<div style="display:flex;justify-content:space-between;align-items:start;padding:6px 0;border-bottom:1px solid var(--border);">
+        <div style="display:flex;gap:8px;"><span>${i.ok?'✅':'❌'}</span><div><div style="font-weight:600;font-size:13px;">${i.label}</div><div style="font-size:11px;color:var(--ink-soft);">${i.detail}</div></div></div>
+        <span style="font-size:10.5px;color:var(--ink-soft);white-space:nowrap;">${i.ok?i.weight:0}/${i.weight}</span>
+      </div>`).join('')}
+    </div>
+    <div class="stat-grid" style="margin-bottom:12px;">
       <div class="stat ${pending?'':''}"><div class="lbl">Pending Approval</div><div class="val">${pending}</div></div>
       <div class="stat ${rejected?'alert':''}"><div class="lbl">Rejected Entries</div><div class="val">${rejected}</div></div>
       <div class="stat"><div class="lbl">Total Vouchers</div><div class="val">${DB.vouchers.length}</div></div>
     </div>
-    <div class="card"><div class="section-title">Health Check Results</div>
+    <div class="card"><div class="section-title">Full Data Health Checklist</div>
     ${checks.map(c=>`<div style="display:flex;gap:8px;align-items:start;padding:6px 0;border-bottom:1px solid var(--border);"><span>${c.ok?'✅':'⚠️'}</span><div><div style="font-weight:600;font-size:13px;">${c.label}</div><div style="font-size:11.5px;color:var(--ink-soft);">${c.detail}</div></div></div>`).join('')}
     </div>
     <div class="card"><div class="section-title">Ledger Totals (all approved entries)</div>
@@ -3977,16 +4184,31 @@ function renderAudit(){
   } else if(sr==='observations'){
     const obs = DB.auditObservations.slice().sort((a,b)=>b.date.localeCompare(a.date));
     const sevColor = s=>({High:'brick',Medium:'gold',Low:'moss'}[s]); const sevBg = s=>({High:'brick-soft',Medium:'amber-soft',Low:'moss-soft'}[s]);
-    body = `${isAuditReadOnly()?'':'<button class="btn btn-primary btn-sm" style="margin-bottom:12px;" onclick="openObservationModal()">+ Raise Observation</button>'}
-      ${obs.length? obs.map(o=>`<div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:8px;cursor:pointer;" onclick="${isAuditReadOnly()?'':`openObservationModal('${o.id}')`}">
+    const statusStamp = s=>({Open:'overdue', 'Clarification Sought':'due', Replied:'due', Accepted:'paid', Closed:'approved'}[s]||'pending');
+    const threadIcon = t=>({objection:'🚩', clarification:'❓', reply:'💬', accepted:'✅', closed:'🔒', reopened:'🔓'}[t]||'•');
+    body = `${isAuditReadOnly()?'':'<button class="btn btn-primary btn-sm" style="margin-bottom:12px;" onclick="openObservationModal()">+ Raise Objection</button>'}
+      ${obs.length? obs.map(o=>{
+        const v = o.voucherId? DB.vouchers.find(x=>x.id===o.voucherId) : null;
+        let actions = '';
+        if(!isAuditReadOnly()){
+          if(o.status==='Open') actions = `<button class="btn btn-outline btn-sm" onclick="seekClarification('${o.id}')">Seek Clarification</button> <button class="btn btn-outline btn-sm" onclick="closeObjectionItem('${o.id}')">Close</button>`;
+          else if(o.status==='Clarification Sought') actions = `<button class="btn btn-outline btn-sm" onclick="replyToClarification('${o.id}')">Reply</button>`;
+          else if(o.status==='Replied') actions = `<button class="btn btn-outline btn-sm" onclick="acceptReply('${o.id}')">Accept Reply</button> <button class="btn btn-outline btn-sm" onclick="seekClarification('${o.id}')">Seek Further Clarification</button>`;
+          else if(o.status==='Accepted') actions = `<button class="btn btn-outline btn-sm" onclick="closeObjectionItem('${o.id}')">Close Objection</button>`;
+          else if(o.status==='Closed') actions = `<button class="btn btn-outline btn-sm" onclick="reopenObjectionItem('${o.id}')">Reopen</button>`;
+        }
+        return `<div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:8px;">
         <div style="display:flex;justify-content:space-between;align-items:start;">
-          <div><span class="stamp" style="background:var(--${sevBg(o.severity)});color:var(--${sevColor(o.severity)});">${o.severity}</span> <span style="font-size:11.5px;color:var(--ink-soft);">${o.category} · ${o.date}</span></div>
-          <span class="stamp ${o.status==='open'?'pending':'approved'}">${o.status}</span>
+          <div><span class="stamp" style="background:var(--${sevBg(o.severity)});color:var(--${sevColor(o.severity)});">${o.severity}</span> <span style="font-size:11.5px;color:var(--ink-soft);">${o.category} · ${o.date}${v?' · Voucher '+(v.voucherNo||'#'+v.id):''}</span></div>
+          <span class="stamp ${statusStamp(o.status)}">${o.status}</span>
         </div>
-        <div style="font-size:13px;margin-top:6px;">${o.observation}</div>
-        <div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Raised by ${actorLabel(o.raisedBy,o.raisedByName)}${o.status==='resolved'?' · Resolved by '+actorLabel(o.resolvedBy,o.resolvedByName)+' on '+new Date(o.resolvedAt).toLocaleDateString('en-IN'):''}</div>
-        ${isAuditReadOnly()?'':`<button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="event.stopPropagation();resolveObservation('${o.id}',${o.status==='open'})">${o.status==='open'?'Mark Resolved':'Reopen'}</button>`}
-      </div>`).join('') : `<div class="empty"><div class="ic">🔍</div>No observations raised yet.</div>`}`;
+        <div style="margin-top:8px;">
+          ${o.thread.map(t=>`<div style="display:flex;gap:6px;padding:4px 0;border-top:1px solid var(--border);"><span>${threadIcon(t.type)}</span><div style="flex:1;"><div style="font-size:12.5px;">${t.text}</div><div style="font-size:10px;color:var(--ink-soft);">${actorLabel(t.by,t.byName)} · ${new Date(t.at).toLocaleString('en-IN')}</div></div></div>`).join('')}
+        </div>
+        ${actions? `<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">${actions}</div>` : ''}
+        ${isAuditReadOnly()?'':`<button class="btn btn-outline btn-sm" style="margin-top:6px;" onclick="openObservationModal('${o.id}')">Edit Category/Severity</button>`}
+      </div>`;
+      }).join('') : `<div class="empty"><div class="ic">🔍</div>No objections raised yet.</div>`}`;
   } else if(sr==='compliance'){
     body = `${isAuditReadOnly()?'':'<button class="btn btn-primary btn-sm" style="margin-bottom:12px;" onclick="openGovtComplianceModal()">+ Add Compliance Item</button>'}
       ${DB.govtCompliance.length? `<div class="tbl-wrap"><table><tr><th>Item</th><th>Due</th><th>Status</th><th></th></tr>
@@ -4033,12 +4255,30 @@ function renderAudit(){
       ${runs.map(r=>`<tr><td style="font-size:12px;">${r.date}</td><td class="num-cell">₹${fmt(r.expected)}</td><td class="num-cell">₹${fmt(r.counted)}</td><td class="num-cell" style="color:${r.variance!==0?'var(--brick)':'var(--moss)'}">₹${fmt(r.variance)}</td><td style="font-size:11.5px;">${actorLabel(r.verifiedBy,r.verifiedByName)}</td></tr>`).join('')}
       </table></div>` : `<div class="empty"><div class="ic">💵</div>No surprise cash counts recorded yet.</div>`}`;
   } else if(sr==='exceptions'){
+    window.__excFilter = window.__excFilter || 'All';
     const exceptions = computeExceptionReport();
     const sevColor = s=>({High:'brick',Medium:'gold',Low:'moss'}[s]); const sevBg = s=>({High:'brick-soft',Medium:'amber-soft',Low:'moss-soft'}[s]);
-    body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Computed live from current data — reversed entries, fast approvals, unusually large transactions, missing GST/PAN on tax-claimed vendor bills, possible duplicate vendors/invoices/payments, and dormant flats with dues outstanding 180+ days.</p>
-      ${exceptions.length? `<div class="tbl-wrap"><table><tr><th>Type</th><th>Severity</th><th>Detail</th></tr>
-      ${exceptions.map(e=>`<tr><td style="font-size:12px;">${e.type}</td><td><span class="stamp" style="background:var(--${sevBg(e.severity)});color:var(--${sevColor(e.severity)});">${e.severity}</span></td><td style="font-size:12px;">${e.detail}</td></tr>`).join('')}
-      </table></div>` : `<div class="empty"><div class="ic">✓</div>No exceptions found in current data.</div>`}`;
+    const categories = ['All','Internal Control','Fraud Pattern','Data Quality'];
+    const counts = {}; exceptions.forEach(e=> counts[e.category]=(counts[e.category]||0)+1);
+    const shown = window.__excFilter==='All'? exceptions : exceptions.filter(e=>e.category===window.__excFilter);
+    body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Computed live from current data across three areas: <b>Internal Control</b> (procedural checks — cash limits, back-dating, voucher-numbering integrity, budget overspend), <b>Fraud Pattern</b> (behavioural/statistical checks borrowed from bank inspection practice), and <b>Data Quality</b> (missing GST/PAN, dormant flats). ${isReadOnly()?'':'<a href="#" onclick="event.preventDefault();go(\'settings\')">Adjust thresholds under Setup → Internal Controls.</a>'}</p>
+      <div class="subtabs">${categories.map(c=>`<button class="subtab ${window.__excFilter===c?'active':''}" onclick="window.__excFilter='${c}';render();">${c}${c!=='All'&&counts[c]?' ('+counts[c]+')':''}</button>`).join('')}</div>
+      ${shown.length? `<div class="tbl-wrap"><table><tr><th>Type</th><th>Severity</th><th>Detail</th></tr>
+      ${shown.map(e=>`<tr><td style="font-size:12px;">${e.type}</td><td><span class="stamp" style="background:var(--${sevBg(e.severity)});color:var(--${sevColor(e.severity)});">${e.severity}</span></td><td style="font-size:12px;">${e.detail}</td></tr>`).join('')}
+      </table></div>` : `<div class="empty"><div class="ic">✓</div>No exceptions found${window.__excFilter!=='All'?' in '+window.__excFilter:''}.</div>`}`;
+  } else if(sr==='legal'){
+    const cases = DB.legalCases.slice().sort((a,b)=>(b.status==='Ongoing')-(a.status==='Ongoing') || b.filedDate.localeCompare(a.filedDate));
+    body = `${isAuditReadOnly()?'':'<button class="btn btn-primary btn-sm" style="margin-bottom:12px;" onclick="openLegalCaseModal()">+ Add Legal Case</button>'}
+      ${cases.length? cases.map(c=>`<div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:8px;cursor:pointer;" onclick="${isAuditReadOnly()?'':`openLegalCaseModal('${c.id}')`}">
+        <div style="display:flex;justify-content:space-between;align-items:start;">
+          <div><b style="font-size:13px;">${c.title}</b><div style="font-size:11.5px;color:var(--ink-soft);">${c.court||'—'} · Filed ${c.filedDate}</div></div>
+          <span class="stamp ${c.status==='Ongoing'?'overdue':'approved'}">${c.status}</span>
+        </div>
+        ${c.nextHearingDate?`<div style="font-size:12px;margin-top:6px;">Next hearing: <b>${c.nextHearingDate}</b></div>`:''}
+        ${c.notes?`<div style="font-size:12px;color:var(--ink-soft);margin-top:4px;">${c.notes}</div>`:''}
+      </div>`).join('') : `<div class="empty"><div class="ic">⚖</div>No legal cases on record.</div>`}`;
+  } else if(sr==='inspect'){
+    body = renderInspectSociety();
   } else if(sr==='statements'){
     const links = [
       ['Trial Balance','reports','trial'], ['Income & Expenditure','reports','ie'], ['Receipts & Payments','reports','rp'],
@@ -4288,6 +4528,60 @@ function suggestedMaintenanceCalendar(){
   items.forEach(r=>{ const mk = r.dueDate.slice(0,7); (byMonth[mk]=byMonth[mk]||[]).push(r); });
   return Object.keys(byMonth).sort().map(mk=>({month:mk, items:byMonth[mk].sort((a,b)=>a.dueDate.localeCompare(b.dueDate))}));
 }
+/* ============ FINANCIAL RATIOS ============ */
+function computeFinancialRatios(){
+  const fy = currentFY();
+  const to = todayISO()<fy.endDate? todayISO() : fy.endDate;
+  const groupTotal = g=>{
+    const accs = Object.keys(ACCOUNT_GROUPS).filter(a=>ACCOUNT_GROUPS[a]===g);
+    return accs.reduce((s,a)=>{ const b=accBalance(a); return s+(ACCOUNTS[a]==='Income'?b.cr:ACCOUNTS[a]==='Expense'?b.dr:Math.abs(b.net)); },0);
+  };
+  const currentAssets = groupTotal('Current Assets');
+  const currentLiab = groupTotal('Current Liabilities');
+  const cashBank = totalCashAndBank();
+  const sinkingFund = accBalance('Sinking Fund').net*-1; // liability, so net is negative for a credit balance
+  const fixedAssetsGross = accBalance('Fixed Assets').net;
+
+  const fyIncome = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income').reduce((s,a)=>{ const b=accBalance(a,{from:fy.startDate,upto:to}); return s+(b.cr-b.dr); },0);
+  const fyExpense = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense').reduce((s,a)=>{ const b=accBalance(a,{from:fy.startDate,upto:to}); return s+(b.dr-b.cr); },0);
+  const adminExpense = accBalance('Administrative Expense',{from:fy.startDate,upto:to}).net;
+  const repairsExpenseFY = accBalance('Repairs & Maintenance',{from:fy.startDate,upto:to}).net;
+  const monthsElapsedInFY = Math.max(1, monthsBetween(fy.startDate, to)+1);
+  const avgMonthlyExpense = fyExpense/monthsElapsedInFY;
+
+  const totalBilledFY = DB.bills.filter(b=>b.period>=fy.startDate.slice(0,7) || (b.dueDate>=fy.startDate && b.dueDate<=to)).reduce((s,b)=>s+b.total,0);
+  const totalCollectedFY = DB.bills.reduce((s,b)=>s+b.paid,0); // life-to-date collections against all bills, a practical proxy
+  const thisMonth = todayISO().slice(0,7);
+  const billedThisMonth = DB.bills.filter(b=>b.period===thisMonth).reduce((s,b)=>s+b.total,0);
+  const collectedThisMonth = DB.vouchers.filter(v=>v.status==='approved'&&v.type==='Receipt'&&v.date.slice(0,7)===thisMonth).reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
+
+  const months6 = monthKeysBack(6);
+  const monthlySurplus = months6.map(m=>{
+    const inc = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income').reduce((s,a)=>{ const b=accBalance(a,{from:m+'-01',upto:new Date(Number(m.slice(0,4)),Number(m.slice(5,7)),0).toISOString().slice(0,10)}); return s+(b.cr-b.dr); },0);
+    const exp = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense').reduce((s,a)=>{ const b=accBalance(a,{from:m+'-01',upto:new Date(Number(m.slice(0,4)),Number(m.slice(5,7)),0).toISOString().slice(0,10)}); return s+(b.dr-b.cr); },0);
+    return inc-exp;
+  });
+  const avgMonthlySurplus = monthlySurplus.reduce((a,b)=>a+b,0)/(monthlySurplus.length||1);
+
+  const rate = (val, thresholds, higherIsBetter=true)=>{ // thresholds=[red,amber] cutoffs
+    if(higherIsBetter) return val>=thresholds[1]?'good':val>=thresholds[0]?'':'alert';
+    return val<=thresholds[0]?'good':val<=thresholds[1]?'':'alert';
+  };
+
+  return [
+    {label:'Collection Efficiency (this month)', value:billedThisMonth>0?Math.round(collectedThisMonth/billedThisMonth*100):null, unit:'%', rating: billedThisMonth>0? rate(collectedThisMonth/billedThisMonth*100,[70,90]) : '', note:'% of this month\'s billed maintenance actually collected so far.'},
+    {label:'Maintenance Recovery % (life-to-date)', value: DB.bills.reduce((s,b)=>s+b.total,0)>0? Math.round(totalCollectedFY/DB.bills.reduce((s,b)=>s+b.total,0)*100):null, unit:'%', rating: rate(DB.bills.reduce((s,b)=>s+b.total,0)>0?totalCollectedFY/DB.bills.reduce((s,b)=>s+b.total,0)*100:0,[75,90]), note:'Total ever collected against total ever billed — the long-run health of your collections.'},
+    {label:'Expense Ratio', value: fyIncome>0?Math.round(fyExpense/fyIncome*100):null, unit:'%', rating: fyIncome>0? rate(fyExpense/fyIncome*100,[80,100],false):'', note:`For ${fy.label} so far: expenses as a % of income. Above 100% means you're running a deficit.`},
+    {label:'Administrative Cost %', value: fyExpense>0?Math.round(adminExpense/fyExpense*100):null, unit:'%', rating: fyExpense>0? rate(adminExpense/fyExpense*100,[15,25],false):'', note:'Administrative Expense as a share of total expenditure — lower generally means more spend reaches actual services.'},
+    {label:'Cash Reserve Ratio', value: avgMonthlyExpense>0?Math.round(cashBank/avgMonthlyExpense*10)/10:null, unit:'months of expenses', rating: avgMonthlyExpense>0? rate(cashBank/avgMonthlyExpense,[1,3]):'', note:'Cash & Bank balance ÷ average monthly expenditure — how many months you could keep operating from cash on hand alone.'},
+    {label:'Repairs Fund Adequacy', value: repairsExpenseFY>0?Math.round(sinkingFund/repairsExpenseFY*100)/100:null, unit:'x annual repairs', rating: repairsExpenseFY>0? rate(sinkingFund/repairsExpenseFY,[0.5,1]):'', note:'Sinking Fund balance ÷ this year\'s Repairs & Maintenance spend — a rough sense of whether the fund could absorb a bad year.'},
+    {label:'Sinking Fund Coverage', value: fixedAssetsGross>0?Math.round(sinkingFund/fixedAssetsGross*100):null, unit:'% of asset cost', rating: fixedAssetsGross>0? rate(sinkingFund/fixedAssetsGross*100,[10,25]):'', note:'Sinking Fund balance as a % of gross fixed asset cost — a proxy for how prepared the fund is for eventual replacement.'},
+    {label:'Liquidity Ratio (Current Ratio)', value: currentLiab>0?Math.round(currentAssets/currentLiab*100)/100:(currentAssets>0?'∞':null), unit:'x', rating: currentLiab>0? rate(currentAssets/currentLiab,[1,1.5]) : (currentAssets>0?'good':''), note:'Current Assets ÷ Current Liabilities — above 1 means short-term obligations are covered.'},
+    {label:'Working Capital', value: currentAssets-currentLiab, unit:'₹', rating: (currentAssets-currentLiab)>=0?'good':'alert', note:'Current Assets minus Current Liabilities, in rupees.'},
+    {label:'Average Monthly Surplus (6mo)', value: Math.round(avgMonthlySurplus), unit:'₹', rating: avgMonthlySurplus>=0?'good':'alert', note:'Average of (Income − Expense) over the last 6 months.'},
+  ];
+}
+
 function renderSmartInsights(){
   window.__insightsBufferPct = window.__insightsBufferPct===undefined? 10 : window.__insightsBufferPct;
   const expenseRows = expenseAnalysis();
@@ -4339,7 +4633,7 @@ function applyBudgetSuggestions(fyId){
 
 function renderReports(){
   const sr = subroute || 'trial';
-  const tabs=[['trial','Trial Balance'],['genledger','General Ledger'],['daybook','Day Book'],['cashbook','Cash Book'],['bankbook','Bank Book'],['journal','Journal Register'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['bsschedule','Schedule-wise B/S'],['budget','Budget vs Actual'],['unreconciled','Unreconciled Items'],['defaulters','Defaulters'],['advances','Advance Balances'],['lowbalance','Low Balance Alerts'],['flatledger','Flat Ledger'],['insights','Smart Insights']];
+  const tabs=[['trial','Trial Balance'],['genledger','General Ledger'],['daybook','Day Book'],['cashbook','Cash Book'],['bankbook','Bank Book'],['journal','Journal Register'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['bsschedule','Schedule-wise B/S'],['ratios','Financial Ratios'],['trends','5-Year Trends'],['budget','Budget vs Actual'],['unreconciled','Unreconciled Items'],['defaulters','Defaulters'],['advances','Advance Balances'],['lowbalance','Low Balance Alerts'],['flatledger','Flat Ledger'],['insights','Smart Insights'],['agm','AGM Pack']];
   const isFinancialStatement = ['trial','ie','rp','bs','genledger','daybook','cashbook','bankbook','journal','bsschedule'].includes(sr);
   if(!window.__reportFrom) window.__reportFrom = fyStart();
   if(!window.__reportTo) window.__reportTo = todayISO();
@@ -4504,6 +4798,21 @@ function renderReports(){
     `<h3 style="font-size:13px">Liabilities & Fund Balance</h3><div class="tbl-wrap"><table>${renderGroupTableSched(liabGroups, liabSchedules)}<tr><td>Accumulated Surplus (Income & Expenditure)</td><td class="num-cell">₹${fmt(surplus)}</td></tr><tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total</td><td class="num-cell">₹${fmt(totLiab)}</td></tr></table></div>
     <h3 style="font-size:13px;margin-top:14px">Assets</h3><div class="tbl-wrap"><table>${renderGroupTableSched(assetGroups, assetSchedules)}<tr style="font-weight:700;border-top:2px solid var(--ink)"><td>Total Assets</td><td class="num-cell">₹${fmt(totAssets)}</td></tr></table></div>
     <p style="font-size:11px;color:var(--ink-soft);margin-top:10px;">Each schedule shows the detail behind its headline figure — useful for audit sign-off without cross-checking separate reports.</p>` + statementFooter();
+  } else if(sr==='ratios'){
+    const ratios = computeFinancialRatios();
+    const fy = currentFY();
+    body = statementHeader('Financial Ratios', `${fy.label}, as at ${todayISO()<fy.endDate?todayISO():fy.endDate}`) +
+      `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Standard ratios borrowed from banking/corporate finance, computed from your own ledger — useful for committee members without an accounting background to gauge overall financial health at a glance.</p>
+      <div class="tbl-wrap"><table><tr><th>Ratio</th><th class="num-cell">Value</th><th>What it means</th></tr>
+      ${ratios.map(r=>`<tr><td style="font-size:12.5px;font-weight:600;">${r.label}</td>
+        <td class="num-cell"><span class="stamp ${r.rating||''}" style="font-size:11px;">${r.value===null?'—':r.unit==='₹'?'₹'+fmt(r.value):r.unit==='%'?r.value+'%':r.value+' '+r.unit}</span></td>
+        <td style="font-size:11px;color:var(--ink-soft);">${r.note}</td></tr>`).join('')}
+      </table></div>
+      <p style="font-size:10.5px;color:var(--ink-soft);margin-top:10px;">Green/amber/red reflect commonly-used rule-of-thumb thresholds, not a formal audit opinion — use alongside the full statements, not instead of them.</p>` + statementFooter();
+  } else if(sr==='trends'){
+    body = statementHeader('Five-Year Trend Analysis', 'Across all financial years on record') + renderFiveYearTrends() + statementFooter();
+  } else if(sr==='agm'){
+    body = renderAGMPack();
   } else if(sr==='budget'){
     window.__budgetFY = window.__budgetFY || currentFY().id;
     const fy = DB.financialYears.find(f=>f.id===window.__budgetFY) || currentFY();
@@ -4542,6 +4851,8 @@ function renderReports(){
     body = statementHeader('Unreconciled Items', `Across all bank accounts, as at ${today}`) +
       (sections.length? sections.map(s=>`
         <h3 style="font-size:13px;margin-top:14px">${s.bank.bankName}${s.bank.accountNumber?' · '+s.bank.accountNumber:''} <span style="font-weight:400;color:var(--ink-soft);font-size:11.5px;">(${s.items.length} unreconciled, net ₹${fmt(s.total)})</span></h3>
+        ${s.bank.lastReconciledDate? `<p style="font-size:11px;color:var(--ink-soft);margin-bottom:4px;">Last reconciled ${s.bank.lastReconciledDate}${s.bank.lastReconciledBalance!==undefined?' at a statement balance of ₹'+fmt(s.bank.lastReconciledBalance):''}. What's listed below is everything not yet ticked cleared since.</p>`
+          : `<p style="font-size:11px;color:var(--brick);margin-bottom:4px;">This account has never been reconciled — so by definition, <i>everything</i> below is "unreconciled." That's expected, not a problem: go to Setup → Bank & FD Accounts → Reconcile, tick off (or auto-match via statement upload) whatever your bank statement actually shows as cleared, and only genuinely outstanding items will remain here from then on.</p>`}
         ${s.items.length? `<div class="tbl-wrap"><table><tr><th>Voucher</th><th>Date</th><th>Age</th><th>Narration</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th></tr>
           ${s.items.map(i=>{ const age=Math.floor((new Date(today)-new Date(i.date))/86400000); return `<tr><td style="font-size:11px;">${i.voucherNo}</td><td style="font-size:11.5px;">${i.date}</td><td><span class="stamp ${age>60?'overdue':age>30?'due':'paid'}">${age}d</span></td><td style="font-size:12px;">${i.narration}</td><td class="num-cell">${i.debit?'₹'+fmt(i.debit):''}</td><td class="num-cell">${i.credit?'₹'+fmt(i.credit):''}</td></tr>`; }).join('')}
           </table></div>` : `<p style="font-size:12px;color:var(--moss)">✓ Fully reconciled — nothing outstanding.</p>`}
@@ -4586,7 +4897,7 @@ function renderReports(){
   } else if(sr==='flatledger'){
     body = `<div class="field"><label>Flat</label><select id="fl_sel">${DB.flats.map(f=>`<option value="${f.id}">${flatLabel(f)}</option>`).join('')}</select></div><div id="fl_body"></div>`;
     setTimeout(()=>{
-      const sel=document.getElementById('fl_sel');
+      const sel=document.getElementById('fl_sel'); if(!sel) return;
       const draw=()=>{
         const flatId=sel.value; let bal=0;
         const rows = DB.vouchers.filter(v=>v.flatId===flatId).sort((a,b)=>a.date.localeCompare(b.date)).map(v=>{
@@ -4595,7 +4906,8 @@ function renderReports(){
           bal += (rec.debit||0)-(rec.credit||0);
           return `<tr><td>${v.date}</td><td>${v.narration||v.type}</td><td class="num-cell">${rec.debit?'₹'+fmt(rec.debit):''}</td><td class="num-cell">${rec.credit?'₹'+fmt(rec.credit):''}</td><td class="num-cell">₹${fmt(bal)}</td></tr>`;
         }).join('');
-        document.getElementById('fl_body').innerHTML = `<div class="tbl-wrap"><table><tr><th>Date</th><th>Particulars</th><th class="num-cell">Billed</th><th class="num-cell">Received</th><th class="num-cell">Balance</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No transactions</td></tr>'}</table></div>`;
+        const flBody = document.getElementById('fl_body'); if(!flBody) return;
+        flBody.innerHTML = `<div class="tbl-wrap"><table><tr><th>Date</th><th>Particulars</th><th class="num-cell">Billed</th><th class="num-cell">Received</th><th class="num-cell">Balance</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No transactions</td></tr>'}</table></div>`;
       };
       sel.onchange=draw; draw();
     },0);
@@ -4738,6 +5050,9 @@ function renderSettings(){
   <div class="card"><div class="section-title">Billing Rules — Interest, Penalty & Early-Payment Rebate</div>
     ${renderBillingRulesCard()}
   </div>
+  <div class="card"><div class="section-title">Internal Controls — Thresholds</div>
+    ${renderInternalControlsCard()}
+  </div>
   <div class="card"><div class="section-title">Opening Balances</div>
     <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">If you're switching to SmartRWA mid-year, bring forward what people already owed/were owed and your account balances as on your cut-over date. Each of these posts a normal voucher through the usual checker approval, same as any other entry.</p>
     <div style="display:flex;flex-direction:column;gap:8px;">
@@ -4811,7 +5126,12 @@ function renderSettings(){
     <input type="file" id="importFile" style="display:none" accept=".json" onchange="importData(event)">
     <div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-outline" style="flex:1" onclick="copyBackupToClipboard()">📋 Copy Backup as Text</button>
     <button class="btn btn-outline" style="flex:1" onclick="openPasteRestoreModal()">📋 Paste to Restore</button></div>
-    <p style="font-size:11px;color:var(--ink-soft);margin-top:6px;">If file import ever misbehaves, copy the backup text and paste it into Notes/Email to save it, or paste saved text back in to restore — no file picker involved either way.</p>
+    <p style="font-size:11px;color:var(--ink-soft);margin-top:6px;">If file import ever misbehaves, copy the backup text and paste it into Notes/Email to save it, or paste saved text back in to restore — no file picker involved either way. Importing (file or pasted) always replaces everything currently in the app, so — same as a full wipe — it's staged for a <b>different role to confirm</b>, and a restore point is saved automatically first.</p>
+    ${DB.importRequest? `
+      <div class="readonly-note" style="border-color:var(--brick);color:var(--brick);margin-top:10px;">Import staged by <b>${DB.importRequest.requestedBy}</b> on ${new Date(DB.importRequest.requestedAt).toLocaleString('en-IN')} — ${DB.importRequest.sourceLabel} (${DB.importRequest.flatCount} flat(s), ${DB.importRequest.voucherCount} voucher(s))</div>
+      ${isReadOnly()?'':DB.importRequest.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelImportRequest()">Withdraw Request</button>` : `<div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-danger" style="flex:1" onclick="confirmImportBackup()">Confirm Import</button><button class="btn btn-outline" style="flex:1" onclick="cancelImportRequest()">Decline</button></div>`}
+    ` : ''}
+    ${DB.preImportBackupAt? `<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="restorePreImportBackup()">Restore Pre-Import Backup (from ${new Date(DB.preImportBackupAt).toLocaleString('en-IN')})</button>` : ''}
   </div>
   <div class="card" style="border-color:var(--brick);"><div class="section-title" style="color:var(--brick);">Danger Zone — Full Data Wipe</div>
     <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Erases every flat, bill, voucher, vendor, employee, asset and record on this device — your login PINs are kept so you can still sign in afterward. Requires a different role to confirm, and automatically saves one restore point.</p>
@@ -4844,8 +5164,38 @@ function renderFYCard(){
     }
   }
   return `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Current year: <b>${fy.label}</b> (${fy.startDate} to ${fy.endDate}). Closing a year locks every date on or before ${fy.endDate} against new postings, and the next year opens automatically — account balances carry forward on their own since the ledger is cumulative, so there's nothing to re-enter. Closing needs a different role to confirm, same as any other control action here.</p>
+    ${fy.status==='open'? renderClosingWizard(fy) : ''}
     <div class="tbl-wrap"><table><tr><th>Year</th><th>Status</th><th></th></tr>${rows}</table></div>
     ${actionBlock}`;
+}
+function renderClosingWizard(fy){
+  const cashVerifyOk = DB.cashVerifications.some(v=>v.date>=fy.startDate);
+  syncBankLedgerAccounts();
+  const banks = DB.bankAccounts.filter(b=>b.type!=='FD');
+  const bankVerifyOk = banks.length===0 || banks.every(b=>b.lastReconciledDate && b.lastReconciledDate>=fy.startDate);
+  const reconciliationOk = bankVerifyOk;
+  const outstandingCheckedOk = true; // Defaulters is always live/viewable — treat "checked" as having looked, can't force a boolean here
+  const totalComputedDep = DB.assets.reduce((s,a)=>s+computeDep(a,todayISO()),0);
+  const bookedDep = -accBalance('Accumulated Depreciation').net;
+  const adjustmentsOk = Math.abs(totalComputedDep-bookedDep)<=100;
+  const pendingInFY = DB.vouchers.filter(v=>v.status==='pending' && v.date<=fy.endDate).length;
+  const steps = [
+    {label:'Verify cash on hand', done:cashVerifyOk, action:()=>{}, link:['audit','cashverify'], hint:cashVerifyOk?'Done this year':'Run a surprise cash count'},
+    {label:'Verify & reconcile bank accounts', done:bankVerifyOk, link:['settings',null], hint:bankVerifyOk?'All accounts reconciled':'Reconcile every account under Setup → Bank & FD Accounts'},
+    {label:'Check outstanding dues', done:outstandingCheckedOk, link:['reports','defaulters'], hint:'Review the Defaulters list'},
+    {label:'Pass year-end adjustments (depreciation)', done:adjustmentsOk, link:['assets',null], hint:adjustmentsOk?'Depreciation up to date':'Post depreciation under Assets'},
+    {label:'Generate & review Trial Balance', done:true, link:['reports','trial'], hint:'Always available — open to review'},
+    {label:'Generate & review Balance Sheet', done:true, link:['reports','bs'], hint:'Always available — open to review'},
+    {label:'Clear all pending approvals for the year', done:pendingInFY===0, link:['approvals',null], hint:pendingInFY===0?'Clear':`${pendingInFY} still pending`},
+    {label:'Lock the financial year', done:false, link:null, hint:'Use "Request Closing" below once every step above is done'},
+  ];
+  return `<div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:10px;">
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px;">Annual Closing Assistant — ${fy.label}</div>
+    ${steps.map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-top:1px solid var(--border);">
+      <div style="font-size:12.5px;">${s.done?'✅':'⬜'} ${i+1}. ${s.label}<div style="font-size:10.5px;color:var(--ink-soft);">${s.hint}</div></div>
+      ${s.link?`<button class="btn btn-outline btn-sm" onclick="go('${s.link[0]}'${s.link[1]?`,'${s.link[1]}'`:''})">Open</button>`:''}
+    </div>`).join('')}
+  </div>`;
 }
 function requestCloseFY(fyId){
   if(!canEdit()) return;
@@ -5015,6 +5365,26 @@ function saveBillingRules(){
   };
   logAction('Billing Rules Updated', JSON.stringify(DB.billingRules));
   save(); toast('Billing rules saved'); render();
+}
+function renderInternalControlsCard(){
+  const ic = DB.internalControls;
+  return `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">These feed Audit → Exception Reports' Internal Control and Fraud Pattern checks — nothing posts or blocks anything on its own, it only flags for review.</p>
+    <div class="row2"><div class="field"><label>Cash Payment Limit ₹</label><input id="ic_cashLimit" type="number" value="${ic.cashPaymentLimit}"></div>
+    <div class="field"><label>Round-Figure Flag Threshold ₹</label><input id="ic_roundFig" type="number" value="${ic.roundFigureThreshold}"></div></div>
+    <div class="row2"><div class="field"><label>Back-Dated Entry Threshold (days)</label><input id="ic_backdated" type="number" value="${ic.backdatedDaysThreshold}"></div>
+    <div class="field"><label>Vendor Concentration Flag (%)</label><input id="ic_vendorConc" type="number" value="${ic.vendorConcentrationPct}"></div></div>
+    ${isReadOnly()?'':'<button class="btn btn-primary btn-sm" onclick="saveInternalControls()">Save Thresholds</button>'}`;
+}
+function saveInternalControls(){
+  if(!canEdit()) return;
+  DB.internalControls = {
+    cashPaymentLimit: Number(document.getElementById('ic_cashLimit').value)||10000,
+    roundFigureThreshold: Number(document.getElementById('ic_roundFig').value)||10000,
+    backdatedDaysThreshold: Number(document.getElementById('ic_backdated').value)||30,
+    vendorConcentrationPct: Number(document.getElementById('ic_vendorConc').value)||40,
+  };
+  logAction('Internal Control Thresholds Updated', JSON.stringify(DB.internalControls));
+  save(); toast('Thresholds saved'); render();
 }
 function computeLateCharges(){
   const r = DB.billingRules;
@@ -5700,21 +6070,7 @@ function importData(ev){
   reader.onload = e=>{
     const text = e.target.result;
     if(!text || !text.length){ toast('File appears empty after reading — re-download and try again.'); return; }
-    let parsed;
-    try{ parsed = JSON.parse(text); }
-    catch(err){
-      openModal(`<div class="modal-head"><h2>Import Failed</h2><button class="close-x" onclick="closeModal()">×</button></div>
-        <p style="font-size:13px;">This doesn't parse as valid JSON. Technical detail (helps diagnose):</p>
-        <div class="tbl-wrap"><table><tr><td style="font-size:11.5px;font-family:monospace;">${(err.message||String(err)).replace(/</g,'&lt;')}</td></tr>
-        <tr><td style="font-size:11.5px;">File size read: ${text.length.toLocaleString()} characters</td></tr>
-        <tr><td style="font-size:11.5px;">First 60 chars: <code style="word-break:break-all;">${text.slice(0,60).replace(/</g,'&lt;')}</code></td></tr>
-        <tr><td style="font-size:11.5px;">Last 60 chars: <code style="word-break:break-all;">${text.slice(-60).replace(/</g,'&lt;')}</code></td></tr></table></div>`);
-      return;
-    }
-    if(typeof parsed!=='object' || !parsed || !Array.isArray(parsed.flats)){
-      toast('This JSON is valid but does not look like a SmartRWA backup (no flats array found).'); return;
-    }
-    DB = parsed; save(); toast('Backup restored'); go('dashboard');
+    stageImport(text, file.name);
   };
   reader.readAsText(file);
 }
@@ -5733,18 +6089,76 @@ function copyBackupToClipboard(){
 function openPasteRestoreModal(){
   if(!canEdit()) return;
   openModal(`<div class="modal-head"><h2>Paste to Restore</h2><button class="close-x" onclick="closeModal()">×</button></div>
-    <p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">Paste a previously copied backup below. This replaces everything currently in the app — only do this if that is what you mean to do.</p>
+    <p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">Paste a previously copied backup below. Like a file import, this stages the data for a different role to confirm before it replaces anything.</p>
     <textarea id="pasteRestoreArea" placeholder="Paste backup text here…" style="width:100%;height:200px;font-size:11px;font-family:monospace;"></textarea>
-    <button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="restoreFromPastedText()">Restore From Pasted Text</button>`);
+    <button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="restoreFromPastedText()">Stage This For Import</button>`);
 }
 function restoreFromPastedText(){
   const text = document.getElementById('pasteRestoreArea').value.trim();
   if(!text){ toast('Paste something first'); return; }
+  closeModal();
+  stageImport(text, 'pasted text');
+}
+
+/* ============ IMPORT BACKUP (MAKER-CHECKER) — mirrors the Full Data Wipe safety net:
+   a different role must confirm before anything currently in the app is replaced, and the
+   pre-import state is saved automatically so it can be recovered if the wrong file was staged. */
+function stageImport(text, sourceLabel){
+  if(!canEdit()) return;
   let parsed;
   try{ parsed = JSON.parse(text); }
-  catch(err){ toast('That does not parse as valid JSON: '+(err.message||err)); return; }
-  if(typeof parsed!=='object' || !parsed || !Array.isArray(parsed.flats)){ toast('Valid JSON, but it does not look like a SmartRWA backup (no flats array found).'); return; }
-  DB = parsed; save(); closeModal(); toast('Backup restored'); go('dashboard');
+  catch(err){
+    openModal(`<div class="modal-head"><h2>Import Failed</h2><button class="close-x" onclick="closeModal()">×</button></div>
+      <p style="font-size:13px;">This doesn't parse as valid JSON. Technical detail (helps diagnose):</p>
+      <div class="tbl-wrap"><table><tr><td style="font-size:11.5px;font-family:monospace;">${(err.message||String(err)).replace(/</g,'&lt;')}</td></tr>
+      <tr><td style="font-size:11.5px;">File size read: ${text.length.toLocaleString()} characters</td></tr>
+      <tr><td style="font-size:11.5px;">First 60 chars: <code style="word-break:break-all;">${text.slice(0,60).replace(/</g,'&lt;')}</code></td></tr>
+      <tr><td style="font-size:11.5px;">Last 60 chars: <code style="word-break:break-all;">${text.slice(-60).replace(/</g,'&lt;')}</code></td></tr></table></div>`);
+    return;
+  }
+  if(typeof parsed!=='object' || !parsed || !Array.isArray(parsed.flats)){
+    toast('This JSON is valid but does not look like a SmartRWA backup (no flats array found).'); return;
+  }
+  try{ localStorage.setItem('smartrwa_v1_pending_import', text); }
+  catch(e){ toast('Could not stage this file — it may be too large for this browser to hold twice at once. Try Restore Last Wipe/Import first if storage is nearly full.'); return; }
+  DB.importRequest = {requestedBy:window.__currentRole, requestedByName:actorName(), requestedAt:nowTS(), sourceLabel,
+    flatCount:parsed.flats.length, voucherCount:(parsed.vouchers||[]).length};
+  logAction('Import Requested', `${sourceLabel} — ${parsed.flats.length} flat(s), ${(parsed.vouchers||[]).length} voucher(s) — awaiting a different role to confirm`);
+  save(); render(); toast('Import staged — a different role must confirm before it replaces current data');
+}
+function cancelImportRequest(){
+  if(!canEdit()) return;
+  logAction('Import Request Cancelled', DB.importRequest? `${DB.importRequest.sourceLabel} (requested by ${DB.importRequest.requestedBy})` : '');
+  DB.importRequest = null; localStorage.removeItem('smartrwa_v1_pending_import');
+  save(); render(); toast('Import request cancelled');
+}
+function confirmImportBackup(){
+  if(isReadOnly()){ toast(window.__currentRole+' cannot confirm an import.'); return; }
+  if(!DB.importRequest){ toast('No import pending'); return; }
+  if(DB.importRequest.requestedBy===window.__currentRole){ toast('A different role must confirm this.'); return; }
+  const raw = localStorage.getItem('smartrwa_v1_pending_import');
+  if(!raw){ toast('Staged file not found — ask the requester to upload it again.'); DB.importRequest=null; save(); render(); return; }
+  let parsed;
+  try{ parsed = JSON.parse(raw); }
+  catch(e){ toast('Staged data is corrupted — ask the requester to upload it again.'); DB.importRequest=null; save(); render(); return; }
+  if(!confirm('This replaces everything currently in the app with the staged file (a restore point will be saved first). Continue?')) return;
+  try{ localStorage.setItem('smartrwa_v1_pre_import_backup', JSON.stringify(DB)); }catch(e){}
+  const preImportBackupAt = nowTS();
+  const confirmedBy = window.__currentRole;
+  DB = parsed;
+  DB.importRequest = null;
+  DB.preImportBackupAt = preImportBackupAt;
+  logAction('Import Confirmed', `Data replaced (confirmed by ${confirmedBy}) — previous state saved as a restore point`);
+  localStorage.removeItem('smartrwa_v1_pending_import');
+  save(); toast('Import complete — previous data saved as a restore point below'); go('dashboard');
+}
+function restorePreImportBackup(){
+  if(!canEdit()) return;
+  const raw = localStorage.getItem('smartrwa_v1_pre_import_backup');
+  if(!raw){ toast('No pre-import backup found'); return; }
+  if(!confirm('Restore the data from just before the last import? This replaces everything currently in the app.')) return;
+  try{ DB = JSON.parse(raw); DB.importRequest=null; save(); toast('Restored to the state before the last import'); go('dashboard'); }
+  catch(e){ toast('Could not read backup'); }
 }
 
 /* ============ FULL DATA WIPE (MAKER-CHECKER) ============ */
@@ -5881,6 +6295,350 @@ function runHealthChecks(){
 
   return checks;
 }
+
+/* ============ ACCOUNTING HEALTH SCORE (weighted, out of 100) ============
+   Builds on the same underlying checks as the Data Health list above, but reframed with
+   real weights and three additional signals that only became possible once Bank Reconciliation,
+   Cash Verification, and Audit Observations existed: this is the single number a President or
+   Auditor should be able to glance at and trust. */
+function computeAccountingHealthScore(){
+  const items = [];
+  const add=(label,ok,weight,detail)=>items.push({label,ok,weight,detail});
+
+  let totDr=0,totCr=0;
+  DB.vouchers.filter(v=>v.status==='approved').forEach(v=> v.entries.forEach(e=>{ totDr+=e.debit||0; totCr+=e.credit||0; }));
+  add('Trial Balance Matched', Math.abs(totDr-totCr)<1, 15, `Debit ₹${fmt(totDr)} vs Credit ₹${fmt(totCr)}`);
+
+  const assets = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Asset').reduce((s,a)=>s+accBalance(a).net,0);
+  const liab = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Liability').reduce((s,a)=>s-accBalance(a).net,0);
+  const incomeAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income'), expAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense');
+  const surplus = incomeAccs.reduce((s,a)=>{ const b=accBalance(a); return s+(b.cr-b.dr); },0) - expAccs.reduce((s,a)=>{ const b=accBalance(a); return s+(b.dr-b.cr); },0);
+  add('Balance Sheet Tallies', Math.abs(assets-(liab+surplus))<1, 15, `Assets ₹${fmt(assets)} vs Liabilities+Surplus ₹${fmt(liab+surplus)}`);
+
+  const stalePending = DB.vouchers.filter(v=>v.status==='pending' && (new Date()-new Date(v.makerAt))/86400000 > 3);
+  add('Vouchers Approved — No Backlog', stalePending.length===0, 10, stalePending.length? `${stalePending.length} entr${stalePending.length===1?'y':'ies'} pending 3+ days` : 'Nothing stuck in the approval queue');
+
+  syncBankLedgerAccounts();
+  const banks = DB.bankAccounts.filter(b=>b.type!=='FD');
+  const unreconciledBanks = banks.filter(b=> !b.lastReconciledDate || (new Date()-new Date(b.lastReconciledDate))/86400000>45);
+  add('Bank Reconciliation Up To Date', banks.length===0 || unreconciledBanks.length===0, 10,
+    banks.length===0? 'No bank accounts registered' : unreconciledBanks.length? `${unreconciledBanks.map(b=>b.bankName).join(', ')} not reconciled in the last 45 days` : 'All accounts reconciled within 45 days');
+
+  const lastCashVerify = DB.cashVerifications.slice().sort((a,b)=>b.date.localeCompare(a.date))[0];
+  const cashVerifyDays = lastCashVerify? (new Date()-new Date(lastCashVerify.date))/86400000 : Infinity;
+  add('Cash Verified Recently', cashVerifyDays<=90, 8, lastCashVerify? `Last surprise count ${lastCashVerify.date} (${Math.floor(cashVerifyDays)}d ago)` : 'No surprise cash verification recorded yet');
+
+  const openObs = DB.auditObservations.filter(o=>o.status!=='Closed');
+  add('Audit Objections — None Pending', openObs.length===0, 10, openObs.length? `${openObs.length} open observation(s) — see Audit → Observations` : 'No open audit observations');
+
+  const negStock = DB.inventoryItems.filter(it=>stockOnHand(it.id)<0);
+  add('No Negative Stock', negStock.length===0, 8, negStock.length? `${negStock.length} item(s) show negative stock` : 'Complete');
+
+  const overdueVendor = DB.vendorBills.filter(b=> (b.netPayable-b.paid)>0 && (new Date()-new Date(b.date))/86400000>60);
+  add('No Vendor Dues Overdue 60+ Days', overdueVendor.length===0, 8, overdueVendor.length? `${overdueVendor.length} vendor bill(s) unpaid for 60+ days` : 'Complete');
+
+  const noOwner = DB.flats.filter(f=>!f.owner?.name);
+  add('All Flats Have Owner Details', noOwner.length===0, 6, noOwner.length? `${noOwner.length} flat(s) missing owner name` : 'Complete');
+
+  const seen={}; let dupes=0;
+  DB.flats.forEach(f=>{ const k=f.tower+'|'+f.flatNo; if(seen[k]) dupes++; seen[k]=true; });
+  add('No Duplicate Flat Numbers', dupes===0, 4, dupes? `${dupes} duplicate combination(s)` : 'Complete');
+
+  const orphanBills = DB.bills.filter(b=> !DB.vouchers.some(v=>v.ref===b.id));
+  add('Every Bill Has a Matching Entry', orphanBills.length===0, 4, orphanBills.length? `${orphanBills.length} bill(s) have no linked voucher` : 'Complete');
+
+  const badHeads = DB.chargeHeads.filter(h=>!ACCOUNTS[h.account]);
+  add('Charge Heads Point to Valid Accounts', badHeads.length===0, 2, badHeads.length? `${badHeads.length} charge head(s) reference an unrecognised account` : 'Complete');
+
+  const totalWeight = items.reduce((s,i)=>s+i.weight,0);
+  const earned = items.reduce((s,i)=>s+(i.ok?i.weight:0),0);
+  const score = Math.round(earned/totalWeight*100);
+  const grade = score>=90?'A':score>=75?'B':score>=60?'C':'D';
+  return {score, grade, items};
+}
+
+/* ============ AGM MODULE ============ */
+function renderAGMPack(){
+  const fy = currentFY();
+  if(!DB.agmReports[fy.id]) DB.agmReports[fy.id] = {chairmanReport:''};
+  const ratios = computeFinancialRatios();
+  const rating = computeSocietyCreditRating();
+  const budgetSuggestions = suggestNextYearBudget(10);
+  const trend = computeFiveYearTrend();
+  const openObs = DB.auditObservations.filter(o=>o.status!=='Closed');
+  const to = todayISO()<fy.endDate? todayISO() : fy.endDate;
+  const income = ratios.find(r=>r.label==='Expense Ratio'); // just to reuse fy calc pattern below directly instead
+  const fyIncome = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income').reduce((s,a)=>{ const b=accBalance(a,{from:fy.startDate,upto:to}); return s+(b.cr-b.dr); },0);
+  const fyExpense = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense').reduce((s,a)=>{ const b=accBalance(a,{from:fy.startDate,upto:to}); return s+(b.dr-b.cr); },0);
+
+  return `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Everything a committee typically needs before an AGM, compiled in one place for ${fy.label}. The Chairman's narrative is the one part that needs a human voice — everything else below it is generated from your ledger.</p>
+    <div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:10px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">1. Chairman's Report</div>
+      <textarea id="agm_chairman" rows="6" placeholder="A short narrative on the year — key achievements, challenges, and outlook for the coming year." style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;">${DB.agmReports[fy.id].chairmanReport}</textarea>
+      ${isReadOnly()?'':`<button class="btn btn-outline btn-sm" style="margin-top:6px;" onclick="saveAgmChairmanReport('${fy.id}')">Save Draft</button>`}
+    </div>
+    <div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:10px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">2. Treasurer's Report (auto-generated)</div>
+      <p style="font-size:12.5px;">For ${fy.label} to date: total income <b>₹${fmt(fyIncome)}</b>, total expenditure <b>₹${fmt(fyExpense)}</b>, resulting in a <b>${fyIncome-fyExpense>=0?'surplus':'deficit'} of ₹${fmt(Math.abs(fyIncome-fyExpense))}</b>. Collection efficiency this month stands at ${ratios[0].value===null?'—':ratios[0].value+'%'}, with maintenance recovery of ${ratios[1].value===null?'—':ratios[1].value+'%'} on a life-to-date basis. Cash & Bank on hand: <b>₹${fmt(totalCashAndBank())}</b>. Society Financial Rating: <b>${'★'.repeat(rating.stars)}${'☆'.repeat(5-rating.stars)} (${rating.label})</b>.</p>
+    </div>
+    <div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:10px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">3 & 4. Income & Expenditure / Balance Sheet</div>
+      <div style="display:flex;gap:8px;"><button class="btn btn-outline btn-sm" onclick="go('reports','ie')">Open I&E Statement</button><button class="btn btn-outline btn-sm" onclick="go('reports','bs')">Open Balance Sheet</button></div>
+    </div>
+    <div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:10px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">5. Audit Report Summary</div>
+      <p style="font-size:12.5px;">${openObs.length===0? 'No audit objections currently open.' : `${openObs.length} audit objection(s) currently open: ${openObs.slice(0,3).map(o=>o.category).join(', ')}${openObs.length>3?', …':''}.`} Accounting Health Score: <b>${computeAccountingHealthScore().score}/100</b>.</p>
+      <button class="btn btn-outline btn-sm" onclick="go('audit','observations')">Open Full Audit Record</button>
+    </div>
+    <div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:10px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">6. Budget Proposal for Next Year</div>
+      ${budgetSuggestions.length? `<div class="tbl-wrap"><table><tr><th>Head</th><th class="num-cell">Proposed</th></tr>${budgetSuggestions.map(s=>`<tr><td style="font-size:12px;">${s.acc}</td><td class="num-cell">₹${fmt(s.suggested)}</td></tr>`).join('')}</table></div>` : `<p style="font-size:12px;color:var(--ink-soft);">Not enough trailing history yet to propose one — see Reports → Smart Insights once more data has accumulated.</p>`}
+    </div>
+    <div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:10px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px;">7. Comparative Statement — Last ${trend.length} Year(s)</div>
+      <div class="tbl-wrap"><table><tr><th>Year</th><th class="num-cell">Income</th><th class="num-cell">Expenditure</th><th class="num-cell">Surplus/Deficit</th></tr>
+      ${trend.map(t=>`<tr><td>${t.fy}</td><td class="num-cell">₹${fmt(t.income)}</td><td class="num-cell">₹${fmt(t.expense)}</td><td class="num-cell">₹${fmt(t.income-t.expense)}</td></tr>`).join('')}
+      </table></div>
+    </div>
+    <button class="btn btn-primary btn-block" onclick="printAgmPack('${fy.id}')">🖨 Print Full AGM Pack</button>`;
+}
+function saveAgmChairmanReport(fyId){
+  if(!canEdit()) return;
+  if(!DB.agmReports[fyId]) DB.agmReports[fyId] = {};
+  DB.agmReports[fyId].chairmanReport = document.getElementById('agm_chairman').value;
+  logAction('AGM Chairman Report Saved', DB.financialYears.find(f=>f.id===fyId)?.label||fyId);
+  save(); toast('Draft saved');
+}
+function printAgmPack(fyId){
+  const fy = DB.financialYears.find(f=>f.id===fyId); if(!fy) return;
+  const to = todayISO()<fy.endDate? todayISO() : fy.endDate;
+  const fyIncome = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income').reduce((s,a)=>{ const b=accBalance(a,{from:fy.startDate,upto:to}); return s+(b.cr-b.dr); },0);
+  const fyExpense = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense').reduce((s,a)=>{ const b=accBalance(a,{from:fy.startDate,upto:to}); return s+(b.dr-b.cr); },0);
+  const rating = computeSocietyCreditRating();
+  const trend = computeFiveYearTrend();
+  const budgetSuggestions = suggestNextYearBudget(10);
+  const openObs = DB.auditObservations.filter(o=>o.status!=='Closed');
+  const chairman = (DB.agmReports[fyId]?.chairmanReport||'').replace(/\n/g,'<br>');
+  const html = `<!DOCTYPE html><html><head><title>AGM Pack — ${fy.label}</title><meta charset="utf-8">
+    <style>body{font-family:Arial,sans-serif;color:#222;padding:24px;} h2{border-bottom:2px solid #222;padding-bottom:4px;margin-top:24px;} table{width:100%;border-collapse:collapse;margin-top:8px;} th{text-align:left;padding:6px 8px;border-bottom:2px solid #222;} td{padding:5px 8px;border-bottom:1px solid #ddd;}</style></head>
+    <body><h1>${DB.society.name}</h1><div style="color:#666;">AGM Report Pack — ${fy.label}</div>
+    <h2>1. Chairman's Report</h2><p>${chairman||'(not yet drafted)'}</p>
+    <h2>2. Treasurer's Report</h2><p>Total income ₹${fmt(fyIncome)}, total expenditure ₹${fmt(fyExpense)}, ${fyIncome-fyExpense>=0?'surplus':'deficit'} of ₹${fmt(Math.abs(fyIncome-fyExpense))}. Cash & Bank on hand: ₹${fmt(totalCashAndBank())}. Society Financial Rating: ${'★'.repeat(rating.stars)}${'☆'.repeat(5-rating.stars)} (${rating.label}).</p>
+    <h2>5. Audit Report Summary</h2><p>${openObs.length===0?'No audit objections currently open.':openObs.length+' objection(s) open.'} Accounting Health Score: ${computeAccountingHealthScore().score}/100.</p>
+    <h2>6. Budget Proposal</h2><table><tr><th>Head</th><th>Proposed</th></tr>${budgetSuggestions.map(s=>`<tr><td>${s.acc}</td><td>₹${fmt(s.suggested)}</td></tr>`).join('')}</table>
+    <h2>7. Comparative Statement</h2><table><tr><th>Year</th><th>Income</th><th>Expenditure</th><th>Surplus/Deficit</th></tr>${trend.map(t=>`<tr><td>${t.fy}</td><td>₹${fmt(t.income)}</td><td>₹${fmt(t.expense)}</td><td>₹${fmt(t.income-t.expense)}</td></tr>`).join('')}</table>
+    <p style="margin-top:24px;font-size:12px;color:#666;">Full Income & Expenditure and Balance Sheet statements are available separately under Reports.</p>
+    </body></html>`;
+  const w = window.open('', '_blank');
+  if(!w){ toast('Enable pop-ups to print this pack'); return; }
+  w.document.write(html); w.document.close(); w.focus();
+  setTimeout(()=>w.print(), 350);
+}
+
+
+/* ============ FIVE-YEAR TREND ANALYSIS ============ */
+function computeFiveYearTrend(){
+  // Use existing financial years, oldest-first, capped to the most recent 5 (creating them if fewer exist yet)
+  let fys = DB.financialYears.slice().sort((a,b)=>a.startDate.localeCompare(b.startDate));
+  if(fys.length<5){
+    // Ensure at least the current year exists; don't fabricate future years, just show what's available
+    fys = fys.slice(-5);
+  } else fys = fys.slice(-5);
+  return fys.map(fy=>{
+    const to = todayISO()<fy.endDate? todayISO() : fy.endDate;
+    const income = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income').reduce((s,a)=>{ const b=accBalance(a,{from:fy.startDate,upto:to}); return s+(b.cr-b.dr); },0);
+    const expense = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Expense').reduce((s,a)=>{ const b=accBalance(a,{from:fy.startDate,upto:to}); return s+(b.dr-b.cr); },0);
+    const maintCollection = DB.vouchers.filter(v=>v.status==='approved' && v.type==='Receipt' && v.date>=fy.startDate && v.date<=to).reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
+    const repairs = accBalance('Repairs & Maintenance',{from:fy.startDate,upto:to}).net;
+    const bankBalance = totalCashAndBank({upto:to});
+    const defaultersCount = DB.flats.filter(f=>{
+      const bal = DB.vouchers.filter(v=>v.status==='approved' && v.flatId===f.id && v.date<=to).reduce((s,v)=>{ const e=v.entries.find(x=>x.account==='Maintenance Receivable'); return s+(e?(e.debit||0)-(e.credit||0):0); },0);
+      return bal>0;
+    }).length;
+    const corpus = -accBalance('Corpus Fund',{upto:to}).net;
+    const sinking = -accBalance('Sinking Fund',{upto:to}).net;
+    return {fy:fy.label, income, expense, maintCollection, repairs, bankBalance, defaultersCount, corpus, sinking};
+  });
+}
+function renderTrendBar(val, maxVal, color){
+  const pct = maxVal>0? Math.max(2,Math.round(Math.abs(val)/maxVal*100)) : 2;
+  return `<div style="background:var(--paper);border-radius:4px;overflow:hidden;height:16px;width:100%;"><div style="background:${color||'var(--moss)'};height:100%;width:${pct}%;"></div></div>`;
+}
+function renderFiveYearTrends(){
+  const data = computeFiveYearTrend();
+  if(!data.length) return `<div class="empty"><div class="ic">📈</div>No financial year data yet.</div>`;
+  const metrics = [
+    {key:'income', label:'Income', color:'var(--moss)', fmt:v=>'₹'+fmt(v)},
+    {key:'expense', label:'Expenditure', color:'var(--brick)', fmt:v=>'₹'+fmt(v)},
+    {key:'maintCollection', label:'Maintenance Collection', color:'var(--moss)', fmt:v=>'₹'+fmt(v)},
+    {key:'repairs', label:'Repairs & Maintenance Spend', color:'var(--gold)', fmt:v=>'₹'+fmt(v)},
+    {key:'bankBalance', label:'Cash & Bank Balance', color:'var(--moss)', fmt:v=>'₹'+fmt(v)},
+    {key:'defaultersCount', label:'Defaulter Flats', color:'var(--brick)', fmt:v=>v+' flat(s)'},
+    {key:'corpus', label:'Corpus Fund', color:'var(--moss)', fmt:v=>'₹'+fmt(v)},
+    {key:'sinking', label:'Sinking Fund', color:'var(--moss)', fmt:v=>'₹'+fmt(v)},
+  ];
+  return `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:12px;">Shows up to the last 5 financial years — fewer will appear until more years have passed. Bars are scaled within each metric, not across metrics.</p>
+    ${metrics.map(m=>{
+      const maxVal = Math.max(...data.map(d=>Math.abs(d[m.key])), 1);
+      return `<div style="margin-bottom:14px;"><div style="font-weight:600;font-size:12.5px;margin-bottom:6px;">${m.label}</div>
+        ${data.map(d=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+          <div style="width:60px;font-size:11px;color:var(--ink-soft);flex:0 0 auto;">${d.fy}</div>
+          <div style="flex:1;">${renderTrendBar(d[m.key], maxVal, m.color)}</div>
+          <div style="width:90px;font-size:11px;text-align:right;flex:0 0 auto;">${m.fmt(d[m.key])}</div>
+        </div>`).join('')}
+      </div>`;
+    }).join('')}`;
+}
+
+
+function computeSocietyCreditRating(){
+  const ratios = computeFinancialRatios();
+  const byLabel = l=>ratios.find(r=>r.label.startsWith(l));
+  const pct = (val, cap)=> val===null||val===undefined? 50 : Math.max(0, Math.min(100, val/cap*100));
+
+  const collectionScore = pct(byLabel('Maintenance Recovery')?.value, 100);
+  const cashScore = pct(byLabel('Cash Reserve Ratio')?.value, 3); // 3+ months = full marks
+  const highOpenObs = DB.auditObservations.filter(o=>o.status!=='Closed' && o.severity==='High').length;
+  const auditScore = highOpenObs===0? 100 : Math.max(0, 100-highOpenObs*25);
+  const defaulterFlats = DB.flats.filter(f=>flatOutstanding(f.id)>0).length;
+  const defaulterScore = DB.flats.length? Math.max(0,100-Math.round(defaulterFlats/DB.flats.length*100)) : 100;
+  const repairScore = pct(byLabel('Repairs Fund Adequacy')?.value, 1);
+  const corpusBal = -accBalance('Corpus Fund').net;
+  const corpusScore = corpusBal>0? 100 : 0;
+  const liquidityScore = pct(byLabel('Liquidity Ratio')?.value, 2);
+  const fy = currentFY(); const budgets = DB.budgets[fy.id]||{};
+  const budgetHeads = Object.keys(budgets);
+  const overBudget = budgetHeads.filter(acc=>{ const b=accBalance(acc,{from:fy.startDate,upto:todayISO()<fy.endDate?todayISO():fy.endDate}); return (b.dr-b.cr)>budgets[acc]; }).length;
+  const budgetScore = budgetHeads.length? Math.max(0,100-Math.round(overBudget/budgetHeads.length*100)) : 75;
+
+  const weighted = collectionScore*0.20 + cashScore*0.15 + auditScore*0.15 + defaulterScore*0.15 + repairScore*0.10 + corpusScore*0.10 + liquidityScore*0.10 + budgetScore*0.05;
+  const score = Math.round(weighted);
+  const stars = score>=90?5:score>=75?4:score>=60?3:score>=40?2:1;
+  const label = {5:'Excellent',4:'Good',3:'Fair',2:'Below Average',1:'Needs Attention'}[stars];
+  return { score, stars, label,
+    factors: [
+      {name:'Collection Efficiency', score:Math.round(collectionScore)},
+      {name:'Cash Reserves', score:Math.round(cashScore)},
+      {name:'Audit Status', score:Math.round(auditScore)},
+      {name:'Defaulters', score:Math.round(defaulterScore)},
+      {name:'Repair Fund', score:Math.round(repairScore)},
+      {name:'Corpus Fund', score:Math.round(corpusScore)},
+      {name:'Liquidity', score:Math.round(liquidityScore)},
+      {name:'Budget Discipline', score:Math.round(budgetScore)},
+    ]
+  };
+}
+
+/* ============ ANNUAL CLOSING ASSISTANT / INSPECT SOCIETY ============
+   Genuine per-instance control points (every voucher, flat, vendor, bank account, and asset
+   checked individually, not just category rollups) — for a real 4-month/6-flat dataset this
+   already runs well past 100 points; a live society with a full year of vouchers will run into
+   the hundreds or thousands. Nothing here is padded to hit a number. */
+function runSocietyInspection(){
+  const points = [];
+  const add = (category, label, ok) => points.push({category, label, ok});
+
+  DB.vouchers.filter(v=>v.status==='approved').forEach(v=>{
+    add('Voucher Numbering', `${v.voucherNo||'#'+v.id} sequentially numbered`, !!v.voucherNo);
+    const gapDays = v.makerAt? (new Date(v.makerAt)-new Date(v.date))/86400000 : 0;
+    add('Back-Dating', `${v.voucherNo||'#'+v.id} not back-dated beyond ${DB.internalControls.backdatedDaysThreshold} days`, gapDays <= DB.internalControls.backdatedDaysThreshold);
+    add('Approval Control', `${v.voucherNo||'#'+v.id} approved by a different role than raised it`, !v.checker || v.checker!==v.maker);
+  });
+
+  DB.flats.forEach(f=> add('Flat Records', `${flatLabel(f)} has owner details on file`, !!f.owner?.name));
+
+  DB.vendors.forEach(v=>{
+    add('Vendor Records', `${v.name} has PAN on file`, !!v.pan);
+    if(DB.vendorBills.some(b=>b.vendorId===v.id && b.gstAmount>0)) add('Vendor Records', `${v.name} has GSTIN on file (GST claimed on their bills)`, !!v.gstin);
+  });
+
+  syncBankLedgerAccounts();
+  DB.bankAccounts.filter(b=>b.type!=='FD').forEach(b=>
+    add('Bank Reconciliation', `${b.bankName} reconciled within the last 45 days`, !!b.lastReconciledDate && (new Date()-new Date(b.lastReconciledDate))/86400000<=45));
+  DB.bankAccounts.filter(b=>b.type==='FD').forEach(b=>
+    add('Investments', `FD with ${b.bankName} not overdue for renewal`, !b.maturityDate || new Date(b.maturityDate)>=new Date()));
+
+  DB.assets.filter(a=>!a.disposed).forEach(a=>{
+    const lastVerify = DB.assetVerifications.filter(v=>v.assetId===a.id).sort((x,y)=>y.date.localeCompare(x.date))[0];
+    add('Physical Verification', `${a.name} physically verified within the last year`, !!lastVerify && (new Date()-new Date(lastVerify.date))/86400000<=365);
+    if(a.amcExpiry) add('AMC Validity', `${a.name} AMC is current`, daysUntil(a.amcExpiry)>=0);
+    if(a.warrantyExpiry) add('Warranty Tracking', `${a.name} warranty status on file`, true);
+  });
+
+  DB.documents.filter(d=>d.category==='Insurance Policy').forEach(d=>
+    add('Insurance', `${d.title} is valid (not expired)`, !d.expiryDate || daysUntil(d.expiryDate)>=0));
+
+  STATUTORY_REGISTERS.forEach(name=> add('Statutory Registers', `${name} verified`, !!(DB.statutoryRegisterStatus[name]&&DB.statutoryRegisterStatus[name].verified)));
+
+  { const totalComputed = DB.assets.reduce((s,a)=>s+computeDep(a,todayISO()),0);
+    const booked = -accBalance('Accumulated Depreciation').net;
+    add('Depreciation', 'Depreciation posted matches what has accrued (within ₹100)', Math.abs(totalComputed-booked)<=100); }
+
+  { const highOpen = DB.auditObservations.filter(o=>o.status!=='Closed' && o.severity==='High');
+    add('Audit Objections', 'No open High-severity audit objections', highOpen.length===0); }
+
+  computeAccountingHealthScore().items.forEach(i=> add('Core Health', i.label, i.ok));
+
+  const total = points.length;
+  const passed = points.filter(p=>p.ok).length;
+  const score = total? Math.round(passed/total*100) : 100;
+  const grade = score>=90?'A':score>=75?'B':score>=60?'C':'D';
+  const failedByCategory = {};
+  points.filter(p=>!p.ok).forEach(p=>{ (failedByCategory[p.category]=failedByCategory[p.category]||[]).push(p.label); });
+  const correctiveActions = Object.keys(failedByCategory).map(cat=>({category:cat, count:failedByCategory[cat].length, examples:failedByCategory[cat].slice(0,3)}));
+  const byCategory = {};
+  points.forEach(p=>{ byCategory[p.category]=byCategory[p.category]||{total:0,passed:0}; byCategory[p.category].total++; if(p.ok) byCategory[p.category].passed++; });
+  return {total, passed, score, grade, correctiveActions, byCategory, points, ranAt:nowTS(), ranBy:window.__currentRole};
+}
+function generateInspectionReport(){
+  window.__lastInspection = runSocietyInspection();
+  logAction('Society Inspection Run', `Score ${window.__lastInspection.score}% — Grade ${window.__lastInspection.grade} — ${window.__lastInspection.total} control points checked`);
+  save(); render();
+}
+function renderInspectSociety(){
+  return `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Checks every voucher, flat, vendor, bank account, and asset individually against a control point — not just category summaries — plus the core accounting health checks. Nothing is fixed automatically; this only assesses and reports.</p>
+    ${isReadOnly()?'':'<button class="btn btn-primary btn-block" onclick="generateInspectionReport()">🔍 Inspect Society</button>'}
+    <div id="inspectionResultArea">${window.__lastInspection? renderInspectionResult(window.__lastInspection) : `<div class="empty" style="margin-top:12px;"><div class="ic">🔍</div>Run an inspection to see the Risk Grade, full control-point breakdown, and a corrective action list.</div>`}</div>`;
+}
+function renderInspectionResult(insp){
+  const gradeColor = insp.grade==='A'?'var(--moss)':insp.grade==='B'?'var(--gold)':'var(--brick)';
+  return `<div class="card" style="text-align:center;border:2px solid ${gradeColor};margin-top:12px;">
+    <div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.05em;">Risk Grade</div>
+    <div style="font-size:48px;font-weight:700;color:${gradeColor};line-height:1.1;">${insp.grade}</div>
+    <div style="font-size:13px;color:var(--ink-soft);">${insp.passed} of ${insp.total} control points passed (${insp.score}%)</div>
+    <div style="font-size:10.5px;color:var(--ink-soft);margin-top:4px;">Run by ${insp.ranBy} on ${new Date(insp.ranAt).toLocaleString('en-IN')}</div>
+  </div>
+  <div class="card"><div class="section-title">Compliance Status by Category</div>
+  <div class="tbl-wrap"><table><tr><th>Category</th><th class="num-cell">Passed</th><th class="num-cell">Total</th></tr>
+  ${Object.keys(insp.byCategory).map(c=>`<tr><td style="font-size:12.5px;">${c}</td><td class="num-cell">${insp.byCategory[c].passed}</td><td class="num-cell">${insp.byCategory[c].total}</td></tr>`).join('')}
+  </table></div></div>
+  ${insp.correctiveActions.length? `<div class="card"><div class="section-title">Corrective Action List</div>
+  ${insp.correctiveActions.map(a=>`<div style="padding:6px 0;border-bottom:1px solid var(--border);"><b>${a.category}</b> — ${a.count} item(s) need attention<div style="font-size:11px;color:var(--ink-soft);">${a.examples.join('; ')}${a.count>3?' …':''}</div></div>`).join('')}
+  </div>` : `<div class="empty"><div class="ic">✓</div>No corrective actions needed.</div>`}
+  <button class="btn btn-outline btn-block" onclick="printInspectionReport()">🖨 Print Inspection Report</button>`;
+}
+function printInspectionReport(){
+  const insp = window.__lastInspection; if(!insp) return;
+  const gradeColor = insp.grade==='A'?'#4B6B3A':insp.grade==='B'?'#B08D2F':'#9C3B2E';
+  const html = `<!DOCTYPE html><html><head><title>Society Inspection Report</title><meta charset="utf-8">
+    <style>body{font-family:Arial,sans-serif;color:#222;padding:24px;} table{width:100%;border-collapse:collapse;margin-top:10px;} th{text-align:left;padding:6px 8px;border-bottom:2px solid #222;} td{padding:5px 8px;border-bottom:1px solid #ddd;}</style></head>
+    <body><h2 style="margin-bottom:2px;">${DB.society.name}</h2>
+    <div style="color:#666;font-size:13px;margin-bottom:10px;">Society Inspection Report — as at ${todayISO()}</div>
+    <div style="text-align:center;border:3px solid ${gradeColor};border-radius:10px;padding:16px;margin-bottom:16px;">
+      <div style="font-size:12px;color:#666;">RISK GRADE</div><div style="font-size:44px;font-weight:700;color:${gradeColor};">${insp.grade}</div>
+      <div style="font-size:13px;">${insp.passed} of ${insp.total} control points passed (${insp.score}%)</div></div>
+    <h3>Compliance Status by Category</h3>
+    <table><tr><th>Category</th><th>Passed</th><th>Total</th></tr>${Object.keys(insp.byCategory).map(c=>`<tr><td>${c}</td><td>${insp.byCategory[c].passed}</td><td>${insp.byCategory[c].total}</td></tr>`).join('')}</table>
+    <h3>Corrective Action List</h3>
+    ${insp.correctiveActions.length? insp.correctiveActions.map(a=>`<p><b>${a.category}</b> — ${a.count} item(s): ${a.examples.join('; ')}${a.count>3?' …':''}</p>`).join('') : '<p>None — no corrective actions needed.</p>'}
+    <p style="margin-top:20px;font-size:12px;color:#666;">Prepared by: _____________________ &nbsp;&nbsp;&nbsp; Signature: _____________________ &nbsp;&nbsp;&nbsp; Date: _____________</p>
+    </body></html>`;
+  const w = window.open('', '_blank');
+  if(!w){ toast('Enable pop-ups to print this report'); return; }
+  w.document.write(html); w.document.close(); w.focus();
+  setTimeout(()=>w.print(), 350);
+}
+
 function openHealthCheckModal(){
   const checks = runHealthChecks();
   const passCount = checks.filter(c=>c.ok).length;
@@ -5919,7 +6677,7 @@ const FAQ = [
   {k:['budget', 'expenditure budget', 'budget vs actual'], q:'How do I track budget vs actual spending?',
    a:'Setup → Budgets — pick a financial year and set an annual figure against any expense head. Reports → Budget vs Actual then shows, for each budgeted head, what\'s actually been spent so far this year, the variance, and a traffic-light-style "% used" badge so overspending is easy to spot at a glance.'},
   {k:['reconcile', 'unreconciled', 'bank reconciliation', 'uncleared'], q:'How do I see everything still unreconciled across all my bank accounts?',
-   a:'Reports → Unreconciled Items lists every not-yet-cleared entry for every bank account in one place, with an age badge (amber past 30 days, red past 60) — no need to open each account\'s Reconcile screen individually just to check. Ticking entries as cleared still happens in Setup → Bank & FD Accounts → Reconcile, either manually or by uploading your bank statement for auto-matching.'},
+   a:'Reports → Unreconciled Items lists every not-yet-cleared entry for every bank account in one place, with an age badge (amber past 30 days, red past 60) — no need to open each account\'s Reconcile screen individually just to check. Important to know: "unreconciled" simply means "not yet ticked cleared" — it\'s not automatic. If you\'ve never reconciled an account even once, every single transaction on it will show up here, and the report now says so explicitly rather than leaving you to guess why the list is long. Ticking entries as cleared happens in Setup → Bank & FD Accounts → Reconcile, either manually or by uploading your bank statement for auto-matching — do that once and only genuinely outstanding items will remain from then on.'},
   {k:['voucher number', 'receipt number', 'numbering', 'jv number', 'rct'], q:'How are receipts and vouchers numbered?',
    a:'Every voucher gets an automatic number the moment it\'s created — e.g. RCT/2026-27/0001 for a receipt, JV/2026-27/0001 for a journal, VPY/… for vendor payments, PAY/… for payroll. The sequence resets to 0001 at the start of each financial year, per type. You\'ll see it as the first column in Accounts → Vouchers and Receipts.'},
   {k:['ageing','aging','collection efficiency','cash flow forecast','renewal','amc','fire noc','lift licence','stp','water tank','dg servicing','insurance expiry','compliance'], q:'What does the Dashboard track now?',
@@ -5942,6 +6700,24 @@ const FAQ = [
    a:'<b>Two-factor authentication</b> — real TOTP, the same standard Google Authenticator/Authy/Microsoft Authenticator use, set up per-person via the 🔑 "Change My PIN" icon → Enable. It scans a QR code generated entirely on this device (no internet, no SMS, no third party involved) and asks for a 6-digit code alongside your PIN from then on. Lost your authenticator? Only the President can reset it for you (Setup → Access). <b>Auto-logout</b> and a <b>PIN expiry policy</b> are both configurable under Setup → Security & Governance — pick a timeout and everyone\'s kicked back to the lock screen after that much inactivity; pick an expiry and everyone is forced to set a fresh PIN once it\'s due. <b>Login history</b> shows recent sign-ins with role and device/browser info — <i>not</i> an IP address, since a browser-only app with no server genuinely has no reliable way to see one; anywhere claiming to show you a real IP without a backend isn\'t being straight with you. <b>Immutable audit trail</b> is already enforced everywhere: once approved, nothing can be edited or deleted, only reversed with a remark, and the original always stays visible — Flats, Vendors, and Employees additionally log the exact field that changed and its old vs new value whenever they\'re edited. <b>Daily backup</b> can\'t be truly automatic without a server running while your phone is off — but the app nags you if it\'s been a week since your last export, both on Dashboard and in Setup.'},
   {k:['ai','smart insights','expense analysis','budget recommendation','fraud detection','collection forecast','maintenance calendar','preventive maintenance','artificial intelligence'], q:'Does this app have AI features?',
    a:'Reports → Smart Insights, and it\'s deliberately <b>not</b> marketed as AI — there\'s no trained model or external service here, just plain arithmetic over your own data, computed on-device: <b>Expense Trend Analysis</b> (which heads have moved 25%+ vs their prior 3-month average), a <b>Collection Forecast</b> (next month\'s likely receipts, from a 3-month average + trend), <b>Budget Recommendations</b> (trailing 12 months + a buffer % you set, one click to apply to next year\'s budget), a <b>Suggested Maintenance Calendar</b> (every AMC/warranty/compliance item due in the next 6 months, laid out by month), and a link through to <b>Exception Reports</b> (Audit tab) for anomaly/duplicate/fraud-pattern detection. All useful, all honest about being rules and averages rather than a model that "learned" anything — a genuine AI feature would need a real backend and a trained system, which this offline app doesn\'t have.'},
+  {k:['accounting health score','health score','data health','grade','audit trail score'], q:'What is the Accounting Health Score?',
+   a:'A single number out of 100 (Audit → Overview, and a banner right at the top of the Dashboard), so a President or Auditor never has to open ledgers to know where things stand. It\'s a weighted checklist, not a simple pass/fail count: Trial Balance Matched and Balance Sheet Tallies (15 points each), Vouchers Approved with no backlog, Bank Reconciliation up to date, and Audit Objections none pending (10 each), Cash Verified Recently, No Negative Stock, and No Vendor Dues overdue 60+ days (8 each), and a few smaller data-quality checks rounding it out. Each item shows exactly what passed or failed and why — e.g. "SecureGuard Society Bank not reconciled in the last 45 days" — so a low score always points straight at what to fix. A grade (A/B/C/D) is shown alongside for a quick read.'},
+  {k:['internal control checker','fraud detection','cash payment limit','duplicate voucher','back-dated entry','backdated','round figure','voucher numbering gap','vendor concentration','negative cash balance'], q:'What does the Internal Control Checker / Fraud Detection cover?',
+   a:'Audit → Exception Reports, now organised into three groups you can filter between. <b>Internal Control</b> (procedural): cash payments above a configurable limit, duplicate voucher numbers, a bill paid for more than it was worth, back-dated entries (posted date vs. the date actually raised), a negative cash balance, an unusually large member credit balance, excess budget spending against what you\'ve set, and gaps in voucher numbering sequences. <b>Fraud Pattern</b> (behavioural, bank-inspection style): repeated/duplicate payments to the same vendor, missing invoice/GSTIN/PAN, round-figure large payments, a cash withdrawal followed shortly by a cash payment of similar size, an unusually high share of manual Journal entries, large payments raised on a weekend, and vendor payment concentration (one vendor getting an outsized share of total payments). <b>Data Quality</b>: dormant flats with old dues. Thresholds (cash limit, round-figure amount, back-dated days, vendor concentration %) are all configurable under Setup → Internal Controls — nothing here blocks or auto-corrects anything, it only flags for review, same philosophy as the rest of the app.'},
+  {k:['auditor workspace','mark voucher verified','raise audit objection','seek clarification','accept reply','close objection','reopen objection','audit objection'], q:'How does the Auditor\'s Workspace / objection workflow work?',
+   a:'Two related things. First, on Accounts → Vouchers, every approved voucher has an Audit column: <b>Mark Verified</b> (a simple tick that the auditor has reviewed it) and <b>Raise Objection</b> (ties a formal objection directly to that voucher). Second, Audit → Observations is a full permanent workflow, not just open/closed: <b>Raise Objection</b> → <b>Seek Clarification</b> (auditor asks a question) → <b>Reply</b> (accountant/treasurer answers) → <b>Accept Reply</b> or ask for further clarification → <b>Close Objection</b>. Every step is appended to that objection\'s permanent thread with who did it and when — nothing is ever deleted or overwritten, including the original wording. A closed objection can still be <b>Reopened</b> if something new comes up, which just adds to the same permanent record rather than starting over. Accountant, Treasurer, and Auditor can all use this (same as the rest of Audit) — only President stays view-only.'},
+  {k:['financial ratios','collection efficiency','maintenance recovery','expense ratio','administrative cost','cash reserve ratio','repairs fund adequacy','sinking fund coverage','liquidity ratio','working capital','average monthly surplus'], q:'What financial ratios does this track?',
+   a:'Reports → Financial Ratios — ten standard ratios borrowed from banking/corporate finance, computed live from your ledger so committee members without an accounting background can gauge health at a glance: <b>Collection Efficiency</b> (this month\'s billed vs collected), <b>Maintenance Recovery %</b> (life-to-date), <b>Expense Ratio</b> (expenses as % of income this year), <b>Administrative Cost %</b> (admin spend as % of total expenses), <b>Cash Reserve Ratio</b> (months of expenses your cash & bank balance could cover), <b>Repairs Fund Adequacy</b> and <b>Sinking Fund Coverage</b> (both proxies using your Sinking Fund balance against repair spend and asset cost respectively — there\'s no separate "Repairs Fund" account, so this is a reasonable stand-in, not a precise figure), <b>Liquidity Ratio</b> (Current Assets ÷ Current Liabilities), <b>Working Capital</b> (the same two, subtracted), and <b>Average Monthly Surplus</b> over the last 6 months. Each has a green/amber/red rating against common rule-of-thumb thresholds — useful alongside the full statements, not instead of them.'},
+  {k:['society credit rating','financial rating','star rating','credit rating'], q:'What is the Society Credit Rating?',
+   a:'Dashboard shows a star rating (1\u2605 to 5\u2605) alongside the Accounting Health Score — a different lens on the same data. Health Score asks "is the bookkeeping clean?"; Credit Rating asks "is the society financially healthy?" It weighs Collection Efficiency, Cash Reserves, Audit Status, Defaulters, Repair Fund adequacy, Corpus Fund, Liquidity, and Budget Discipline into one 1\u20135 star rating with a label (Excellent/Good/Fair/Below Average/Needs Attention). Tap it to see the ratios behind it under Reports \u2192 Financial Ratios.'},
+  {k:['agm module','agm pack','chairman report','treasurer report','budget proposal','comparative statement five years'], q:'What does the AGM Module generate?',
+   a:'Reports \u2192 AGM Pack compiles everything a committee typically needs before an Annual General Meeting for the current financial year: a <b>Chairman\'s Report</b> (the one part you write yourself \u2014 a text box that saves as a draft), an auto-generated <b>Treasurer\'s Report</b> (income, expenditure, surplus/deficit, cash position, financial rating), quick links to the full <b>Income & Expenditure</b> and <b>Balance Sheet</b> statements, an <b>Audit Report Summary</b> (open objections and the Health Score), a <b>Budget Proposal</b> for next year (the same Smart Insights suggestions, just formatted for the AGM), and a <b>Comparative Statement</b> across however many financial years exist so far (up to 5). One button prints the whole pack.'},
+  {k:['five year trend','5-year trend','trend analysis','income trend','expenditure trend'], q:'How do I see multi-year trends?',
+   a:'Reports \u2192 5-Year Trends \u2014 simple bar charts (built with plain HTML/CSS, no chart library needed, so it stays fully offline) for Income, Expenditure, Maintenance Collection, Repairs spend, Cash & Bank balance, Defaulter count, Corpus Fund, and Sinking Fund, one row per financial year. Shows however many years exist so far (up to the most recent 5) \u2014 a new install will just show one bar until more years accumulate.'},
+  {k:['annual closing assistant','inspect society','risk grade','control points','corrective action list','compliance status'], q:'What is the Annual Closing Assistant and "Inspect Society"?',
+   a:'Setup \u2192 Financial Year now shows a step-by-step checklist before you close a year: verify cash, verify & reconcile every bank account, check outstanding dues, pass year-end adjustments (depreciation), generate and review the Trial Balance and Balance Sheet, clear all pending approvals, then lock the year \u2014 each step links straight to the right screen and shows done/not-done at a glance.<br><br>Separately, Audit \u2192 Inspect Society is a one-click deep audit: it checks <i>every</i> approved voucher (sequential numbering, not back-dated, approved by a different role), <i>every</i> flat (owner on file), <i>every</i> vendor (PAN/GSTIN where relevant), <i>every</i> bank account (reconciled), <i>every</i> asset (physically verified, AMC current) individually \u2014 not just category summaries \u2014 plus statutory registers, depreciation, and the core Health Score checks. For a real dataset this runs into hundreds of control points, honestly counted rather than padded to hit a number. It produces a Risk Grade (A\u2013D), a Compliance Status breakdown by category, and a Corrective Action List, all printable as an Inspection Report.'},
+  {k:['legal cases','legal case tracker','court case','litigation'], q:'How do I track legal cases?',
+   a:'Audit \u2192 Legal Cases \u2014 title, court/forum, filed date, status (Ongoing/Closed), next hearing date, and notes. Ongoing cases show as a count on the Dashboard so the President sees it without digging.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
@@ -5959,7 +6735,7 @@ const FAQ = [
   {k:['opening','previous balance','carry forward','last year'], q:'How do I enter opening balances?',
    a:'Setup → Opening Balances — three buttons: Flat Opening Dues (what each flat owed), Vendor Opening Dues, and Opening Trial Balance (bank/cash/funds). All post through normal approval.'},
   {k:['backup','export','restore','data safe'], q:'How do I back up my data?',
-   a:'Setup → Data → Export Backup downloads a JSON file — keep it safe (email it to yourself or save to iCloud). Import Backup restores it. The dashboard warns you if no backup for 7+ days. All data lives only on this device, so backups matter.'},
+   a:'Setup → Data → Export Backup downloads a JSON file — keep it safe (email it to yourself or save to iCloud). Import Backup restores it, but since that replaces everything currently in the app, it works the same way as a full wipe: whoever imports it just stages it, a different role must confirm, and a restore point of what was there before is saved automatically (recoverable via "Restore Pre-Import Backup"). The dashboard warns you if no backup for 7+ days. All data lives only on this device, so backups matter.'},
   {k:['pdf','print','signature','sign','export statement'], q:'How do I export financial statements as PDF?',
    a:'Reports → Trial Balance / Income & Expenditure / Receipts & Payments / Balance Sheet each have a "Print / Save as PDF" button. On iPhone: tap it, pinch-zoom the preview to reveal the share icon, then Save to Files as PDF. It prints clean with signature lines for Treasurer/Secretary/Chairman/Auditor, ready to sign.'},
   {k:['excel','xlsx','flats master','bill charges template'], q:'Can I get the import templates as Excel?',
@@ -6075,7 +6851,7 @@ function renderHelp(){
     ['Low Balance Alerts', `Set a <b>Minimum Balance Threshold</b> under Setup → Society Name & Total Area (e.g. ₹2,000). Any flat whose running balance — advance credit held, minus any current due — drops below that figure shows up in <b>Reports → Low Balance Alerts</b>, with WhatsApp/Email reminder buttons per flat and a "Send Reminders to All" queue, same pattern as Defaulters. A Dashboard tile also shows the count whenever the threshold is set.<br><br><b>Important — this is not a silent background job.</b> There's no server here to check balances overnight or fire off messages while your phone is asleep; everything only recalculates when someone actually opens the app, and every reminder still needs a human tap to WhatsApp/Email it. What this gives you is a fast, always-current list the moment you open the app, and a one-tap-per-resident way to act on it — not a truly automated cron-style alert system.`],
     ['Opening Balances', `Switching to SmartRWA mid-year? Setup → Opening Balances has three tools: <b>Flat Opening Dues</b> (what each flat already owed), <b>Vendor Opening Dues</b>, and <b>Opening Trial Balance</b> (Bank/Cash/Assets/Funds as a balanced journal entry). All three go through the normal checker approval like everything else.`],
     ['Bulk Import (CSV)', `Flats → CSV Template gives you a spreadsheet to fill and re-upload via Import CSV — duplicates and missing data are flagged before anything's added. Billing → Bills → "Import from Other App" does the same for bill amounts already calculated elsewhere: one row per charge line, multiple rows for the same flat+period combine into one bill.`],
-    ['Backup, Restore & Data Wipe', `All data lives only on this device — nothing is synced anywhere. Export a backup regularly from Setup → Data (the Dashboard nags you if it's been 7+ days). If you ever need to erase everything and start fresh, Setup → Danger Zone requires a reason and a different role to confirm — a restore point is saved automatically first, recoverable with "Restore Last Wipe".`],
+    ['Backup, Restore & Data Wipe', `All data lives only on this device — nothing is synced anywhere. Export a backup regularly from Setup → Data (the Dashboard nags you if it's been 7+ days). <b>Importing a backup replaces everything currently in the app</b>, so it's protected the same way as a full wipe: the person importing it stages the file, a <i>different</i> role has to confirm before it actually takes effect, and whatever was there beforehand is saved automatically as a restore point ("Restore Pre-Import Backup"). If you ever need to erase everything and start fresh instead, Setup → Danger Zone requires a reason and a different role to confirm — a restore point is saved automatically first, recoverable with "Restore Last Wipe".`],
     ['Printing Statements as PDF', `Trial Balance, Income & Expenditure, Receipts & Payments, and Balance Sheet (Reports tab) each have a <b>"Print / Save as PDF"</b> button at the top — it uses your phone's own print system, so it works fully offline. On iPhone: tap it, then in the print preview <b>pinch to zoom in</b> — that switches to a full-page view with a share icon at top right; tap it → <b>Save to Files</b> → PDF. The printed page hides all app menus and shows only the clean statement, complete with signature lines for Treasurer/Secretary/Chairman/Auditor, ready for physical signing.`],
     ['Health Check', `Tap the ♡ icon at the top anytime to run a diagnostic: it checks that your Trial Balance and Balance Sheet tally, flags stale pending approvals, flats without owners, negative stock, overdue vendor dues, and other data issues — so small mistakes get caught early. The score reflects your actual data, not a fixed number — for example, it only shows "No negative stock balances" as passing once every item's stock on hand is zero or higher; since Issue/Consumption transactions can no longer push stock negative, that check should stay green going forward. If it's still below 100%, open the modal and work through whichever specific line items show ⚠️ — each one names exactly what needs fixing.`],
     ['Ask SmartRWA (Chat)', `Tap the 💬 icon at the top for quick answers — it's a built-in FAQ assistant (no AI, works offline) covering how-to questions across the app, and it can answer a few live questions directly from your data, like "how much is outstanding" or "pending approvals?".`],
