@@ -121,6 +121,7 @@ body.dark .btn-outline{border-color:var(--border-dark); color:var(--ink-dark);}
 body.dark #fabChatLabel{ background:var(--surface-dark); border:1px solid var(--border-dark); }
 #fabChatBtn{ width:54px; height:54px; border-radius:50%; background:var(--gold); color:#fff; font-size:24px; border:none;
   box-shadow:0 4px 14px rgba(0,0,0,0.25); animation:chatPulse 2.2s ease-in-out infinite; }
+#chatMicBtn.mic-listening{ background:var(--brick-soft); border-color:var(--brick); color:var(--brick); animation:chatPulse 1s ease-in-out infinite; }
 
 /* Forms */
 .field{margin-bottom:12px;}
@@ -286,10 +287,10 @@ body.dark .chat-input-row{border-color:var(--border-dark);}
 </div>
 <div class="modal-bg" id="modalBg"><div class="modal" id="modalBody"></div></div>
 <div id="chatModal"><div class="chat-box">
-  <div class="chat-head"><b>Ask SmartRWA</b><button class="close-x" onclick="closeChatBot()">×</button></div>
+  <div class="chat-head"><b>Ask SmartRWA</b><div style="display:flex;align-items:center;gap:6px;"><button class="icon-btn" id="chatVoiceOutToggle" onclick="toggleChatVoiceOut()" title="Read answers aloud" style="padding:5px 8px;font-size:13px;">🔇</button><button class="close-x" onclick="closeChatBot()">×</button></div></div>
   <div class="chat-messages" id="chatMessages"></div>
   <div class="chat-chips" id="chatChips"></div>
-  <div class="chat-input-row"><input id="chatInput" placeholder="Type a question…" onkeydown="if(event.key==='Enter')sendChat()"><button class="btn btn-primary btn-sm" onclick="sendChat()">Send</button></div>
+  <div class="chat-input-row"><button class="icon-btn" id="chatMicBtn" onclick="toggleVoiceInput()" title="Speak your question" style="flex:0 0 auto;">🎤</button><input id="chatInput" placeholder="Type or tap 🎤 to speak…" onkeydown="if(event.key==='Enter')sendChat()"><button class="btn btn-primary btn-sm" onclick="sendChat()">Send</button></div>
 </div></div>
 <div class="toast" id="toast"></div>
 
@@ -6803,6 +6804,8 @@ const FAQ = [
    a:'Yes — Reports \u2192 Diagnose Tallying. One click recomputes, live, whether Trial Balance, Balance Sheet, and Cash Flow (Receipts & Payments) vs the Balance Sheet\'s cash figure all agree, plus each bank account\'s reconciliation status \u2014 and for anything that doesn\'t tally, it names the specific cause (like a mistyped account name) and what to do about it, not just that there\'s a problem. The same shortcut appears right on the Trial Balance and Balance Sheet pages themselves whenever they don\'t tally, and from the \u2661 Health Check modal. It\'s the same analysis the chat assistant gives if you ask \"why is my balance sheet not matching\" \u2014 just as a screen instead of a conversation.'},
   {k:['gst on stock','gst on purchase','stock gst','purchase gst','issue gst','input tax credit stock'], q:'How is GST shown when purchasing or issuing stock?',
    a:'On a stock <b>Purchase</b>, tick "Vendor has charged GST" and set the rate — the amount preview then shows the taxable value, the GST separately, and the total payable, all computed live. Stock itself is recorded at the taxable value only; the GST posts separately to GST Input Credit (an asset, reclaimable), exactly like a vendor bill\'s ITC handling. This works whichever way you pay — cash, bank, or on credit to a vendor — and either way it shows up in GST → ITC alongside your vendor bills. On <b>Issue/Consumption</b>, there\'s no GST at all, since issuing from stock you already own isn\'t a new purchase — no new tax event happens, it\'s simply moving cost from Inventory Stock to an expense account at FIFO cost.'},
+  {k:['voice command','voice input','speak to chat','talk to chat','microphone','voice conversation','read aloud','speech to text'], q:'Can I use voice instead of typing in the chat?',
+   a:'Yes \u2014 tap the \ud83c\udfa4 icon next to the chat input and speak your question; it fills in and sends automatically once you stop talking. Tap the \ud83d\udd0a/\ud83d\udd07 icon at the top of the chat to have answers read back aloud too, using your device\'s own text-to-speech (works fully offline). One honest caveat on the microphone specifically: in most browsers (Chrome/Edge), voice recognition sends your speech to that browser\'s own servers to convert to text, so unlike the rest of this app, it needs an internet connection to work \u2014 typing always works regardless. It also only works in browsers that support it (Chrome/Edge; not Firefox) \u2014 the \ud83c\udfa4 button simply won\'t appear if your browser can\'t do it.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
@@ -6851,12 +6854,13 @@ const FAQ = [
 function dismissChatBanner(){ localStorage.setItem('smartrwa_chat_banner_dismissed','1'); render(); }
 let __fabChatSettleTimer = null;
 function showFabChatBubble(){
-  if(localStorage.getItem('smartrwa_chat_used')) return; // already discovered — stays resting in the topbar menu only
+  // Floats fresh every time the app is opened, as a visible "help is here" greeting — the topbar
+  // icon's own gentle pulse (separate from this) is what permanently retires after first use.
   const wrap = document.getElementById('fabChatWrap'); if(!wrap) return;
   wrap.style.display = 'flex';
   wrap.classList.remove('settling');
   clearTimeout(__fabChatSettleTimer);
-  __fabChatSettleTimer = setTimeout(settleFabChat, 7000); // floats for a few seconds, then quietly rests on the topbar icon
+  __fabChatSettleTimer = setTimeout(settleFabChat, 7000); // floats for a few seconds, then quietly rests on the topbar icon for this session
 }
 function settleFabChat(){
   const wrap = document.getElementById('fabChatWrap'); if(!wrap) return;
@@ -6868,15 +6872,81 @@ function openChatBotFromFab(){
   settleFabChat();
   openChatBot();
 }
+/* ============ VOICE — speech-to-text input, text-to-speech output ============
+   Both use the browser's own built-in APIs, no external service added by this app. Important
+   honesty note: voice OUTPUT (reading answers aloud) genuinely runs on-device and works offline.
+   Voice INPUT (the microphone) uses the browser's SpeechRecognition API — in most browsers
+   (notably Chrome/Edge) this sends audio to that browser vendor's own servers to convert to text,
+   so it needs an internet connection even though everything else here works offline. Not every
+   browser supports it at all (Firefox largely doesn't); feature-detected below and hidden if absent. */
+const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+let __voiceRecognizer = null;
+let __voiceListening = false;
+function initVoiceUI(){
+  const micBtn = document.getElementById('chatMicBtn');
+  const outBtn = document.getElementById('chatVoiceOutToggle');
+  if(micBtn) micBtn.style.display = SpeechRecognitionAPI? 'flex' : 'none';
+  if(outBtn){
+    const supported = 'speechSynthesis' in window;
+    outBtn.style.display = supported? 'flex' : 'none';
+    if(supported) outBtn.textContent = localStorage.getItem('smartrwa_chat_voiceout')==='1'? '🔊' : '🔇';
+  }
+}
+function toggleChatVoiceOut(){
+  const on = localStorage.getItem('smartrwa_chat_voiceout')==='1';
+  localStorage.setItem('smartrwa_chat_voiceout', on? '0' : '1');
+  const btn = document.getElementById('chatVoiceOutToggle');
+  if(btn) btn.textContent = on? '🔇' : '🔊';
+  if(on) window.speechSynthesis?.cancel(); // turning off mid-sentence stops it immediately
+  toast(on? 'Voice replies off' : 'Voice replies on — I\'ll read answers aloud');
+}
+function speakText(text){
+  if(!('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel(); // don't stack up overlapping speech if messages come quickly
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 1.0;
+  window.speechSynthesis.speak(utter);
+}
+function toggleVoiceInput(){
+  if(!SpeechRecognitionAPI){ toast('Voice input isn\'t supported in this browser — try Chrome or Edge.'); return; }
+  const micBtn = document.getElementById('chatMicBtn');
+  if(__voiceListening){ __voiceRecognizer?.stop(); return; }
+  __voiceRecognizer = new SpeechRecognitionAPI();
+  __voiceRecognizer.lang = 'en-IN';
+  __voiceRecognizer.interimResults = true;
+  __voiceRecognizer.maxAlternatives = 1;
+  __voiceListening = true;
+  micBtn.classList.add('mic-listening'); micBtn.textContent = '⏹';
+  __voiceRecognizer.onresult = (e)=>{
+    let transcript = '';
+    for(let i=0;i<e.results.length;i++) transcript += e.results[i][0].transcript;
+    document.getElementById('chatInput').value = transcript;
+    if(e.results[e.results.length-1].isFinal){
+      sendChat();
+    }
+  };
+  __voiceRecognizer.onerror = (e)=>{
+    if(e.error==='not-allowed') toast('Microphone access was denied — allow it in your browser settings to use voice input.');
+    else if(e.error==='network') toast('Voice input needs an internet connection in this browser — type your question instead.');
+    else if(e.error!=='no-speech' && e.error!=='aborted') toast('Could not hear that — try again or type instead.');
+  };
+  __voiceRecognizer.onend = ()=>{
+    __voiceListening = false;
+    micBtn.classList.remove('mic-listening'); micBtn.textContent = '🎤';
+  };
+  try{ __voiceRecognizer.start(); }
+  catch(e){ __voiceListening=false; micBtn.classList.remove('mic-listening'); micBtn.textContent='🎤'; }
+}
 function openChatBot(){
   localStorage.setItem('smartrwa_chat_used', '1');
   localStorage.setItem('smartrwa_chat_banner_dismissed', '1');
   document.getElementById('chatIconBtn')?.classList.remove('chat-highlight');
   settleFabChat();
   document.getElementById('chatModal').classList.add('show');
+  initVoiceUI();
   const msgs = document.getElementById('chatMessages');
   if(!msgs.children.length){
-    addChatMsg('bot', `Namaste! I can answer questions about using SmartRWA — billing, receipts, approvals, GST, backups and more. You can also just type a screen name — like "trial balance" or "overdue statement" — and I'll open it directly. Tap a suggestion below or type your question.`);
+    addChatMsg('bot', `Namaste! I can answer questions about using SmartRWA — billing, receipts, approvals, GST, backups and more. You can also just type a screen name — like "trial balance" or "overdue statement" — and I'll open it directly, or tap 🎤 to ask me out loud. Tap a suggestion below or type your question.`);
     renderChatChips();
   }
   setTimeout(()=>document.getElementById('chatInput').focus(), 100);
@@ -6895,6 +6965,7 @@ function addChatMsg(who, text){
   el.innerHTML = text;
   document.getElementById('chatMessages').appendChild(el);
   el.scrollIntoView({behavior:'smooth', block:'end'});
+  if(who==='bot' && localStorage.getItem('smartrwa_chat_voiceout')==='1') speakText(el.textContent);
 }
 function askChat(q){ document.getElementById('chatInput').value = q; sendChat(); }
 /* ============ CHAT: DIAGNOSE A STATEMENT DIFFERENCE ============
