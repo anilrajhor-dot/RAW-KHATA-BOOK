@@ -1857,12 +1857,34 @@ function logFieldChanges(entityType, entityLabel, prevObj, newObj, fields){
   if(changes.length) logAction(`${entityType} Updated`, `${entityLabel} — ${changes.join('; ')}`);
   return changes;
 }
+/* ============ LIVE TRIAL BALANCE WATCHDOG ============
+   Every voucher is built balanced at creation, so under normal use this should never actually
+   fire — but rather than only finding out when someone happens to open a report, this runs the
+   check immediately after every action that changes the ledger (approval, reversal, bulk
+   authorisation) and, if it ever fails, interrupts with the diagnosis right away rather than
+   staying silent until someone notices later. */
+function checkTrialBalanceNow(){
+  let dr=0, cr=0;
+  DB.vouchers.filter(v=>v.status==='approved').forEach(v=> v.entries.forEach(e=>{ dr+=e.debit||0; cr+=e.credit||0; }));
+  if(Math.abs(dr-cr)<1) return; // tallies — the normal case, nothing to show
+  const sections = computeStatementDiagnosis();
+  const tbSection = sections.find(s=>s.title==='Trial Balance');
+  openModal(`<div class="modal-head"><h2 style="color:var(--brick);">⚠️ Trial Balance Just Went Out of Tally</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="card" style="border-left:4px solid var(--brick);box-shadow:none;">
+      <div style="font-weight:700;font-size:13.5px;">${tbSection?.summary||`Off by ₹${fmt(Math.abs(dr-cr))}`}</div>
+      <div style="font-size:12px;margin-top:6px;">${tbSection?.detail||''}</div>
+      ${tbSection?.fix?`<div style="font-size:12px;margin-top:8px;padding:6px 8px;background:var(--amber-soft);border-radius:6px;"><b>Fix:</b> ${tbSection.fix}</div>`:''}
+    </div>
+    <p style="font-size:11.5px;color:var(--ink-soft);margin-top:10px;">This is unusual — every entry is normally built balanced automatically. Reports → Diagnose Tallying has the full breakdown any time you need it again.</p>
+    <button class="btn btn-outline btn-block" style="margin-top:6px;" onclick="closeModal();go('reports','diagnose');">Open Full Diagnosis →</button>`);
+}
 function approveVoucherCore(id, note){
   const v = DB.vouchers.find(x=>x.id===id); if(!v) return false;
   if(!canApprove(v)) return false;
   v.status='approved'; v.checker=window.__currentRole; v.checkerName=actorName(); v.checkerAt=nowTS(); v.checkerNote=note||'';
   applyApprovalSideEffects(v);
   logAction('Approve', `${v.type} voucher #${v.id} — ${v.narration||''}`);
+  checkTrialBalanceNow();
   return true;
 }
 function approveVoucher(id, note){
@@ -1990,6 +2012,7 @@ function confirmDeleteVoucher(id){
 
   logAction('Reversal Confirmed', `${v.type} voucher #${v.id} reversed via new voucher #${reversal.id} (requested by ${v.reversalRequestedBy}) — remarks: ${v.reversalReason}`);
   save(); render(); toast('Entry reversed — original kept for audit, offsetting entry posted to ledger');
+  checkTrialBalanceNow();
 }
 function applyApprovalSideEffects(v){
   if(v.type==='Receipt' && v.flatId){
@@ -2230,8 +2253,8 @@ function renderFlats(){
   const tabs=[['list','All Flats'],['category','By Category']];
   const importBar = isReadOnly()? '' : `<div style="display:flex; gap:8px; margin-bottom:12px;">
       <button class="btn btn-outline btn-sm" style="flex:1" onclick="downloadFlatCSVTemplate()">⬇ CSV Template</button>
-      <button class="btn btn-outline btn-sm" style="flex:1" onclick="document.getElementById('flatCsvFile').click()">⬆ Import CSV</button>
-      <input type="file" id="flatCsvFile" accept=".csv" style="display:none" onchange="importFlatsCSV(event)">
+      <button class="btn btn-outline btn-sm" style="flex:1" onclick="document.getElementById('flatCsvFile').click()">⬆ Import CSV/Excel</button>
+      <input type="file" id="flatCsvFile" accept=".csv,.xlsx,.xls" style="display:none" onchange="importFlatsFile(event)">
     </div>`;
   if(!DB.flats.length) return importBar + `<div class="empty"><div class="ic">⌘</div>No flats added yet.<br><br>${isReadOnly()?'':'<button class="btn btn-primary" onclick="openFlatModal()">Add Flat</button>'}</div>`;
   let body;
@@ -2289,25 +2312,47 @@ function downloadBillChargesCSVTemplate(){
   a.href=url; a.download='smartrwa-bill-charges-template.csv'; a.click();
   toast('Template downloaded — one row per charge line. Same Tower+FlatNo+Period rows are combined into one bill.');
 }
-function importBillChargesCSV(ev){
+function importBillChargesFile(ev){
   if(!canEdit()) return;
   if(blockIfPeriodClosed(todayISO())) return;
   const file = ev.target.files[0]; if(!file) return;
-  const reader = new FileReader();
-  reader.onload = e=>{
-    const lines = e.target.result.split(/\r?\n/).filter(l=>l.trim().length);
+  const ext = file.name.split('.').pop().toLowerCase();
+  if(ext==='csv'){
+    const reader = new FileReader();
+    reader.onload = e=>{
+      const lines = e.target.result.split(/\r?\n/).filter(l=>l.trim().length);
+      processBillChargeRows(lines.map(parseCSVLine));
+    };
+    reader.readAsText(file);
+  } else {
+    loadSheetJS(()=>{
+      const reader = new FileReader();
+      reader.onload = e=>{
+        try{
+          const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(sheet, {header:1, raw:false}).filter(r=>r.some(c=>String(c||'').trim()));
+          processBillChargeRows(rows.map(r=>r.map(c=>String(c==null?'':c))));
+        }catch(err){ toast('Could not read this Excel file'); }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+  ev.target.value='';
+}
+function processBillChargeRows(lines){
     if(!lines.length){ toast('Empty file'); return; }
-    const header = parseCSVLine(lines[0]).map(h=>h.trim().toLowerCase());
+    const header = lines[0].map(h=>String(h).trim().toLowerCase());
     const col = name=>header.indexOf(name.toLowerCase());
     const idx = {tower:col('Tower'), flatNo:col('FlatNo'), period:col('Period'), head:col('ChargeHead'), amt:col('Amount'), gst:col('GSTAmount')};
-    if(idx.flatNo<0 || idx.period<0 || idx.head<0 || idx.amt<0){ toast('CSV missing a required column — use the template (FlatNo, Period, ChargeHead, Amount)'); return; }
+    if(idx.flatNo<0 || idx.period<0 || idx.head<0 || idx.amt<0){ toast('File missing a required column — use the template (FlatNo, Period, ChargeHead, Amount)'); return; }
     const errors=[]; const newHeads=[]; const groups={};
     for(let i=1;i<lines.length;i++){
-      const cells = parseCSVLine(lines[i]); if(!cells.some(c=>c.trim())) continue;
-      const tower = idx.tower>=0? (cells[idx.tower]||'').trim() : '';
-      const flatNo = (cells[idx.flatNo]||'').trim();
-      const period = (cells[idx.period]||'').trim();
-      const headName = (cells[idx.head]||'').trim();
+      const cells = lines[i]; if(!cells.some(c=>String(c).trim())) continue;
+      const tower = idx.tower>=0? String(cells[idx.tower]||'').trim() : '';
+      const flatNo = String(cells[idx.flatNo]||'').trim();
+      const period = String(cells[idx.period]||'').trim();
+      const headName = String(cells[idx.head]||'').trim();
       const amount = Number(cells[idx.amt]);
       const gst = idx.gst>=0? Number(cells[idx.gst])||0 : 0;
       if(!flatNo || !period || !headName || isNaN(amount)){ errors.push(`Row ${i+1}: missing/invalid data — skipped`); continue; }
@@ -2337,16 +2382,13 @@ function importBillChargesCSV(ev){
       created++;
     });
     save();
-    logAction('Import', `Bill charges CSV import — ${created} bill(s) created${newHeads.length? ', new charge heads: '+newHeads.join(', '):''}`);
+    logAction('Import', `Bill charges import — ${created} bill(s) created${newHeads.length? ', new charge heads: '+newHeads.join(', '):''}`);
     openModal(`<div class="modal-head"><h2>Import Results</h2><button class="close-x" onclick="closeModal()">×</button></div>
       <div class="stat-grid"><div class="stat good"><div class="lbl">Bills Created</div><div class="val">${created}</div></div><div class="stat ${errors.length?'alert':''}"><div class="lbl">Rows Skipped</div><div class="val">${errors.length}</div></div></div>
       ${newHeads.length? `<div class="readonly-note" style="margin-top:10px;">New charge heads auto-created (posted to "Other Income" — check Setup → Charge Heads and reassign the right account): ${newHeads.join(', ')}</div>`:''}
       ${errors.length? `<div class="tbl-wrap" style="margin-top:10px;"><table><tr><th>Issue</th></tr>${errors.map(e=>`<tr><td style="font-size:12px;">${e}</td></tr>`).join('')}</table></div>` : '<p style="color:var(--moss);font-size:13px;margin-top:8px;">All rows imported cleanly.</p>'}
       <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">These bills await the usual checker approval before posting to the ledger.</p>`);
     render();
-  };
-  reader.readAsText(file);
-  ev.target.value='';
 }
 function downloadFlatCSVTemplate(){
   const header = ['Tower','FlatNo','FlatType','Area','ParkingSlots','Occupancy','OwnerName','OwnerPhone','OwnerEmail','TenantName'];
@@ -2359,53 +2401,72 @@ function downloadFlatCSVTemplate(){
   const csv = [header, ...sample].map(r=>r.map(csvEscape).join(',')).join('\n');
   const blob = new Blob([csv],{type:'text/csv'}); const url=URL.createObjectURL(blob); const a=document.createElement('a');
   a.href=url; a.download='smartrwa-flats-template.csv'; a.click();
-  toast('Template downloaded — fill it in Excel/Sheets and re-upload via Import CSV');
+  toast('Template downloaded — fill it in and re-upload via Import CSV/Excel');
 }
-function importFlatsCSV(ev){
+function importFlatsFile(ev){
   if(!canEdit()) return;
   const file = ev.target.files[0]; if(!file) return;
-  const reader = new FileReader();
-  reader.onload = e=>{
-    const lines = e.target.result.split(/\r?\n/).filter(l=>l.trim().length);
+  const ext = file.name.split('.').pop().toLowerCase();
+  if(ext==='csv'){
+    const reader = new FileReader();
+    reader.onload = e=>{
+      const lines = e.target.result.split(/\r?\n/).filter(l=>l.trim().length);
+      processFlatRows(lines.map(parseCSVLine));
+    };
+    reader.readAsText(file);
+  } else {
+    loadSheetJS(()=>{
+      const reader = new FileReader();
+      reader.onload = e=>{
+        try{
+          const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(sheet, {header:1, raw:false}).filter(r=>r.some(c=>String(c||'').trim()));
+          processFlatRows(rows.map(r=>r.map(c=>String(c==null?'':c))));
+        }catch(err){ toast('Could not read this Excel file'); }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+  ev.target.value='';
+}
+function processFlatRows(lines){
     if(!lines.length){ toast('Empty file'); return; }
-    const header = parseCSVLine(lines[0]).map(h=>h.trim().toLowerCase());
+    const header = lines[0].map(h=>String(h).trim().toLowerCase());
     const col = name=>header.indexOf(name.toLowerCase());
     const idx = {tower:col('Tower'), flatNo:col('FlatNo'), type:col('FlatType'), area:col('Area'), parking:col('ParkingSlots'), occ:col('Occupancy'), oName:col('OwnerName'), oPhone:col('OwnerPhone'), oEmail:col('OwnerEmail'), tName:col('TenantName')};
-    if(idx.flatNo<0){ toast('CSV missing required "FlatNo" column — use the template'); return; }
+    if(idx.flatNo<0){ toast('File missing required "FlatNo" column — use the template'); return; }
     let added=0, skipped=0; const errors=[]; const seenInFile=new Set();
     for(let i=1;i<lines.length;i++){
-      const cells = parseCSVLine(lines[i]);
-      const flatNo = (cells[idx.flatNo]||'').trim();
-      const tower = idx.tower>=0? (cells[idx.tower]||'').trim() : '';
+      const cells = lines[i];
+      const flatNo = String(cells[idx.flatNo]||'').trim();
+      const tower = idx.tower>=0? String(cells[idx.tower]||'').trim() : '';
       if(!flatNo){ errors.push(`Row ${i+1}: missing FlatNo`); skipped++; continue; }
       const key = tower+'|'+flatNo;
       if(seenInFile.has(key)){ errors.push(`Row ${i+1}: duplicate ${key} within file`); skipped++; continue; }
       if(DB.flats.some(f=>f.tower===tower && f.flatNo===flatNo)){ errors.push(`Row ${i+1}: ${key} already exists — skipped`); skipped++; continue; }
       const area = idx.area>=0? Number(cells[idx.area])||0 : 0;
       if(idx.area>=0 && cells[idx.area] && isNaN(Number(cells[idx.area]))){ errors.push(`Row ${i+1}: invalid Area "${cells[idx.area]}"`); skipped++; continue; }
-      const typeName = idx.type>=0? (cells[idx.type]||'').trim() : '';
+      const typeName = idx.type>=0? String(cells[idx.type]||'').trim() : '';
       const flatType = typeName? DB.flatTypes.find(t=>t.name.toLowerCase()===typeName.toLowerCase()) : null;
-      const occRaw = idx.occ>=0? (cells[idx.occ]||'owner').trim().toLowerCase() : 'owner';
+      const occRaw = idx.occ>=0? String(cells[idx.occ]||'owner').trim().toLowerCase() : 'owner';
       const occupancy = ['owner','tenant','vacant'].includes(occRaw)? occRaw : 'owner';
       seenInFile.add(key);
       DB.seq.flat++;
       DB.flats.push({
         id:'F'+DB.seq.flat, tower, flatNo, flatTypeId: flatType?flatType.id:'', area: area||flatType?.defaultArea||0,
         parkingSlots: idx.parking>=0? Number(cells[idx.parking])||0 : 0, occupancy,
-        owner:{name: idx.oName>=0?(cells[idx.oName]||'').trim():'', phone: idx.oPhone>=0?(cells[idx.oPhone]||'').trim():'', email: idx.oEmail>=0?(cells[idx.oEmail]||'').trim():''},
-        tenant: idx.tName>=0 && (cells[idx.tName]||'').trim()? {name:(cells[idx.tName]||'').trim()} : null
+        owner:{name: idx.oName>=0?String(cells[idx.oName]||'').trim():'', phone: idx.oPhone>=0?String(cells[idx.oPhone]||'').trim():'', email: idx.oEmail>=0?String(cells[idx.oEmail]||'').trim():''},
+        tenant: idx.tName>=0 && String(cells[idx.tName]||'').trim()? {name:String(cells[idx.tName]).trim()} : null
       });
       added++;
     }
     save();
-    logAction('Import', `Flats CSV import — ${added} added, ${skipped} skipped`);
+    logAction('Import', `Flats import — ${added} added, ${skipped} skipped`);
     openModal(`<div class="modal-head"><h2>Import Results</h2><button class="close-x" onclick="closeModal()">×</button></div>
       <div class="stat-grid"><div class="stat good"><div class="lbl">Added</div><div class="val">${added}</div></div><div class="stat ${skipped?'alert':''}"><div class="lbl">Skipped</div><div class="val">${skipped}</div></div></div>
       ${errors.length? `<div class="tbl-wrap"><table><tr><th>Issue</th></tr>${errors.map(e=>`<tr><td style="font-size:12px;">${e}</td></tr>`).join('')}</table></div>` : '<p style="color:var(--moss);font-size:13px;">All rows imported cleanly.</p>'}`);
     render();
-  };
-  reader.readAsText(file);
-  ev.target.value='';
 }
 function openFlatModal(id){
   const f = id? getFlat(id) : {id:'F'+nextId('flat'), tower:'', flatNo:'', flatTypeId:'', area:'', owner:{name:'',phone:'',email:''}, tenant:null, occupancy:'owner', parkingSlots:0, vehicles:''};
@@ -2521,7 +2582,7 @@ function renderBilling(){
           <p style="font-size:10.5px;color:var(--ink-soft);margin-top:4px;">Upload amounts already calculated elsewhere. <a href="#" onclick="event.preventDefault();downloadBillChargesCSVTemplate()">Get template</a></p>
         </div>
       </div>
-      <input type="file" id="billChargesFile" accept=".csv" style="display:none" onchange="importBillChargesCSV(event)">
+      <input type="file" id="billChargesFile" accept=".csv,.xlsx,.xls" style="display:none" onchange="importBillChargesFile(event)">
     </div>
     <div style="display:flex; gap:8px; margin-bottom:12px;">
       <button class="btn btn-outline btn-sm" style="flex:1" onclick="openIndividualBillModal()">Bill One Flat</button>
@@ -5104,17 +5165,17 @@ function renderSettings(){
   <div class="card"><div class="section-title">Import Formats & Templates</div>
     <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Every file format this app accepts, in one place — download a template, fill it in, upload it back from the screen noted.</p>
     <div style="border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:10px;">
-      <div style="font-weight:700;font-size:13px;">Flats Master</div>
-      <div style="font-size:11.5px;color:var(--ink-soft);margin:3px 0 8px;">Columns: Tower, FlatNo, FlatType, Area, ParkingSlots, Occupancy, OwnerName, OwnerPhone, OwnerEmail, TenantName. Upload from: <b>Flats → Import CSV</b>.</div>
+      <div style="font-weight:700;font-size:13px;">Flats Master <span style="font-weight:400;color:var(--ink-soft);font-size:11px;">(CSV or Excel)</span></div>
+      <div style="font-size:11.5px;color:var(--ink-soft);margin:3px 0 8px;">Columns: Tower, FlatNo, FlatType, Area, ParkingSlots, Occupancy, OwnerName, OwnerPhone, OwnerEmail, TenantName. Upload from: <b>Flats → Import CSV/Excel</b>.</div>
       <button class="btn btn-outline btn-sm" onclick="downloadFlatCSVTemplate()">⬇ Download Template (CSV)</button>
     </div>
     <div style="border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:10px;">
-      <div style="font-weight:700;font-size:13px;">Bill Charges (from another billing app)</div>
+      <div style="font-weight:700;font-size:13px;">Bill Charges (from another billing app) <span style="font-weight:400;color:var(--ink-soft);font-size:11px;">(CSV or Excel)</span></div>
       <div style="font-size:11.5px;color:var(--ink-soft);margin:3px 0 8px;">Columns: Tower, FlatNo, Period, ChargeHead, Amount, GSTAmount. One row per charge line — same Tower+FlatNo+Period combine into one bill. Upload from: <b>Billing → Bills → Import from Other App</b>.</div>
       <button class="btn btn-outline btn-sm" onclick="downloadBillChargesCSVTemplate()">⬇ Download Template (CSV)</button>
     </div>
     <div>
-      <div style="font-weight:700;font-size:13px;">Bank Statement (for reconciliation)</div>
+      <div style="font-weight:700;font-size:13px;">Bank Statement (for reconciliation) <span style="font-weight:400;color:var(--ink-soft);font-size:11px;">(CSV or Excel)</span></div>
       <div style="font-size:11.5px;color:var(--ink-soft);margin:3px 0 8px;">Columns: Date, Description, Debit, Credit (most net-banking exports already match this, or close to it — CSV or Excel both work). Upload from: <b>Setup → Bank & FD Accounts → Reconcile</b>.</div>
       <button class="btn btn-outline btn-sm" onclick="downloadStatementTemplate()">⬇ Download Template (CSV)</button>
     </div>
@@ -5199,8 +5260,9 @@ function renderSettings(){
     <p style="font-size:12.5px;color:var(--ink-soft)">All data is stored offline on this device (localStorage). Export a backup regularly.</p>
     ${(()=>{ const days = DB.lastBackupAt? Math.floor((new Date()-new Date(DB.lastBackupAt))/86400000) : null;
       if(days===null) return `<div class="readonly-note" style="margin-bottom:10px;">No backup taken yet in this app — export one now.</div>`;
-      if(days>=7) return `<div class="readonly-note" style="margin-bottom:10px;color:var(--brick);border-color:var(--brick);">⚠ Last backup was ${days} days ago — export a fresh one.</div>`;
-      return `<p style="font-size:11.5px;color:var(--moss);margin-bottom:8px;">✓ Last backed up ${days===0?'today':days+' day'+(days===1?'':'s')+' ago'}.</p>`;
+      const verifyLine = DB.lastBackupChecksum? `<div style="font-size:10.5px;color:var(--ink-soft);">${DB.lastBackupVerified?'✓ Verified readable & complete':'⚠ Verification found a problem'} · checksum ${DB.lastBackupChecksum}</div>` : '';
+      if(days>=7) return `<div class="readonly-note" style="margin-bottom:10px;color:var(--brick);border-color:var(--brick);">⚠ Last backup was ${days} days ago — export a fresh one.${verifyLine}</div>`;
+      return `<p style="font-size:11.5px;color:var(--moss);margin-bottom:8px;">✓ Last backed up ${days===0?'today':days+' day'+(days===1?'':'s')+' ago'}.</p>${verifyLine}`;
     })()}
     <div style="display:flex;gap:8px;"><button class="btn btn-outline" style="flex:1" onclick="exportData()">Export Backup</button>
     <button class="btn btn-outline" style="flex:1" onclick="document.getElementById('importFile').click()">Import Backup</button></div>
@@ -5209,7 +5271,8 @@ function renderSettings(){
     <button class="btn btn-outline" style="flex:1" onclick="openPasteRestoreModal()">📋 Paste to Restore</button></div>
     <p style="font-size:11px;color:var(--ink-soft);margin-top:6px;">If file import ever misbehaves, copy the backup text and paste it into Notes/Email to save it, or paste saved text back in to restore — no file picker involved either way. Importing (file or pasted) always replaces everything currently in the app, so — same as a full wipe — it's staged for a <b>different role to confirm</b>, and a restore point is saved automatically first.</p>
     ${DB.importRequest? `
-      <div class="readonly-note" style="border-color:var(--brick);color:var(--brick);margin-top:10px;">Import staged by <b>${DB.importRequest.requestedBy}</b> on ${new Date(DB.importRequest.requestedAt).toLocaleString('en-IN')} — ${DB.importRequest.sourceLabel} (${DB.importRequest.flatCount} flat(s), ${DB.importRequest.voucherCount} voucher(s))</div>
+      <div class="readonly-note" style="border-color:var(--brick);color:var(--brick);margin-top:10px;">Import staged by <b>${DB.importRequest.requestedBy}</b> on ${new Date(DB.importRequest.requestedAt).toLocaleString('en-IN')} — ${DB.importRequest.sourceLabel} (${DB.importRequest.flatCount} flat(s), ${DB.importRequest.voucherCount} voucher(s))
+      <div style="font-size:10.5px;margin-top:4px;">${DB.importRequest.verified?'✓ Staged file verified readable & complete':'⚠ '+(DB.importRequest.verifyError||'Verification found a problem — review before confirming')} · checksum ${DB.importRequest.checksum||'—'}</div></div>
       ${isReadOnly()?'':DB.importRequest.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelImportRequest()">Withdraw Request</button>` : `<div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-danger" style="flex:1" onclick="confirmImportBackup()">Confirm Import</button><button class="btn btn-outline" style="flex:1" onclick="cancelImportRequest()">Decline</button></div>`}
     ` : ''}
     ${DB.preImportBackupAt? `<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="restorePreImportBackup()">Restore Pre-Import Backup (from ${new Date(DB.preImportBackupAt).toLocaleString('en-IN')})</button>` : ''}
@@ -5283,6 +5346,13 @@ function requestCloseFY(fyId){
   const fy = DB.financialYears.find(f=>f.id===fyId); if(!fy || fy.status!=='open') return;
   const pending = DB.vouchers.filter(v=>v.status==='pending' && v.date<=fy.endDate).length;
   if(pending>0){ toast(`${pending} pending entr${pending===1?'y':'ies'} dated within ${fy.label} — clear these first.`); return; }
+  { let gateDr=0, gateCr=0;
+    DB.vouchers.filter(v=>v.status==='approved' && v.date<=fy.endDate).forEach(v=> v.entries.forEach(e=>{ gateDr+=e.debit||0; gateCr+=e.credit||0; }));
+    if(Math.abs(gateDr-gateCr)>=1){
+      toast(`Trial Balance does not tally as at ${fy.endDate} (Debit ₹${fmt(gateDr)} vs Credit ₹${fmt(gateCr)}) — fix this before requesting closure. Use Reports → Diagnose Tallying to find the cause.`);
+      return;
+    }
+  }
   DB.fyCloseRequest = {fyId, requestedBy:window.__currentRole, requestedByName:actorName(), requestedAt:nowTS()};
   logAction('FY Closing Requested', `${fy.label} — requested by ${window.__currentRole}`);
   save(); render(); toast('Closing requested — awaiting a different role to confirm');
@@ -5301,6 +5371,16 @@ function confirmCloseFY(){
   const fy = DB.financialYears.find(f=>f.id===req.fyId); if(!fy || fy.status!=='open') return;
   const pending = DB.vouchers.filter(v=>v.status==='pending' && v.date<=fy.endDate).length;
   if(pending>0){ toast(`${pending} pending entr${pending===1?'y':'ies'} appeared since the request — clear these first, then request again.`); DB.fyCloseRequest=null; save(); render(); return; }
+
+  // Data integrity gate: never close a year whose books don't balance, even momentarily —
+  // by construction this should always tally, but this is the belt-and-suspenders check.
+  { let gateDr=0, gateCr=0;
+    DB.vouchers.filter(v=>v.status==='approved' && v.date<=fy.endDate).forEach(v=> v.entries.forEach(e=>{ gateDr+=e.debit||0; gateCr+=e.credit||0; }));
+    if(Math.abs(gateDr-gateCr)>=1){
+      toast(`Trial Balance does not tally as at ${fy.endDate} (Debit ₹${fmt(gateDr)} vs Credit ₹${fmt(gateCr)}) — closing is blocked until this is fixed. Use Reports → Diagnose Tallying to find the cause.`);
+      return;
+    }
+  }
 
   // Snapshot the year's final statements for a permanent record — the live ledger
   // stays cumulative and continues to work exactly as before; this is a saved copy.
@@ -6136,12 +6216,47 @@ function saveActorName(role){
   save(); toast(`${role}'s name saved`); render();
   logAction('Name Updated', `${role} is now recorded as ${DB.security.names[role]||'(no name set)'}`);
 }
+/* ============ BACKUP VERIFICATION ============
+   A simple, fast, dependency-free checksum (FNV-1a) — not cryptographic, but that's not the job
+   here: this is for catching accidental corruption/truncation in a backup file, not defending
+   against a malicious actor, so a lightweight well-distributed hash is the right tool. */
+function computeChecksum(str){
+  let hash = 0x811c9dc5;
+  for(let i=0;i<str.length;i++){
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash>>>0).toString(16).padStart(8,'0');
+}
+function verifyBackupText(text){
+  const result = {readable:false, complete:false, checksum:null, recordCounts:{}, error:null};
+  let parsed;
+  try{ parsed = JSON.parse(text); result.readable = true; }
+  catch(e){ result.error = 'Not valid JSON: '+(e.message||e); return result; }
+  const expectedArrays = ['flats','vouchers','bills','vendors','vendorBills','employees','payrollRuns','assets','inventoryTx','financialYears'];
+  const missing = expectedArrays.filter(k=>!Array.isArray(parsed[k]));
+  result.complete = missing.length===0;
+  if(missing.length) result.error = `Missing or malformed section(s): ${missing.join(', ')}`;
+  expectedArrays.forEach(k=>{ result.recordCounts[k] = Array.isArray(parsed[k])? parsed[k].length : 0; });
+  result.checksum = computeChecksum(text);
+  return result;
+}
 function exportData(){
-  DB.lastBackupAt = nowTS(); save();
-  const blob = new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});
+  DB.lastBackupAt = nowTS();
+  const text = JSON.stringify(DB,null,2);
+  const verify = verifyBackupText(text);
+  DB.lastBackupChecksum = verify.checksum;
+  DB.lastBackupVerified = verify.readable && verify.complete;
+  save();
+  const blob = new Blob([text],{type:'application/json'});
   const url = URL.createObjectURL(blob); const a=document.createElement('a');
   a.href=url; a.download=`smartrwa-backup-${todayISO()}.json`; a.click();
-  toast('Backup downloaded'); render();
+  if(verify.readable && verify.complete){
+    toast(`Backup downloaded & verified — readable ✓, complete ✓, checksum ${verify.checksum}`);
+  } else {
+    toast(`⚠️ Backup downloaded, but verification found a problem: ${verify.error}. Try exporting again.`);
+  }
+  render();
 }
 function importData(ev){
   if(!canEdit()) return;
@@ -6202,9 +6317,10 @@ function stageImport(text, sourceLabel){
   }
   try{ localStorage.setItem('smartrwa_v1_pending_import', text); }
   catch(e){ toast('Could not stage this file — it may be too large for this browser to hold twice at once. Try Restore Last Wipe/Import first if storage is nearly full.'); return; }
+  const verify = verifyBackupText(text);
   DB.importRequest = {requestedBy:window.__currentRole, requestedByName:actorName(), requestedAt:nowTS(), sourceLabel,
-    flatCount:parsed.flats.length, voucherCount:(parsed.vouchers||[]).length};
-  logAction('Import Requested', `${sourceLabel} — ${parsed.flats.length} flat(s), ${(parsed.vouchers||[]).length} voucher(s) — awaiting a different role to confirm`);
+    flatCount:parsed.flats.length, voucherCount:(parsed.vouchers||[]).length, verified:verify.readable&&verify.complete, checksum:verify.checksum, verifyError:verify.error};
+  logAction('Import Requested', `${sourceLabel} — ${parsed.flats.length} flat(s), ${(parsed.vouchers||[]).length} voucher(s) — checksum ${verify.checksum} — awaiting a different role to confirm`);
   save(); render(); toast('Import staged — a different role must confirm before it replaces current data');
 }
 function cancelImportRequest(){
@@ -6232,6 +6348,7 @@ function confirmImportBackup(){
   logAction('Import Confirmed', `Data replaced (confirmed by ${confirmedBy}) — previous state saved as a restore point`);
   localStorage.removeItem('smartrwa_v1_pending_import');
   save(); toast('Import complete — previous data saved as a restore point below'); go('dashboard');
+  checkTrialBalanceNow();
 }
 function restorePreImportBackup(){
   if(!canEdit()) return;
@@ -6806,6 +6923,8 @@ const FAQ = [
    a:'On a stock <b>Purchase</b>, tick "Vendor has charged GST" and set the rate — the amount preview then shows the taxable value, the GST separately, and the total payable, all computed live. Stock itself is recorded at the taxable value only; the GST posts separately to GST Input Credit (an asset, reclaimable), exactly like a vendor bill\'s ITC handling. This works whichever way you pay — cash, bank, or on credit to a vendor — and either way it shows up in GST → ITC alongside your vendor bills. On <b>Issue/Consumption</b>, there\'s no GST at all, since issuing from stock you already own isn\'t a new purchase — no new tax event happens, it\'s simply moving cost from Inventory Stock to an expense account at FIFO cost.'},
   {k:['voice command','voice input','speak to chat','talk to chat','microphone','voice conversation','read aloud','speech to text'], q:'Can I use voice instead of typing in the chat?',
    a:'Yes \u2014 tap the \ud83c\udfa4 icon next to the chat input and speak your question; it fills in and sends automatically once you stop talking. Tap the \ud83d\udd0a/\ud83d\udd07 icon at the top of the chat to have answers read back aloud too, using your device\'s own text-to-speech (works fully offline).<br><br><b>If the mic doesn\'t seem to do anything:</b> the single biggest cause is that this app is opened directly as a file (file://) rather than through a real web address, and browsers block microphone access on file:// pages as a security rule \u2014 everything else in the app works fine that way, but voice input specifically needs a secure connection (https:// or localhost). The \ud83c\udfa4 button dims slightly when this is the likely cause, and tapping it explains why. Beyond that: it needs an internet connection even when hosted properly (in most browsers this sends your speech to that browser\'s own servers to convert to text), microphone permission has to be allowed, and it only works in browsers that support it at all (Chrome/Edge; not Firefox \u2014 the button won\'t even appear there). Typing always works regardless of any of this.'},
+  {k:['trial balance daily','tally immediately','watchdog','out of tally alert','backup verification','checksum','backup verified','year closing blocked','tally gate'], q:'Does Trial Balance get checked automatically, and are backups verified?',
+   a:'Yes to both. Every time an entry is approved, reversed, or data is imported, the app immediately re-checks Trial Balance behind the scenes \u2014 completely silent when it tallies (the normal case, since every voucher is built balanced from the start), but the instant it doesn\'t, it interrupts right then with the exact cause and a fix, using the same analysis as Reports \u2192 Diagnose Tallying. You don\'t have to remember to go check. Closing a financial year is also gated on this \u2014 it\'s blocked outright if Trial Balance doesn\'t tally as at that year-end. Separately, every <b>Export Backup</b> is immediately verified \u2014 readable, complete (all expected sections present), and a checksum shown \u2014 rather than just assuming the download worked; the same verification runs on a staged import so the confirming role can see it\'s trustworthy before approving it.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
@@ -7211,7 +7330,7 @@ function renderHelp(){
     ['Budget vs Actual', `Setup → Budgets — pick a financial year, set an annual ₹ figure against any expense head, save. Reports → Budget vs Actual then compares actual spend so far (from the year's start to today, or to year-end if it's already closed) against that budget for every head you've set one for, with a variance and a "% used" badge — 100%+ shows red, 80%+ amber.`],
     ['Low Balance Alerts', `Set a <b>Minimum Balance Threshold</b> under Setup → Society Name & Total Area (e.g. ₹2,000). Any flat whose running balance — advance credit held, minus any current due — drops below that figure shows up in <b>Reports → Low Balance Alerts</b>, with WhatsApp/Email reminder buttons per flat and a "Send Reminders to All" queue, same pattern as Defaulters. A Dashboard tile also shows the count whenever the threshold is set.<br><br><b>Important — this is not a silent background job.</b> There's no server here to check balances overnight or fire off messages while your phone is asleep; everything only recalculates when someone actually opens the app, and every reminder still needs a human tap to WhatsApp/Email it. What this gives you is a fast, always-current list the moment you open the app, and a one-tap-per-resident way to act on it — not a truly automated cron-style alert system.`],
     ['Opening Balances', `Switching to SmartRWA mid-year? Setup → Opening Balances has three tools: <b>Flat Opening Dues</b> (what each flat already owed), <b>Vendor Opening Dues</b>, and <b>Opening Trial Balance</b> (Bank/Cash/Assets/Funds as a balanced journal entry). All three go through the normal checker approval like everything else.`],
-    ['Bulk Import (CSV)', `Flats → CSV Template gives you a spreadsheet to fill and re-upload via Import CSV — duplicates and missing data are flagged before anything's added. Billing → Bills → "Import from Other App" does the same for bill amounts already calculated elsewhere: one row per charge line, multiple rows for the same flat+period combine into one bill.`],
+    ['Bulk Import (CSV & Excel)', `Flats → CSV Template gives you a spreadsheet to fill and re-upload via Import CSV/Excel (both formats work) — duplicates and missing data are flagged before anything's added. Billing → Bills → "Import from Other App" does the same for bill amounts already calculated elsewhere: one row per charge line, multiple rows for the same flat+period combine into one bill. All three import points in the app (Flats, Bill Charges, Bank Statement) accept CSV or Excel — see Setup → Import Formats & Templates for every column layout and template in one place.`],
     ['Backup, Restore & Data Wipe', `All data lives only on this device — nothing is synced anywhere. Export a backup regularly from Setup → Data (the Dashboard nags you if it's been 7+ days). <b>Importing a backup replaces everything currently in the app</b>, so it's protected the same way as a full wipe: the person importing it stages the file, a <i>different</i> role has to confirm before it actually takes effect, and whatever was there beforehand is saved automatically as a restore point ("Restore Pre-Import Backup"). If you ever need to erase everything and start fresh instead, Setup → Danger Zone requires a reason and a different role to confirm — a restore point is saved automatically first, recoverable with "Restore Last Wipe".`],
     ['Printing Statements as PDF', `Trial Balance, Income & Expenditure, Receipts & Payments, and Balance Sheet (Reports tab) each have a <b>"Print / Save as PDF"</b> button at the top — it uses your phone's own print system, so it works fully offline. On iPhone: tap it, then in the print preview <b>pinch to zoom in</b> — that switches to a full-page view with a share icon at top right; tap it → <b>Save to Files</b> → PDF. The printed page hides all app menus and shows only the clean statement, complete with signature lines for Treasurer/Secretary/Chairman/Auditor, ready for physical signing.`],
     ['Health Check', `Tap the ♡ icon at the top anytime to run a diagnostic: it checks that your Trial Balance and Balance Sheet tally, flags stale pending approvals, flats without owners, negative stock, overdue vendor dues, and other data issues — so small mistakes get caught early. The score reflects your actual data, not a fixed number — for example, it only shows "No negative stock balances" as passing once every item's stock on hand is zero or higher; since Issue/Consumption transactions can no longer push stock negative, that check should stay green going forward. If it's still below 100%, open the modal and work through whichever specific line items show ⚠️ — each one names exactly what needs fixing.`],
