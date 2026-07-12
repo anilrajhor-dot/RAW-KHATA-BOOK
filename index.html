@@ -158,7 +158,7 @@ body.dark .divider{border-color:var(--border-dark);}
 .pill{background:var(--paper); border:1px solid var(--border); border-radius:6px; padding:3px 8px; font-size:11.5px; font-family:'IBM Plex Mono';}
 body.dark .pill{background:var(--paper-dark); border-color:var(--border-dark);}
 
-.toast{position:fixed; bottom:90px; left:50%; transform:translateX(-50%); background:var(--ink); color:#fff; padding:10px 18px; border-radius:20px; font-size:13px; z-index:80; opacity:0; transition:opacity .25s; pointer-events:none;}
+.toast{position:fixed; bottom:90px; left:50%; transform:translateX(-50%); background:var(--ink); color:#fff; padding:10px 18px; border-radius:20px; font-size:13px; z-index:100; opacity:0; transition:opacity .25s; pointer-events:none;}
 .toast.show{opacity:1;}
 
 .bar-chart{display:flex; align-items:flex-end; gap:8px; height:120px; padding-top:10px;}
@@ -6805,7 +6805,7 @@ const FAQ = [
   {k:['gst on stock','gst on purchase','stock gst','purchase gst','issue gst','input tax credit stock'], q:'How is GST shown when purchasing or issuing stock?',
    a:'On a stock <b>Purchase</b>, tick "Vendor has charged GST" and set the rate — the amount preview then shows the taxable value, the GST separately, and the total payable, all computed live. Stock itself is recorded at the taxable value only; the GST posts separately to GST Input Credit (an asset, reclaimable), exactly like a vendor bill\'s ITC handling. This works whichever way you pay — cash, bank, or on credit to a vendor — and either way it shows up in GST → ITC alongside your vendor bills. On <b>Issue/Consumption</b>, there\'s no GST at all, since issuing from stock you already own isn\'t a new purchase — no new tax event happens, it\'s simply moving cost from Inventory Stock to an expense account at FIFO cost.'},
   {k:['voice command','voice input','speak to chat','talk to chat','microphone','voice conversation','read aloud','speech to text'], q:'Can I use voice instead of typing in the chat?',
-   a:'Yes \u2014 tap the \ud83c\udfa4 icon next to the chat input and speak your question; it fills in and sends automatically once you stop talking. Tap the \ud83d\udd0a/\ud83d\udd07 icon at the top of the chat to have answers read back aloud too, using your device\'s own text-to-speech (works fully offline). One honest caveat on the microphone specifically: in most browsers (Chrome/Edge), voice recognition sends your speech to that browser\'s own servers to convert to text, so unlike the rest of this app, it needs an internet connection to work \u2014 typing always works regardless. It also only works in browsers that support it (Chrome/Edge; not Firefox) \u2014 the \ud83c\udfa4 button simply won\'t appear if your browser can\'t do it.'},
+   a:'Yes \u2014 tap the \ud83c\udfa4 icon next to the chat input and speak your question; it fills in and sends automatically once you stop talking. Tap the \ud83d\udd0a/\ud83d\udd07 icon at the top of the chat to have answers read back aloud too, using your device\'s own text-to-speech (works fully offline).<br><br><b>If the mic doesn\'t seem to do anything:</b> the single biggest cause is that this app is opened directly as a file (file://) rather than through a real web address, and browsers block microphone access on file:// pages as a security rule \u2014 everything else in the app works fine that way, but voice input specifically needs a secure connection (https:// or localhost). The \ud83c\udfa4 button dims slightly when this is the likely cause, and tapping it explains why. Beyond that: it needs an internet connection even when hosted properly (in most browsers this sends your speech to that browser\'s own servers to convert to text), microphone permission has to be allowed, and it only works in browsers that support it at all (Chrome/Edge; not Firefox \u2014 the button won\'t even appear there). Typing always works regardless of any of this.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
@@ -6885,7 +6885,16 @@ let __voiceListening = false;
 function initVoiceUI(){
   const micBtn = document.getElementById('chatMicBtn');
   const outBtn = document.getElementById('chatVoiceOutToggle');
-  if(micBtn) micBtn.style.display = SpeechRecognitionAPI? 'flex' : 'none';
+  if(micBtn){
+    micBtn.style.display = SpeechRecognitionAPI? 'flex' : 'none';
+    if(SpeechRecognitionAPI && window.isSecureContext===false){
+      micBtn.style.opacity = '0.5';
+      micBtn.title = 'Voice input needs https:// or localhost — likely won\'t work opened directly from a file. Tap to see why.';
+    } else if(micBtn){
+      micBtn.style.opacity = '';
+      micBtn.title = 'Speak your question';
+    }
+  }
   if(outBtn){
     const supported = 'speechSynthesis' in window;
     outBtn.style.display = supported? 'flex' : 'none';
@@ -6911,6 +6920,10 @@ function toggleVoiceInput(){
   if(!SpeechRecognitionAPI){ toast('Voice input isn\'t supported in this browser — try Chrome or Edge.'); return; }
   const micBtn = document.getElementById('chatMicBtn');
   if(__voiceListening){ __voiceRecognizer?.stop(); return; }
+  if(window.isSecureContext===false){
+    toast('Voice input needs a secure connection (https:// or localhost) — it won\'t work when this file is opened directly from disk (file://). Everything else in the app works offline like this; only the microphone needs that. Please type your question instead, or host this file on a simple local server to enable it.');
+    return;
+  }
   __voiceRecognizer = new SpeechRecognitionAPI();
   __voiceRecognizer.lang = 'en-IN';
   __voiceRecognizer.interimResults = true;
@@ -6926,16 +6939,20 @@ function toggleVoiceInput(){
     }
   };
   __voiceRecognizer.onerror = (e)=>{
-    if(e.error==='not-allowed') toast('Microphone access was denied — allow it in your browser settings to use voice input.');
+    if(e.error==='not-allowed' || e.error==='permission-denied') toast('Microphone access was denied or blocked — check your browser\'s site settings (and, on the phone itself, that this browser has microphone permission) to use voice input.');
+    else if(e.error==='service-not-allowed') toast('Voice input is blocked here — this usually means the page isn\'t on a secure connection (https:// or localhost). Opening the file directly (file://) blocks the microphone in most browsers.');
     else if(e.error==='network') toast('Voice input needs an internet connection in this browser — type your question instead.');
-    else if(e.error!=='no-speech' && e.error!=='aborted') toast('Could not hear that — try again or type instead.');
+    else if(e.error!=='no-speech' && e.error!=='aborted') toast(`Could not hear that (${e.error}) — try again or type instead.`);
   };
   __voiceRecognizer.onend = ()=>{
     __voiceListening = false;
     micBtn.classList.remove('mic-listening'); micBtn.textContent = '🎤';
   };
   try{ __voiceRecognizer.start(); }
-  catch(e){ __voiceListening=false; micBtn.classList.remove('mic-listening'); micBtn.textContent='🎤'; }
+  catch(e){
+    __voiceListening=false; micBtn.classList.remove('mic-listening'); micBtn.textContent='🎤';
+    toast('Could not start voice input on this device/browser — try typing your question instead.');
+  }
 }
 function openChatBot(){
   localStorage.setItem('smartrwa_chat_used', '1');
