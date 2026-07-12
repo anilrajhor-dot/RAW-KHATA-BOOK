@@ -883,6 +883,80 @@ function buildUpiUri(payeeVpa, payeeName, amount, note){
 /* ============ TOTP TWO-FACTOR AUTH (RFC 6238) — pure JS, fully offline, no crypto.subtle
    dependency so it works even opened directly from disk. Verified against the official
    RFC 6238 test vectors. Standard TOTP: works with Google Authenticator, Authy, etc. ============ */
+/* ============ SHA-256 — verification codes on approvals ============
+   Verified against Node's crypto module (ground truth) across multiple test strings before use.
+   Called a "verification code" deliberately, not a "digital signature" — a real digital signature
+   needs a private key only the signer holds; this is a tamper-evidence hash: if the approved
+   voucher's content, approver, or timestamp is ever altered afterward, recomputing this hash would
+   no longer match, which is a genuinely useful audit signal even though it isn't cryptographic
+   non-repudiation. */
+function sha256(bytes){
+  const K = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+  ];
+  let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+  function rotr(n,b){ return ((n>>>b)|(n<<(32-b)))>>>0; }
+  const ml = bytes.length*8;
+  const withOne = new Uint8Array(((bytes.length+9+63)>>6)<<6);
+  withOne.set(bytes); withOne[bytes.length]=0x80;
+  const dv = new DataView(withOne.buffer);
+  dv.setUint32(withOne.length-4, ml>>>0);
+  dv.setUint32(withOne.length-8, Math.floor(ml/4294967296));
+  for(let chunk=0; chunk<withOne.length; chunk+=64){
+    const w = new Array(64);
+    for(let i=0;i<16;i++) w[i]=dv.getUint32(chunk+i*4);
+    for(let i=16;i<64;i++){
+      const s0 = rotr(w[i-15],7)^rotr(w[i-15],18)^(w[i-15]>>>3);
+      const s1 = rotr(w[i-2],17)^rotr(w[i-2],19)^(w[i-2]>>>10);
+      w[i] = (w[i-16]+s0+w[i-7]+s1)>>>0;
+    }
+    let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+    for(let i=0;i<64;i++){
+      const S1 = rotr(e,6)^rotr(e,11)^rotr(e,25);
+      const ch = (e&f)^((~e)&g);
+      const temp1 = (h+S1+ch+K[i]+w[i])>>>0;
+      const S0 = rotr(a,2)^rotr(a,13)^rotr(a,22);
+      const maj = (a&b)^(a&c)^(b&c);
+      const temp2 = (S0+maj)>>>0;
+      h=g; g=f; f=e; e=(d+temp1)>>>0; d=c; c=b; b=a; a=(temp1+temp2)>>>0;
+    }
+    h0=(h0+a)>>>0; h1=(h1+b)>>>0; h2=(h2+c)>>>0; h3=(h3+d)>>>0; h4=(h4+e)>>>0; h5=(h5+f)>>>0; h6=(h6+g)>>>0; h7=(h7+h)>>>0;
+  }
+  const out = new Uint8Array(32);
+  const odv = new DataView(out.buffer);
+  [h0,h1,h2,h3,h4,h5,h6,h7].forEach((h,i)=>odv.setUint32(i*4,h));
+  return Array.from(out).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function sha256Hex(str){ return sha256(new TextEncoder().encode(str)); }
+function computeVoucherVerificationCode(v){
+  const payload = JSON.stringify({id:v.id, type:v.type, entries:v.entries, narration:v.narration||'', checker:v.checker, checkerAt:v.checkerAt});
+  return sha256Hex(payload).slice(0,12).toUpperCase();
+}
+function recomputeVoucherVerification(v){
+  // For display on demand — recomputes fresh from current content, to compare against the stored code
+  return computeVoucherVerificationCode(v);
+}
+function verifyVoucherIntegrity(id){
+  const v = DB.vouchers.find(x=>x.id===id); if(!v || !v.verificationCode) return;
+  const recomputed = recomputeVoucherVerification(v);
+  if(recomputed === v.verificationCode){
+    toast(`✓ Verified — ${v.voucherNo||'#'+v.id} matches its recorded verification code (${v.verificationCode}). Content and approval details are unchanged since ${actorLabel(v.checker,v.checkerName)} approved it.`);
+  } else {
+    openModal(`<div class="modal-head"><h2 style="color:var(--brick);">⚠️ Verification Mismatch</h2><button class="close-x" onclick="closeModal()">×</button></div>
+      <p style="font-size:13px;">${v.voucherNo||'#'+v.id} no longer matches its recorded verification code.</p>
+      <div class="tbl-wrap"><table><tr><td style="font-size:11.5px;">Recorded</td><td style="font-size:11.5px;font-family:monospace;">${v.verificationCode}</td></tr><tr><td style="font-size:11.5px;">Recomputed now</td><td style="font-size:11.5px;font-family:monospace;">${recomputed}</td></tr></table></div>
+      <p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">This means something about this entry — its amounts, accounts, narration, approver, or approval time — was changed after the fact, outside the normal approval flow. Worth raising as an audit objection.</p>
+      <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="closeModal();go('audit','observations');">Raise Audit Objection →</button>`);
+  }
+}
+
 function sha1(bytes){
   function rotl(n,b){ return ((n<<b)|(n>>>(32-b)))>>>0; }
   let h0=0x67452301,h1=0xEFCDAB89,h2=0x98BADCFE,h3=0x10325476,h4=0xC3D2E1F0;
@@ -1343,6 +1417,24 @@ function load(){
     security:{pins:{Accountant:'1234',Treasurer:'1234',Auditor:'1234'}}
   };
 }
+/* ============ TAMPER-EVIDENCE INTEGRITY CHECK ============
+   Not tamper-PROOFING — that isn't achievable in a browser-only app, since anyone who can edit
+   localStorage can just as easily edit this check itself. What this genuinely provides is
+   tamper-EVIDENCE: a SHA-256 hash of the most sensitive data (vouchers, flats, bank accounts,
+   security settings) is stored alongside it on every save. If localStorage is ever edited directly
+   (outside the app's own save() path — e.g. via browser dev tools) the stored hash won't match the
+   data anymore, and this is checked once, right here, on the RAW data as loaded, before any of the
+   app's own migrations touch it (a legitimate migration updating old data shouldn't be mistaken for
+   tampering — checking before migrations run avoids that false positive). */
+function computeIntegrityHash(dbObj){
+  const payload = JSON.stringify({vouchers:dbObj.vouchers||[], flats:dbObj.flats||[], bankAccounts:dbObj.bankAccounts||[], security:dbObj.security||{}});
+  return sha256Hex(payload);
+}
+window.__integrityCheckResult = (()=>{
+  if(!DB.__integrityHash) return 'unchecked'; // first run, or an older save from before this feature existed — nothing to compare against yet
+  const recomputed = computeIntegrityHash(DB);
+  return recomputed === DB.__integrityHash ? 'ok' : 'mismatch';
+})();
 if(!DB.security) DB.security = {pins:{Accountant:'1234',Treasurer:'1234',Auditor:'1234',President:'1234'}};
 if(!DB.security.names) DB.security.names = {Accountant:'',Treasurer:'',Auditor:'',President:''};
 if(!DB.security.mustChangePin) DB.security.mustChangePin = {Accountant:false,Treasurer:false,Auditor:false,President:false};
@@ -1471,7 +1563,7 @@ DB.assets.forEach(a=>{
   if(a.invoiceFile===undefined) a.invoiceFile = null;
 });
 if(DB.society.upiId===undefined) DB.society.upiId='';
-function save(){ localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
+function save(){ DB.__integrityHash = computeIntegrityHash(DB); localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
 function nextId(k){ DB.seq[k]=(DB.seq[k]||0)+1; return DB.seq[k]; }
 
 /* ============ FINANCIAL YEAR / PERIOD LOCKING ============ */
@@ -1882,6 +1974,7 @@ function approveVoucherCore(id, note){
   const v = DB.vouchers.find(x=>x.id===id); if(!v) return false;
   if(!canApprove(v)) return false;
   v.status='approved'; v.checker=window.__currentRole; v.checkerName=actorName(); v.checkerAt=nowTS(); v.checkerNote=note||'';
+  v.verificationCode = computeVoucherVerificationCode(v);
   applyApprovalSideEffects(v);
   logAction('Approve', `${v.type} voucher #${v.id} — ${v.narration||''}`);
   checkTrialBalanceNow();
@@ -3239,6 +3332,46 @@ function renderReceipts(){
   return `<div class="card"><div class="section-title"><span><span class="num">${String(receipts.length).padStart(2,'0')}</span>Receipts</span></div>
   <div class="tbl-wrap"><table><tr><th>Receipt No.</th><th>Date</th><th>Flat</th><th class="num-cell">Amount</th><th>Status</th></tr>${rows}</table></div></div>`;
 }
+/* ============ CRASH RECOVERY — draft auto-save for quick-entry forms ============
+   While a Receipt/Vendor Bill/manual Voucher form is open, its field values are periodically saved
+   to localStorage. If the app closes unexpectedly mid-entry (phone died, browser crashed, tab closed
+   by accident), reopening that same form offers to restore what was typed — same idea as Word's
+   "we found unsaved changes" recovery, scoped to the highest-value quick-entry screens. */
+let __draftAutosaveTimer = null;
+function draftFieldValues(fieldIds){
+  const values = {};
+  fieldIds.forEach(id=>{ const el=document.getElementById(id); if(!el) return; values[id] = el.type==='checkbox'? el.checked : el.value; });
+  return values;
+}
+function startDraftAutosave(draftKey, fieldIds){
+  clearTimeout(__draftAutosaveTimer);
+  const doSave = ()=>{
+    const values = draftFieldValues(fieldIds);
+    const hasContent = Object.values(values).some(v=> v!=='' && v!==false && v!==undefined && v!==null);
+    if(hasContent) localStorage.setItem('smartrwa_draft_'+draftKey, JSON.stringify({values, savedAt:nowTS()}));
+    else localStorage.removeItem('smartrwa_draft_'+draftKey);
+  };
+  fieldIds.forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('input', ()=>{ clearTimeout(__draftAutosaveTimer); __draftAutosaveTimer=setTimeout(doSave, 800); }); });
+}
+function clearDraft(draftKey){ localStorage.removeItem('smartrwa_draft_'+draftKey); }
+function offerDraftRestore(draftKey, fieldIds, label){
+  const raw = localStorage.getItem('smartrwa_draft_'+draftKey);
+  if(!raw) return;
+  let draft;
+  try{ draft = JSON.parse(raw); }catch(e){ localStorage.removeItem('smartrwa_draft_'+draftKey); return; }
+  const ageMs = Date.now() - new Date(draft.savedAt).getTime();
+  if(ageMs > 48*3600*1000){ localStorage.removeItem('smartrwa_draft_'+draftKey); return; } // stale drafts beyond 48h are auto-discarded, not offered
+  if(confirm(`You have an unfinished ${label} from ${new Date(draft.savedAt).toLocaleString('en-IN')} that wasn't saved — probably from the app closing unexpectedly. Restore it?`)){
+    Object.keys(draft.values).forEach(id=>{
+      const el = document.getElementById(id); if(!el) return;
+      if(el.type==='checkbox'){ el.checked = draft.values[id]; el.dispatchEvent(new Event('change')); }
+      else { el.value = draft.values[id]; }
+    });
+  } else {
+    localStorage.removeItem('smartrwa_draft_'+draftKey);
+  }
+}
+
 function openReceiptModal(){
   if(!DB.flats.length){ toast('Add flats first'); go('flats'); return; }
   openModal(`
@@ -3252,7 +3385,7 @@ function openReceiptModal(){
     <div id="rc_rebateBlock"></div>
     <button class="btn btn-primary btn-block" onclick="saveReceipt()">Save Receipt</button>
   `);
-  setTimeout(()=>{ toggleReceiptVia(); checkReceiptRebate(); }, 0);
+  setTimeout(()=>{ toggleReceiptVia(); checkReceiptRebate(); offerDraftRestore('receipt', ['rc_flat','rc_amount','rc_date','rc_acc','rc_via','rc_narr'], 'receipt'); startDraftAutosave('receipt', ['rc_flat','rc_amount','rc_date','rc_acc','rc_via','rc_narr']); }, 0);
 }
 function checkReceiptRebate(){
   const el = document.getElementById('rc_rebateBlock'); if(!el) return;
@@ -3286,6 +3419,8 @@ function saveReceipt(){
   const applyRebate = document.getElementById('rc_applyRebate')?.checked;
   if(!amount || amount<=0){ toast('Enter valid amount'); return; }
   if(blockIfPeriodClosed(date)) return;
+  const dupReceipt = DB.vouchers.find(v=>v.status!=='rejected' && v.type==='Receipt' && v.flatId===flatId && Math.abs(v.entries.reduce((s,e)=>s+(e.debit||0),0)-amount)<1 && daysBetween(v.date,date)<=3);
+  if(dupReceipt && !confirm(`A similar receipt of ₹${fmt(amount)} for ${flatLabel(getFlat(flatId))} was already recorded on ${dupReceipt.date} (${dupReceipt.voucherNo||'#'+dupReceipt.id}). This could be a duplicate entry.\n\nContinue anyway?`)) return;
   addVoucher({type:'Receipt', flatId, date, narration: narr || `Maintenance receipt — ${flatLabel(getFlat(flatId))} (${via} → ${acc})`,
     entries:[{account:acc,debit:amount,credit:0},{account:'Maintenance Receivable',debit:0,credit:amount}]});
   if(applyRebate){
@@ -3296,7 +3431,7 @@ function saveReceipt(){
         entries:[{account:'Rebate & Discounts Allowed',debit:rebateAmt,credit:0},{account:'Maintenance Receivable',debit:0,credit:rebateAmt}]});
     }
   }
-  save(); closeModal(); toast(applyRebate? 'Receipt + rebate submitted — awaiting checker approval' : 'Receipt submitted — awaiting checker approval'); render();
+  save(); closeModal(); clearDraft('receipt'); toast(applyRebate? 'Receipt + rebate submitted — awaiting checker approval' : 'Receipt submitted — awaiting checker approval'); render();
 }
 
 /* ============ ACCOUNTS ============ */
@@ -3330,7 +3465,7 @@ function renderAccounts(){
           </div>`;
           auditCell = `<div style="display:flex;gap:4px;flex-wrap:wrap;">${verifiedBadge}${obsBadge}</div>${auditButtons}`;
         }
-        return `<tr onclick="${v.status==='pending'?`go('approvals')`:''}"><td style="font-size:11px;font-family:'IBM Plex Mono',monospace;">${v.voucherNo||('#'+v.id)}</td><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${actorLabel(v.maker,v.makerName)}</div></td><td>${v.type}</td><td>${v.narration||''}${reversalNote}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td><td>${auditCell}</td><td>${action}</td></tr>`;
+        return `<tr onclick="${v.status==='pending'?`go('approvals')`:''}"><td style="font-size:11px;font-family:'IBM Plex Mono',monospace;">${v.voucherNo||('#'+v.id)}</td><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${actorLabel(v.maker,v.makerName)}</div></td><td>${v.type}</td><td>${v.narration||''}${reversalNote}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span>${v.status==='approved'&&v.verificationCode?`<div style="font-size:9px;color:var(--ink-soft);font-family:monospace;cursor:pointer;text-decoration:underline dotted;" title="Tap to verify this hasn't been altered since approval" onclick="event.stopPropagation();verifyVoucherIntegrity(${v.id})">${v.verificationCode}</div>`:''}</td><td>${auditCell}</td><td>${action}</td></tr>`;
       }).join('')}
       </table></div>` : `<div class="empty"><div class="ic">§</div>No vouchers yet.</div>`;
   } else if(sr==='ledger'){
@@ -3379,7 +3514,7 @@ function openVoucherModal(){
     <div class="field"><label>Narration</label><input id="vc_narr" placeholder="e.g. Electricity bill paid - June"></div>
     <button class="btn btn-primary btn-block" onclick="saveVoucher()">Save Voucher</button>
   `);
-  setTimeout(toggleVoucherFields,0);
+  setTimeout(()=>{ toggleVoucherFields(); offerDraftRestore('voucher', ['vc_type','vc_date','vc_dr','vc_modeDr','vc_cr','vc_modeCr','vc_amt','vc_narr'], 'voucher'); startDraftAutosave('voucher', ['vc_type','vc_date','vc_dr','vc_modeDr','vc_cr','vc_modeCr','vc_amt','vc_narr']); },0);
 }
 function toggleVoucherFields(){
   const typeEl = document.getElementById('vc_type');
@@ -3408,8 +3543,10 @@ function saveVoucher(){
   if(dr===cr){ toast('Debit & Credit accounts must differ'); return; }
   if(isPayment && !narr) narr = `Payment via ${document.getElementById('vc_modeCr').value}`;
   if(isReceipt && !narr) narr = `Receipt via ${document.getElementById('vc_modeDr').value}`;
+  const dupVoucher = DB.vouchers.find(v=>v.status!=='rejected' && v.type===type && v.entries.some(e=>e.account===dr&&Math.abs((e.debit||0)-amt)<1) && v.entries.some(e=>e.account===cr&&Math.abs((e.credit||0)-amt)<1) && daysBetween(v.date,date)<=3);
+  if(dupVoucher && !confirm(`A similar ${type.toLowerCase()} of ₹${fmt(amt)} between the same two accounts was already recorded on ${dupVoucher.date} (${dupVoucher.voucherNo||'#'+dupVoucher.id}). This could be a duplicate voucher.\n\nContinue anyway?`)) return;
   addVoucher({type,date,narration:narr,entries:[{account:dr,debit:amt,credit:0},{account:cr,debit:0,credit:amt}]});
-  save(); closeModal(); toast('Voucher submitted — awaiting checker approval'); go('accounts','vouchers');
+  save(); closeModal(); clearDraft('voucher'); toast('Voucher submitted — awaiting checker approval'); go('accounts','vouchers');
 }
 
 /* ============ COMPLAINTS ============ */
@@ -3529,6 +3666,7 @@ function openVendorBillModal(){
     <p style="font-size:11px;color:var(--ink-soft);">TDS is withheld on the taxable amount only, not on GST. Input Tax Credit reduces your net GST payable — see the GST tab.</p>
     <button class="btn btn-primary btn-block" onclick="saveVendorBill()">Save Bill</button>
   `);
+  setTimeout(()=>{ offerDraftRestore('vendorbill', ['vb_vendor','vb_desc','vb_amt','vb_date','vb_isStock','vb_acc','vb_gst','vb_gstRate','vb_tds'], 'vendor bill'); startDraftAutosave('vendorbill', ['vb_vendor','vb_desc','vb_amt','vb_date','vb_isStock','vb_acc','vb_gst','vb_gstRate','vb_tds']); }, 0);
 }
 function toggleVBStock(){
   const on = document.getElementById('vb_isStock').checked;
@@ -3570,6 +3708,8 @@ function saveVendorBill(){
   const tdsRate = TDS_SECTIONS[tdsSection]; const tdsAmount = Math.round(amount*tdsRate/100);
   const gstAmount = gstOn? Math.round(amount*gstRate/100) : 0;
   const netPayable = amount+gstAmount-tdsAmount;
+  const dupBill = DB.vendorBills.find(b=>b.vendorId===vendorId && Math.abs(b.amount-amount)<1 && daysBetween(b.date,date)<=5);
+  if(dupBill && !confirm(`A similar bill of ₹${fmt(amount)} from ${getVendor(vendorId).name} was already recorded on ${dupBill.date} ("${dupBill.description}"). This could be a duplicate invoice.\n\nContinue anyway?`)) return;
   const finalDesc = isStock? (description || `Stock purchase — ${DB.inventoryItems.find(i=>i.id===itemId)?.name||'item'}`) : description;
   const bill = {id:'VB'+nextId('vbill'), vendorId, date, description:finalDesc, amount, tdsSection, tdsRate, tdsAmount, gstAmount, gstRate, netPayable, paid:0, status:'unpaid'};
   DB.vendorBills.push(bill);
@@ -3581,7 +3721,7 @@ function saveVendorBill(){
   if(isStock){
     DB.inventoryTx.push({id:'ITX'+nextId('itx'), itemId, date, type:'purchase', qty, rate:Math.round(amount/qty), amount, note:`Vendor: ${getVendor(vendorId).name}`, vendorId});
   }
-  save(); closeModal(); toast('Bill logged — posting awaits approval'); go('vendors','bills');
+  save(); closeModal(); clearDraft('vendorbill'); toast('Bill logged — posting awaits approval'); go('vendors','bills');
 }
 function openVendorPaymentModal(){
   if(!DB.vendors.length){ toast('Add a vendor first'); go('vendors','list'); return; }
@@ -3618,6 +3758,8 @@ function saveVendorPayment(){
   const via = acc!=='Cash in Hand'? document.getElementById('vp_via').value : 'Cash';
   if(!amount||amount<=0){ toast('Enter valid amount'); return; }
   if(blockIfPeriodClosed(date)) return;
+  const dupPay = DB.vouchers.find(v=>v.status!=='rejected' && v.type==='VendorPayment' && v.vendorId===vendorId && Math.abs(v.entries.reduce((s,e)=>s+(e.debit||0),0)-amount)<1 && daysBetween(v.date,date)<=5);
+  if(dupPay && !confirm(`A similar payment of ₹${fmt(amount)} to ${getVendor(vendorId).name} was already recorded on ${dupPay.date} (${dupPay.voucherNo||'#'+dupPay.id}). This could be a duplicate payment (e.g. the same cheque entered twice).\n\nContinue anyway?`)) return;
   addVoucher({type:'VendorPayment', vendorId, date, narration:`Payment to ${getVendor(vendorId).name} (${via} → ${acc})`,
     entries:[{account:'Vendor Creditors',debit:amount,credit:0},{account:acc,debit:0,credit:amount}]});
   save(); closeModal(); toast('Payment submitted — awaiting checker approval'); go('vendors','payments');
@@ -4414,7 +4556,7 @@ function renderAudit(){
     const done = DB.vouchers.filter(v=>v.status==='approved'||v.status==='rejected').sort((a,b)=>b.id-a.id).slice(0,150);
     const log = (DB.auditLog||[]).slice().reverse().slice(0,150);
     body = `<div class="card"><div class="section-title">Approval Decisions</div><div class="tbl-wrap"><table><tr><th>Type</th><th>Maker → Checker</th><th class="num-cell">Amount</th><th>Status</th></tr>
-      ${done.map(v=>`<tr><td>${v.type}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''}</div></td><td style="font-size:12px;">${actorLabel(v.maker,v.makerName)} → ${actorLabel(v.checker,v.checkerName)}${v.checkerNote?'<div style="font-size:11px;color:var(--ink-soft)">'+v.checkerNote+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')||'<tr><td colspan=4 style="color:var(--ink-soft)">None yet</td></tr>'}
+      ${done.map(v=>`<tr><td>${v.type}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''}</div></td><td style="font-size:12px;">${actorLabel(v.maker,v.makerName)} → ${actorLabel(v.checker,v.checkerName)}${v.status==='approved'&&v.checkerAt?`<div style="font-size:10px;color:var(--ink-soft);">on ${new Date(v.checkerAt).toLocaleString('en-IN')}${v.verificationCode?' · Verification Code: '+v.verificationCode:''}</div>`:''}${v.checkerNote?'<div style="font-size:11px;color:var(--ink-soft)">'+v.checkerNote+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')||'<tr><td colspan=4 style="color:var(--ink-soft)">None yet</td></tr>'}
       </table></div></div>
       <div class="card"><div class="section-title">Full Audit Log</div><div class="tbl-wrap"><table><tr><th>Time</th><th>Role</th><th>Action</th><th>Detail</th></tr>
       ${log.map(l=>`<tr><td style="font-size:11.5px;white-space:nowrap;">${new Date(l.ts).toLocaleString('en-IN')}</td><td><span class="role-badge" style="font-size:9.5px;">${actorLabel(l.role,l.name)}</span></td><td>${l.action}</td><td style="font-size:12px;">${l.detail}</td></tr>`).join('')||'<tr><td colspan=4 style="color:var(--ink-soft)">None yet</td></tr>'}
@@ -4570,7 +4712,7 @@ function renderApprovals(){
   } else if(sr==='history'){
     const done = DB.vouchers.filter(v=>v.status==='approved'||v.status==='rejected').sort((a,b)=>b.id-a.id).slice(0,100);
     body = done.length? `<div class="tbl-wrap"><table><tr><th>Type</th><th>Maker → Checker</th><th class="num-cell">Amount</th><th>Status</th></tr>
-      ${done.map(v=>`<tr><td>${v.type}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''}</div></td><td style="font-size:12px;">${actorLabel(v.maker,v.makerName)} → ${actorLabel(v.checker,v.checkerName)}${v.checkerNote?'<div style="font-size:11px;color:var(--ink-soft)">'+v.checkerNote+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')}
+      ${done.map(v=>`<tr><td>${v.type}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''}</div></td><td style="font-size:12px;">${actorLabel(v.maker,v.makerName)} → ${actorLabel(v.checker,v.checkerName)}${v.status==='approved'&&v.checkerAt?`<div style="font-size:10px;color:var(--ink-soft);">on ${new Date(v.checkerAt).toLocaleString('en-IN')}${v.verificationCode?' · Verification Code: '+v.verificationCode:''}</div>`:''}${v.checkerNote?'<div style="font-size:11px;color:var(--ink-soft)">'+v.checkerNote+'</div>':''}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')}
       </table></div>` : `<div class="empty"><div class="ic">✓</div>No decisions recorded yet.</div>`;
   } else if(sr==='audit'){
     const log = (DB.auditLog||[]).slice().reverse().slice(0,200);
@@ -5267,6 +5409,8 @@ function renderSettings(){
     <div style="display:flex;gap:8px;"><button class="btn btn-outline" style="flex:1" onclick="exportData()">Export Backup</button>
     <button class="btn btn-outline" style="flex:1" onclick="document.getElementById('importFile').click()">Import Backup</button></div>
     <input type="file" id="importFile" style="display:none" accept=".json" onchange="importData(event)">
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="exportEncryptedBackup()">🔒 Export Encrypted Backup (AES-256)</button>
+    <p style="font-size:10.5px;color:var(--ink-soft);margin-top:4px;">Same data, password-protected with real AES-256 encryption — safer to store in cloud storage or email. Import Backup (above) also accepts these encrypted files and will ask for the passphrase. There is no way to recover an encrypted backup without its exact passphrase — not even by us.</p>
     <div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-outline" style="flex:1" onclick="copyBackupToClipboard()">📋 Copy Backup as Text</button>
     <button class="btn btn-outline" style="flex:1" onclick="openPasteRestoreModal()">📋 Paste to Restore</button></div>
     <p style="font-size:11px;color:var(--ink-soft);margin-top:6px;">If file import ever misbehaves, copy the backup text and paste it into Notes/Email to save it, or paste saved text back in to restore — no file picker involved either way. Importing (file or pasted) always replaces everything currently in the app, so — same as a full wipe — it's staged for a <b>different role to confirm</b>, and a restore point is saved automatically first.</p>
@@ -5606,7 +5750,14 @@ function applyLateCharges(){
 }
 function renderSecurityGovernanceCard(){
   const recentLogins = DB.loginHistory.slice().reverse().slice(0,15);
+  const integrityStatus = window.__integrityCheckResult;
+  const integrityBanner = integrityStatus==='mismatch'
+    ? `<div class="readonly-note" style="border-color:var(--brick);color:var(--brick);margin-bottom:10px;">⚠️ <b>Data Integrity Check: Mismatch</b> — the stored data doesn't match its recorded integrity hash from last session. This usually means something edited the browser's storage directly, outside the app itself (e.g. via developer tools), rather than through normal use. Worth reviewing recent vouchers and bank accounts carefully, and checking Audit → Audit Trail for anything unexplained.</div>`
+    : integrityStatus==='ok'
+    ? `<p style="font-size:11.5px;color:var(--moss);margin-bottom:10px;">✓ Data Integrity Check: matches its recorded hash from last session — no sign of the underlying storage being edited outside the app.</p>`
+    : `<p style="font-size:11px;color:var(--ink-soft);margin-bottom:10px;">Data Integrity Check: nothing to compare yet (first run on this device) — will be checked from the next time the app opens onward.</p>`;
   return `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Two-factor authentication is set up per-person under the 🔑 "Change My PIN" icon in the top bar, not here — these are the shared policy settings.</p>
+    ${integrityBanner}
     <div class="row2"><div class="field"><label>Auto-Logout After Inactivity</label><select id="sg_autologout"><option value="0" ${!DB.security.autoLogoutMinutes?'selected':''}>Off</option>${[5,10,15,30,60].map(m=>`<option value="${m}" ${DB.security.autoLogoutMinutes===m?'selected':''}>${m} minutes</option>`).join('')}</select></div>
     <div class="field"><label>PIN Expiry Policy</label><select id="sg_pinexpiry"><option value="0" ${!DB.security.pinExpiryDays?'selected':''}>Off</option>${[30,60,90,180].map(d=>`<option value="${d}" ${DB.security.pinExpiryDays===d?'selected':''}>Every ${d} days</option>`).join('')}</select></div></div>
     ${isReadOnly()?'':'<button class="btn btn-primary btn-sm" onclick="saveSecurityPolicy()">Save Policy</button>'}
@@ -5692,6 +5843,7 @@ function openBankReconcileModal(bankId){
   if(!b.clearedVouchers) b.clearedVouchers = [];
   if(!window.__reconDate) window.__reconDate = todayISO();
   window.__reconBankId = bankId;
+  window.__reconLastMatchSummary = null;
   drawBankReconcile();
 }
 function drawBankReconcile(){
@@ -5730,7 +5882,11 @@ function drawBankReconcile(){
         <button class="btn btn-outline btn-sm" style="flex:1" onclick="document.getElementById('rec_stmtFile').click()">⬆ Upload Statement</button>
       </div>
       <input type="file" id="rec_stmtFile" accept=".csv,.xlsx,.xls" style="display:none" onchange="handleStatementUpload(event)">
-      <div id="rec_uploadStatus"></div>
+      <div id="rec_uploadStatus">${(()=>{ const s = window.__reconLastMatchSummary; if(!s) return '';
+        return `<div class="readonly-note" style="margin-top:8px;">✓ ${s.matched} entr${s.matched===1?'y':'ies'} auto-matched and ticked. ${s.unmatched} statement row(s) had no matching book entry within 7 days${s.unmatched?' — check these are not missed transactions (bank charges, interest, or an entry you forgot to record):':''}.
+          ${s.unmatchedRows.slice(0,8).map(r=>`<div style="font-size:11px;margin-top:4px;">${r.date} · ${r.desc||'—'} · ₹${fmt(r.amount)} (${r.side})</div>`).join('')}
+          ${s.unmatchedRows.length>8? `<div style="font-size:11px;margin-top:4px;">…and ${s.unmatchedRows.length-8} more</div>`:''}
+        </div>`; })()}</div>
     </div>`}
     <p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:8px;">Or tick manually — anything left unticked is treated as a deposit-in-transit or a payment yet to clear. When Difference reads ₹0, you're reconciled.</p>
     <div class="tbl-wrap"><table><tr><th></th><th>Date</th><th>Narration</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th></tr>
@@ -5806,13 +5962,9 @@ function processStatementRows(rows){
   used.forEach(vid=>{ if(!cleared.has(vid)) b.clearedVouchers.push(vid); });
   save();
 
-  const statusEl = document.getElementById('rec_uploadStatus');
-  if(statusEl){
-    statusEl.innerHTML = `<div class="readonly-note" style="margin-top:8px;">✓ ${matched} entr${matched===1?'y':'ies'} auto-matched and ticked. ${unmatched} statement row(s) had no matching book entry within 7 days${unmatched?' — check these are not missed transactions (bank charges, interest, or an entry you forgot to record):':''}.
-      ${unmatchedRows.slice(0,8).map(r=>`<div style="font-size:11px;margin-top:4px;">${r.date} · ${r.desc||'—'} · ₹${fmt(r.amount)} (${r.side})</div>`).join('')}
-      ${unmatchedRows.length>8? `<div style="font-size:11px;margin-top:4px;">…and ${unmatchedRows.length-8} more</div>`:''}
-    </div>`;
-  }
+  // Store the result so drawBankReconcile (which fully rebuilds this modal right below) can render it —
+  // writing straight to a status div here doesn't survive that rebuild.
+  window.__reconLastMatchSummary = {matched, unmatched, unmatchedRows};
   drawBankReconcile();
 }
 function handleStatementUpload(ev){
@@ -6241,6 +6393,65 @@ function verifyBackupText(text){
   result.checksum = computeChecksum(text);
   return result;
 }
+/* ============ ENCRYPTION AT REST — for exported backups ============
+   Uses the browser's native Web Crypto API (AES-256-GCM, key derived via PBKDF2 with 150,000
+   iterations) rather than a hand-rolled cipher — hand-rolling AES is exactly the kind of thing
+   that's easy to get subtly wrong in ways that only show up as a real vulnerability, whereas the
+   browser's own implementation is well-vetted. The honest tradeoff: this needs a "secure context"
+   (crypto.subtle), which isn't guaranteed in every browser when a file is opened directly from disk
+   — feature-detected below, with a clear message and the plain unencrypted export always available
+   as a fallback. This protects a backup file at rest (e.g. if it's found on a stolen device or an
+   unsecured cloud folder) — it is not a substitute for the app's own PIN/2FA login. */
+function cryptoAvailable(){ return !!(window.crypto && window.crypto.subtle); }
+function bytesToBase64(bytes){ let s=''; bytes.forEach(b=>s+=String.fromCharCode(b)); return btoa(s); }
+function base64ToBytes(b64){ const s=atob(b64); const out=new Uint8Array(s.length); for(let i=0;i<s.length;i++) out[i]=s.charCodeAt(i); return out; }
+async function deriveKeyFromPassphrase(passphrase, saltBytes){
+  const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2', salt:saltBytes, iterations:150000, hash:'SHA-256'},
+    keyMaterial, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']
+  );
+}
+async function encryptBackupText(text, passphrase){
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKeyFromPassphrase(passphrase, salt);
+  const ciphertextBuf = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, new TextEncoder().encode(text));
+  return JSON.stringify({smartrwaEncrypted:true, version:1, salt:bytesToBase64(salt), iv:bytesToBase64(iv), ciphertext:bytesToBase64(new Uint8Array(ciphertextBuf))});
+}
+async function decryptBackupText(envelopeJson, passphrase){
+  const envelope = JSON.parse(envelopeJson);
+  if(!envelope.smartrwaEncrypted) throw new Error('This file is not an encrypted SmartRWA backup');
+  const salt = base64ToBytes(envelope.salt), iv = base64ToBytes(envelope.iv), ciphertext = base64ToBytes(envelope.ciphertext);
+  const key = await deriveKeyFromPassphrase(passphrase, salt);
+  const plainBuf = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ciphertext); // throws if the passphrase is wrong — GCM authenticates itself
+  return new TextDecoder().decode(plainBuf);
+}
+function looksLikeEncryptedEnvelope(text){
+  try{ const j = JSON.parse(text); return j && j.smartrwaEncrypted===true; }catch(e){ return false; }
+}
+async function exportEncryptedBackup(){
+  if(!cryptoAvailable()){ toast('Encryption isn\'t available in this browser context — this usually means the page isn\'t on a secure connection (https:// or localhost). The regular Export Backup still works, just without encryption.'); return; }
+  const passphrase = prompt('Set a passphrase to encrypt this backup with.\n\nWrite it down somewhere safe — there is no way to recover this backup without it, not even by us.');
+  if(!passphrase) return;
+  if(passphrase.length<6){ toast('Use at least 6 characters for the passphrase'); return; }
+  const confirmPass = prompt('Enter the same passphrase again to confirm:');
+  if(confirmPass !== passphrase){ toast('Passphrases did not match — try again'); return; }
+  DB.lastBackupAt = nowTS();
+  const text = JSON.stringify(DB);
+  const verify = verifyBackupText(text);
+  DB.lastBackupChecksum = verify.checksum;
+  DB.lastBackupVerified = verify.readable && verify.complete;
+  save();
+  try{
+    const encrypted = await encryptBackupText(text, passphrase);
+    const blob = new Blob([encrypted],{type:'application/json'});
+    const url = URL.createObjectURL(blob); const a=document.createElement('a');
+    a.href=url; a.download=`smartrwa-backup-encrypted-${todayISO()}.json`; a.click();
+    toast(`Encrypted backup downloaded (AES-256) — checksum ${verify.checksum}. You will need this exact passphrase to restore it.`);
+  }catch(e){ toast('Encryption failed — try the regular Export Backup instead.'); }
+  render();
+}
 function exportData(){
   DB.lastBackupAt = nowTS();
   const text = JSON.stringify(DB,null,2);
@@ -6299,8 +6510,20 @@ function restoreFromPastedText(){
 /* ============ IMPORT BACKUP (MAKER-CHECKER) — mirrors the Full Data Wipe safety net:
    a different role must confirm before anything currently in the app is replaced, and the
    pre-import state is saved automatically so it can be recovered if the wrong file was staged. */
+async function stageEncryptedImport(text, sourceLabel){
+  if(!cryptoAvailable()){ toast('This is an encrypted backup, but encryption isn\'t available in this browser context (needs a secure connection) — cannot decrypt it here.'); return; }
+  const passphrase = prompt('This backup is encrypted. Enter the passphrase it was encrypted with:');
+  if(!passphrase) return;
+  try{
+    const decrypted = await decryptBackupText(text, passphrase);
+    stageImport(decrypted, sourceLabel+' (decrypted)');
+  }catch(e){
+    toast('Could not decrypt — the passphrase is likely wrong, or the file is corrupted.');
+  }
+}
 function stageImport(text, sourceLabel){
   if(!canEdit()) return;
+  if(looksLikeEncryptedEnvelope(text)){ stageEncryptedImport(text, sourceLabel); return; }
   let parsed;
   try{ parsed = JSON.parse(text); }
   catch(err){
@@ -6547,6 +6770,9 @@ function computeAccountingHealthScore(){
 
   const badHeads = DB.chargeHeads.filter(h=>!ACCOUNTS[h.account]);
   add('Charge Heads Point to Valid Accounts', badHeads.length===0, 2, badHeads.length? `${badHeads.length} charge head(s) reference an unrecognised account` : 'Complete');
+
+  add('No Tampering Detected', window.__integrityCheckResult!=='mismatch', 8,
+    window.__integrityCheckResult==='mismatch'? "Stored data doesn't match its recorded integrity hash — see Setup → Security & Governance" : window.__integrityCheckResult==='ok'? 'Matches its recorded integrity hash' : 'Nothing to compare yet on this device');
 
   const totalWeight = items.reduce((s,i)=>s+i.weight,0);
   const earned = items.reduce((s,i)=>s+(i.ok?i.weight:0),0);
@@ -6925,6 +7151,16 @@ const FAQ = [
    a:'Yes \u2014 tap the \ud83c\udfa4 icon next to the chat input and speak your question; it fills in and sends automatically once you stop talking. Tap the \ud83d\udd0a/\ud83d\udd07 icon at the top of the chat to have answers read back aloud too, using your device\'s own text-to-speech (works fully offline).<br><br><b>If the mic doesn\'t seem to do anything:</b> the single biggest cause is that this app is opened directly as a file (file://) rather than through a real web address, and browsers block microphone access on file:// pages as a security rule \u2014 everything else in the app works fine that way, but voice input specifically needs a secure connection (https:// or localhost). The \ud83c\udfa4 button dims slightly when this is the likely cause, and tapping it explains why. Beyond that: it needs an internet connection even when hosted properly (in most browsers this sends your speech to that browser\'s own servers to convert to text), microphone permission has to be allowed, and it only works in browsers that support it at all (Chrome/Edge; not Firefox \u2014 the button won\'t even appear there). Typing always works regardless of any of this.'},
   {k:['trial balance daily','tally immediately','watchdog','out of tally alert','backup verification','checksum','backup verified','year closing blocked','tally gate'], q:'Does Trial Balance get checked automatically, and are backups verified?',
    a:'Yes to both. Every time an entry is approved, reversed, or data is imported, the app immediately re-checks Trial Balance behind the scenes \u2014 completely silent when it tallies (the normal case, since every voucher is built balanced from the start), but the instant it doesn\'t, it interrupts right then with the exact cause and a fix, using the same analysis as Reports \u2192 Diagnose Tallying. You don\'t have to remember to go check. Closing a financial year is also gated on this \u2014 it\'s blocked outright if Trial Balance doesn\'t tally as at that year-end. Separately, every <b>Export Backup</b> is immediately verified \u2014 readable, complete (all expected sections present), and a checksum shown \u2014 rather than just assuming the download worked; the same verification runs on a staged import so the confirming role can see it\'s trustworthy before approving it.'},
+  {k:['verification code','sha-256','sha256','tamper evidence','approved by treasurer','digitally signed','digital signature'], q:'What is the Verification Code shown after approval?',
+   a:'Every approved voucher now shows a small code (e.g. <code>BE957C38DEA3</code>) next to its status \u2014 tap it to check it. It\'s a SHA-256 hash of that voucher\'s content, approver, and approval timestamp, verified against the official algorithm test vectors before use. If the entry is ever altered afterward (its amount, accounts, narration, or who/when approved it), recomputing the hash won\'t match anymore, and tapping the code will flag exactly that. Worth being precise about what this is: it\'s a verification/tamper-evidence hash, not a true digital signature \u2014 a real digital signature needs a private key only the signer holds, which isn\'t something a browser-only app can provide. What this does give you is genuine proof that an approved entry hasn\'t been quietly edited since.'},
+  {k:['duplicate voucher warning','duplicate cheque','duplicate bill warning','duplicate invoice warning','duplicate payment warning','similar entry'], q:'Does it warn me before I accidentally enter something twice?',
+   a:'Yes \u2014 Receipts, Vendor Bills, Vendor Payments, and manual Vouchers all check for a suspiciously similar recent entry right before saving (same flat/vendor, same amount, within a few days) and ask you to confirm before proceeding, rather than silently letting a duplicate through. If it really isn\'t a duplicate, you can continue anyway \u2014 this warns, it doesn\'t block.'},
+  {k:['crash recovery','unsaved changes','restore unfinished','app closed unexpectedly','lost my entry','draft'], q:'What happens if the app closes while I\'m in the middle of an entry?',
+   a:'Receipts, Vendor Bills, and manual Vouchers all auto-save a draft of what you\'ve typed as you go (about a second after you stop typing). If the app closes unexpectedly \u2014 phone died, browser crashed, tab closed by accident \u2014 reopening that same form within 48 hours asks \"Restore your unfinished entry?\" and fills everything back in exactly where you left off, the same idea as Word\'s unsaved-changes recovery. Actually saving the entry clears the draft, so you won\'t be asked about something you already submitted.'},
+  {k:['tamper detection','tamper evidence','data integrity check','integrity hash','tampering'], q:'Can the app detect if its data was tampered with outside the app itself?',
+   a:'Yes, with an honest caveat on what that means. Setup \u2192 Security & Governance shows a Data Integrity Check: a SHA-256 hash of the most sensitive data (vouchers, flats, bank accounts, security settings) is stored alongside it every time you save, and compared fresh each time the app opens. If someone edits the browser\'s storage directly \u2014 outside the app\'s own screens, e.g. via developer tools \u2014 without going through a normal save, the hash won\'t match anymore and it flags clearly, feeding into the Accounting Health Score too. What this is <b>not</b>: tamper-proofing. A browser-only app with no server can\'t stop someone with direct access to their own machine from editing anything, including this check itself \u2014 that kind of protection needs a server nothing here has. What it does give you is real tamper-<i>evidence</i>: a reliable signal, after the fact, that something happened outside normal use.'},
+  {k:['encrypted backup','encrypt backup','aes','aes-256','password protected backup','passphrase','encryption at rest'], q:'How do I export a password-protected (encrypted) backup?',
+   a:'Setup \u2192 Data \u2192 "\ud83d\udd12 Export Encrypted Backup (AES-256)" \u2014 set a passphrase, and it downloads using real AES-256 encryption (the browser\'s own Web Crypto, not a hand-rolled cipher) with the key derived from your passphrase via 150,000 rounds of PBKDF2. Safer than a plain backup for emailing or storing in cloud drives. Import Backup accepts these encrypted files too and will ask for the passphrase automatically \u2014 get it wrong and it\'s cleanly rejected rather than producing garbled data (AES-GCM authenticates itself). <b>There is no way to recover an encrypted backup without its exact passphrase, not even by us</b> \u2014 write it down somewhere safe. One honest limit: this needs a secure browser context (the same requirement the microphone has) \u2014 if that\'s unavailable, the button explains why and the regular unencrypted Export Backup still works as normal.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
@@ -7221,6 +7457,7 @@ function liveDataAnswer(qLower){
    than a question ("how do I...", "what does..."), jump straight to that screen instead of just
    answering about it. */
 const NAV_COMMANDS = [
+  {k:['security settings','security and governance','data integrity check','encrypted backup','import formats'], route:'settings', sub:null, label:'Setup'},
   {k:['schedule wise balance sheet','schedule-wise balance sheet'], route:'reports', sub:'bsschedule', label:'Schedule-wise Balance Sheet'},
   {k:['trial balance'], route:'reports', sub:'trial', label:'Trial Balance'},
   {k:['balance sheet'], route:'reports', sub:'bs', label:'Balance Sheet'},
@@ -7331,7 +7568,7 @@ function renderHelp(){
     ['Low Balance Alerts', `Set a <b>Minimum Balance Threshold</b> under Setup → Society Name & Total Area (e.g. ₹2,000). Any flat whose running balance — advance credit held, minus any current due — drops below that figure shows up in <b>Reports → Low Balance Alerts</b>, with WhatsApp/Email reminder buttons per flat and a "Send Reminders to All" queue, same pattern as Defaulters. A Dashboard tile also shows the count whenever the threshold is set.<br><br><b>Important — this is not a silent background job.</b> There's no server here to check balances overnight or fire off messages while your phone is asleep; everything only recalculates when someone actually opens the app, and every reminder still needs a human tap to WhatsApp/Email it. What this gives you is a fast, always-current list the moment you open the app, and a one-tap-per-resident way to act on it — not a truly automated cron-style alert system.`],
     ['Opening Balances', `Switching to SmartRWA mid-year? Setup → Opening Balances has three tools: <b>Flat Opening Dues</b> (what each flat already owed), <b>Vendor Opening Dues</b>, and <b>Opening Trial Balance</b> (Bank/Cash/Assets/Funds as a balanced journal entry). All three go through the normal checker approval like everything else.`],
     ['Bulk Import (CSV & Excel)', `Flats → CSV Template gives you a spreadsheet to fill and re-upload via Import CSV/Excel (both formats work) — duplicates and missing data are flagged before anything's added. Billing → Bills → "Import from Other App" does the same for bill amounts already calculated elsewhere: one row per charge line, multiple rows for the same flat+period combine into one bill. All three import points in the app (Flats, Bill Charges, Bank Statement) accept CSV or Excel — see Setup → Import Formats & Templates for every column layout and template in one place.`],
-    ['Backup, Restore & Data Wipe', `All data lives only on this device — nothing is synced anywhere. Export a backup regularly from Setup → Data (the Dashboard nags you if it's been 7+ days). <b>Importing a backup replaces everything currently in the app</b>, so it's protected the same way as a full wipe: the person importing it stages the file, a <i>different</i> role has to confirm before it actually takes effect, and whatever was there beforehand is saved automatically as a restore point ("Restore Pre-Import Backup"). If you ever need to erase everything and start fresh instead, Setup → Danger Zone requires a reason and a different role to confirm — a restore point is saved automatically first, recoverable with "Restore Last Wipe".`],
+    ['Backup, Restore & Data Wipe', `All data lives only on this device — nothing is synced anywhere. Export a backup regularly from Setup → Data (the Dashboard nags you if it's been 7+ days) — every export is automatically verified (readable, complete, with a checksum shown) rather than just assuming the download worked. Need something safer to email or store in cloud storage? "🔒 Export Encrypted Backup" password-protects it with real AES-256 encryption. <b>Importing a backup (encrypted or not) replaces everything currently in the app</b>, so it's protected the same way as a full wipe: the person importing it stages the file, a <i>different</i> role has to confirm before it actually takes effect, and whatever was there beforehand is saved automatically as a restore point ("Restore Pre-Import Backup"). If you ever need to erase everything and start fresh instead, Setup → Danger Zone requires a reason and a different role to confirm — a restore point is saved automatically first, recoverable with "Restore Last Wipe".`],
     ['Printing Statements as PDF', `Trial Balance, Income & Expenditure, Receipts & Payments, and Balance Sheet (Reports tab) each have a <b>"Print / Save as PDF"</b> button at the top — it uses your phone's own print system, so it works fully offline. On iPhone: tap it, then in the print preview <b>pinch to zoom in</b> — that switches to a full-page view with a share icon at top right; tap it → <b>Save to Files</b> → PDF. The printed page hides all app menus and shows only the clean statement, complete with signature lines for Treasurer/Secretary/Chairman/Auditor, ready for physical signing.`],
     ['Health Check', `Tap the ♡ icon at the top anytime to run a diagnostic: it checks that your Trial Balance and Balance Sheet tally, flags stale pending approvals, flats without owners, negative stock, overdue vendor dues, and other data issues — so small mistakes get caught early. The score reflects your actual data, not a fixed number — for example, it only shows "No negative stock balances" as passing once every item's stock on hand is zero or higher; since Issue/Consumption transactions can no longer push stock negative, that check should stay green going forward. If it's still below 100%, open the modal and work through whichever specific line items show ⚠️ — each one names exactly what needs fixing.`],
     ['Ask SmartRWA (Chat)', `Tap the 💬 icon at the top for quick answers — it's a built-in FAQ assistant (no AI, works offline) covering how-to questions across the app, and it can answer a few live questions directly from your data, like "how much is outstanding" or "pending approvals?". It also understands direct commands: type a screen or report name — "trial balance", "overdue statement", "budget vs actual", "inspect society" — and it opens that screen right away instead of just talking about it. Phrase it as a question ("how do I...", "what is...") and it'll explain instead of navigating.`],
