@@ -5860,22 +5860,30 @@ function deleteBankAccount(id){
 function openInterestVerifyModal(bankId){
   const b = DB.bankAccounts.find(x=>x.id===bankId); if(!b) return;
   window.__ivBankId = bankId;
+  window.__ivEntries = null;
   openModal(`<div class="modal-head"><h2>Verify Interest — ${b.bankName}</h2><button class="close-x" onclick="closeModal()">×</button></div>
-    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Upload the statement for the period you want to check, and the rate the bank quotes you — this computes what interest should have accrued on your daily closing balance, and compares it to whatever the statement shows the bank actually credited.</p>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Upload the statement for the period you want to check, and the rate the bank quotes you — this computes what interest should have accrued on your daily closing balance <b>for every day in the period, including days before your first transaction and after your last one</b> — not just the dates that happen to appear in the file.</p>
     <div class="field"><label>Interest Rate (% per annum)</label><input id="iv_rate" type="number" step="0.01" value="${b.interestRate||'3'}"></div>
-    <div class="field" id="iv_openingBalField" style="display:none;"><label>Opening Balance (only needed if the statement has no running "Balance" column)</label><input id="iv_openingBal" type="number"></div>
     <button class="btn btn-outline btn-sm" onclick="downloadStatementTemplate()">Get Template</button>
-    <label class="btn btn-outline btn-block" style="margin-top:8px;cursor:pointer;">⬆ Upload Statement (CSV or Excel)<input type="file" id="iv_stmtFile" accept=".csv,.xlsx,.xls" style="display:none" onchange="handleInterestStatementUpload(event)"></label>
+    <label class="btn btn-outline btn-block" style="margin-top:8px;cursor:pointer;">⬆ Upload Statement (CSV, Excel, or PDF)<input type="file" id="iv_stmtFile" accept=".csv,.xlsx,.xls,.pdf" style="display:none" onchange="handleInterestStatementUpload(event)"></label>
+    <div id="iv_periodFields" style="display:none;margin-top:10px;">
+      <p style="font-size:11.5px;color:var(--ink-soft);">Detected from the file — adjust if this statement doesn't cover the full period you want to check:</p>
+      <div class="row2"><div class="field"><label>Period Start</label><input id="iv_periodStart" type="date" onchange="updateIvOpeningBalVisibility()"></div>
+      <div class="field"><label>Period End</label><input id="iv_periodEnd" type="date"></div></div>
+      <div class="field" id="iv_openingBalField" style="display:none;"><label>Balance as of the day before Period Start</label><input id="iv_openingBal" type="number"></div>
+      <button class="btn btn-primary btn-block" onclick="calculateInterestVerification()">Calculate</button>
+    </div>
     <div id="iv_result"></div>`);
 }
 function handleInterestStatementUpload(ev){
   const file = ev.target.files[0]; if(!file) return;
   const ext = file.name.split('.').pop().toLowerCase();
+  if(ext==='pdf'){ handlePdfStatementUpload(ev, 'interest'); return; }
   if(ext==='csv'){
     const reader = new FileReader();
     reader.onload = e=>{
       const lines = e.target.result.split(/\r?\n/).filter(l=>l.trim().length);
-      processInterestVerificationRows(lines.map(parseCSVLine));
+      parseInterestVerificationRows(lines.map(parseCSVLine));
     };
     reader.readAsText(file);
   } else {
@@ -5886,7 +5894,7 @@ function handleInterestStatementUpload(ev){
           const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
           const sheet = wb.Sheets[wb.SheetNames[0]];
           const rows = XLSX.utils.sheet_to_json(sheet, {header:1, raw:false});
-          processInterestVerificationRows(rows);
+          parseInterestVerificationRows(rows);
         }catch(err){ toast('Could not read this Excel file'); }
       };
       reader.readAsArrayBuffer(file);
@@ -5894,8 +5902,13 @@ function handleInterestStatementUpload(ev){
   }
   ev.target.value='';
 }
-function processInterestVerificationRows(rows){
-  const resultEl = document.getElementById('iv_result'); if(!resultEl) return;
+function updateIvOpeningBalVisibility(){
+  if(!window.__ivEntries || !window.__ivEntries.length) return;
+  const periodStart = document.getElementById('iv_periodStart').value;
+  const firstTxnDate = window.__ivEntries[0].date;
+  document.getElementById('iv_openingBalField').style.display = periodStart < firstTxnDate ? 'block' : 'none';
+}
+function parseInterestVerificationRows(rows){
   if(!rows.length){ toast('File appears empty'); return; }
   const header = rows[0];
   const idxDate = findColIndex(header, ['date','transaction date','txn date','value date']);
@@ -5904,8 +5917,6 @@ function processInterestVerificationRows(rows){
   const idxCredit = findColIndex(header, ['credit','deposit amt','deposit','cr']);
   const idxBalance = findColIndex(header, ['balance','closing balance','running balance','available balance']);
   if(idxDate<0){ toast('Could not find a Date column — check the template'); return; }
-  const rate = Number(document.getElementById('iv_rate').value);
-  if(!rate || rate<=0){ toast('Enter a valid interest rate first'); return; }
 
   const num = v=> Number(String(v==null?'':v).replace(/,/g,'').trim())||0;
   let entries = [];
@@ -5920,27 +5931,53 @@ function processInterestVerificationRows(rows){
   }
   entries.sort((a,b)=>a.date.localeCompare(b.date));
   if(!entries.length){ toast('No usable rows found — check the Date column format'); return; }
+  window.__ivEntries = entries;
+  window.__ivHasBalanceCol = idxBalance>=0 && entries.some(e=>e.balance!==null);
 
-  const hasBalanceCol = idxBalance>=0 && entries.some(e=>e.balance!==null);
-  const openingBalField = document.getElementById('iv_openingBalField');
+  // Default the period to the FULL calendar month(s) the statement falls in — not just the first/last
+  // transaction dates — since interest accrues on every day regardless of whether a transaction happened.
+  const firstDate = new Date(entries[0].date+'T00:00:00'), lastDate = new Date(entries[entries.length-1].date+'T00:00:00');
+  const periodStart = new Date(firstDate.getFullYear(), firstDate.getMonth(), 1).toISOString().slice(0,10);
+  const periodEnd = new Date(lastDate.getFullYear(), lastDate.getMonth()+1, 0).toISOString().slice(0,10);
+  document.getElementById('iv_periodStart').value = periodStart;
+  document.getElementById('iv_periodEnd').value = periodEnd;
+  document.getElementById('iv_periodFields').style.display = 'block';
+  document.getElementById('iv_result').innerHTML = '';
+  updateIvOpeningBalVisibility();
+}
+function calculateInterestVerification(){
+  const resultEl = document.getElementById('iv_result'); if(!resultEl) return;
+  const entries = window.__ivEntries; if(!entries){ toast('Upload a statement first'); return; }
+  const rate = Number(document.getElementById('iv_rate').value);
+  if(!rate || rate<=0){ toast('Enter a valid interest rate first'); return; }
+  const periodStart = document.getElementById('iv_periodStart').value, periodEnd = document.getElementById('iv_periodEnd').value;
+  if(!periodStart || !periodEnd || periodStart>periodEnd){ toast('Check the period start/end dates'); return; }
+
+  const firstTxnDate = entries[0].date;
   let openingBal = null;
-  if(!hasBalanceCol){
-    openingBalField.style.display = 'block';
+  if(periodStart < firstTxnDate){
     openingBal = Number(document.getElementById('iv_openingBal').value);
-    if(document.getElementById('iv_openingBal').value==='' || isNaN(openingBal)){
-      resultEl.innerHTML = `<div class="readonly-note" style="margin-top:10px;">This statement has no running "Balance" column, so an opening balance is needed to work out daily balances. Enter it above and re-upload the same file.</div>`;
+    if(document.getElementById('iv_openingBal').value===''||isNaN(openingBal)){
+      resultEl.innerHTML = `<div class="readonly-note" style="margin-top:10px;">The period starts before your first transaction in this file (${firstTxnDate}) — enter the balance as of the day before Period Start so the days in between are counted correctly.</div>`;
+      return;
+    }
+  } else if(!window.__ivHasBalanceCol){
+    // Period starts exactly on/after the first transaction, but there's no Balance column to seed from either
+    openingBal = Number(document.getElementById('iv_openingBal')?.value);
+    if(isNaN(openingBal)){
+      document.getElementById('iv_openingBalField').style.display='block';
+      resultEl.innerHTML = `<div class="readonly-note" style="margin-top:10px;">This statement has no running Balance column, so a starting balance is needed to work out daily balances. Enter it above (balance as of the day before Period Start) and press Calculate again.</div>`;
       return;
     }
   }
 
-  const startDate = entries[0].date, endDate = entries[entries.length-1].date;
   const balanceByDate = {};
   let idx=0, curBal = openingBal;
-  for(let d = new Date(startDate+'T00:00:00'); d <= new Date(endDate+'T00:00:00'); d.setDate(d.getDate()+1)){
+  for(let d = new Date(periodStart+'T00:00:00'); d <= new Date(periodEnd+'T00:00:00'); d.setDate(d.getDate()+1)){
     const dISO = d.toISOString().slice(0,10);
     while(idx<entries.length && entries[idx].date===dISO){
       const e = entries[idx];
-      if(hasBalanceCol && e.balance!==null) curBal = e.balance;
+      if(window.__ivHasBalanceCol && e.balance!==null) curBal = e.balance;
       else curBal = (curBal||0) + e.credit - e.debit;
       idx++;
     }
@@ -5951,22 +5988,23 @@ function processInterestVerificationRows(rows){
   Object.values(balanceByDate).forEach(bal=>{ expectedInterest += Math.max(0,bal||0) * rate/100/365; });
   expectedInterest = Math.round(expectedInterest);
 
-  const bankCreditedRows = entries.filter(e=>e.credit>0 && /interest|int\.?\s*cr|sb\s*int|int\s*paid/i.test(e.desc));
+  const inPeriod = entries.filter(e=>e.date>=periodStart && e.date<=periodEnd);
+  const bankCreditedRows = inPeriod.filter(e=>e.credit>0 && /interest|int\.?\s*cr|sb\s*int|int\s*paid/i.test(e.desc));
   const bankCreditedTotal = Math.round(bankCreditedRows.reduce((s,e)=>s+e.credit,0));
   const diff = expectedInterest - bankCreditedTotal;
   const diffPct = bankCreditedTotal>0? Math.round(Math.abs(diff)/bankCreditedTotal*100) : null;
-  const closeEnough = bankCreditedRows.length>0 && Math.abs(diff)<=Math.max(50, bankCreditedTotal*0.02); // within 2% or ₹50, whichever's larger — normal day-count/rounding variance
+  const closeEnough = bankCreditedRows.length>0 && Math.abs(diff)<=Math.max(50, bankCreditedTotal*0.02);
 
   resultEl.innerHTML = `<div class="card" style="margin-top:12px;box-shadow:none;border:1px solid var(--border);">
-    <div style="font-size:11.5px;color:var(--ink-soft);">Period: ${startDate} to ${endDate} (${dayCount} days) at ${rate}% p.a.</div>
+    <div style="font-size:11.5px;color:var(--ink-soft);">Period: ${periodStart} to ${periodEnd} (${dayCount} days) at ${rate}% p.a.${openingBal!==null?' · opening balance ₹'+fmt(openingBal):''}</div>
     <div class="stat-grid" style="margin-top:8px;">
       <div class="stat"><div class="lbl">Expected Interest</div><div class="val">₹${fmt(expectedInterest)}</div></div>
       <div class="stat ${bankCreditedRows.length?'':'alert'}"><div class="lbl">Bank Credited</div><div class="val">${bankCreditedRows.length? '₹'+fmt(bankCreditedTotal) : 'Not found'}</div></div>
     </div>
     ${bankCreditedRows.length
       ? `<p style="font-size:12.5px;margin-top:10px;color:${closeEnough?'var(--moss)':'var(--brick)'};"><b>${closeEnough?'✓ Matches closely':'⚠️ Notable difference'}</b>${diff===0? ' — exact match.' : ` — off by ₹${fmt(Math.abs(diff))}${diffPct!==null?' ('+diffPct+'%)':''}, bank credited ${diff>0?'less':'more'} than the daily-balance calculation suggests.`}</p>
-        <p style="font-size:11px;color:var(--ink-soft);">${closeEnough? 'A gap this small is normal — banks vary slightly in day-count and rounding conventions.' : 'Worth raising with the bank if this stays unresolved after checking your rate and the statement period are both correct — this could be a wrong rate slab, a missed compounding cycle, or a genuine bank error.'}</p>`
-      : `<p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">No transaction in this statement looked like an interest credit (checked for "interest", "INT CR", "SB INT" in the description) — either it hasn't been credited yet for this period, or check the statement manually for how your bank labels it.</p>`}
+        <p style="font-size:11px;color:var(--ink-soft);">${closeEnough? 'A gap this small is normal — banks vary slightly in day-count and rounding conventions.' : 'Worth raising with the bank if this stays unresolved after checking your rate and period are both correct — this could be a wrong rate slab, a missed compounding cycle, or a genuine bank error.'}</p>`
+      : `<p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">No transaction in this period looked like an interest credit (checked for "interest", "INT CR", "SB INT" in the description) — either it hasn't been credited yet, or check the statement manually for how your bank labels it.</p>`}
     <p style="font-size:10px;color:var(--ink-soft);margin-top:8px;">Expected Interest is a standard daily-balance estimate (365-day year) — a small gap either way is normal.</p>
   </div>`;
 }
@@ -6009,12 +6047,12 @@ function drawBankReconcile(){
     </div>
     ${isReadOnly()?'':`<div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:12px;">
       <div style="font-weight:700;font-size:13px;margin-bottom:6px;">Upload Bank Statement — Auto-Match</div>
-      <p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:8px;">Upload your bank's statement (CSV or Excel) and matching entries — same date (±3 days) and same amount — are ticked automatically. Needs columns for Date, Debit/Withdrawal, Credit/Deposit (most net-banking exports already have these).</p>
+      <p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:8px;">Upload your bank's statement (CSV, Excel, or PDF) and matching entries — same date (±7 days) and same amount — are ticked automatically. Needs columns for Date, Debit/Withdrawal, Credit/Deposit (most net-banking exports already have these). PDF works too, but is best-effort — every extracted row is shown for review before anything is used.</p>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-outline btn-sm" style="flex:1" onclick="downloadStatementTemplate()">⬇ Template</button>
         <button class="btn btn-outline btn-sm" style="flex:1" onclick="document.getElementById('rec_stmtFile').click()">⬆ Upload Statement</button>
       </div>
-      <input type="file" id="rec_stmtFile" accept=".csv,.xlsx,.xls" style="display:none" onchange="handleStatementUpload(event)">
+      <input type="file" id="rec_stmtFile" accept=".csv,.xlsx,.xls,.pdf" style="display:none" onchange="handleStatementUpload(event)">
       <div id="rec_uploadStatus">${(()=>{ const s = window.__reconLastMatchSummary; if(!s) return '';
         return `<div class="readonly-note" style="margin-top:8px;">✓ ${s.matched} entr${s.matched===1?'y':'ies'} auto-matched and ticked. ${s.unmatched} statement row(s) had no matching book entry within 7 days${s.unmatched?' — check these are not missed transactions (bank charges, interest, or an entry you forgot to record):':''}.
           ${s.unmatchedRows.slice(0,8).map(r=>`<div style="font-size:11px;margin-top:4px;">${r.date} · ${r.desc||'—'} · ₹${fmt(r.amount)} (${r.side})</div>`).join('')}
@@ -6043,6 +6081,13 @@ function parseStatementDate(raw){
   if(m){
     let [, d, mo, y] = m; if(y.length===2) y = '20'+y;
     return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  }
+  const monthNames = {jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'};
+  const mm = raw.match(/^(\d{1,2})[\s\-]+([A-Za-z]{3,9})[\s\-]+(\d{2,4})/);
+  if(mm){
+    let [, d, moName, y] = mm; if(y.length===2) y = '20'+y;
+    const moNum = monthNames[moName.toLowerCase().slice(0,3)];
+    if(moNum) return `${y}-${moNum}-${d.padStart(2,'0')}`;
   }
   return raw;
 }
@@ -6106,7 +6151,7 @@ function handleStatementUpload(ev){
   if(ext==='csv'){
     const reader = new FileReader();
     reader.onload = e=>{
-      const lines = e.target.result.split(/\\r?\\n/).filter(l=>l.trim().length);
+      const lines = e.target.result.split(/\r?\n/).filter(l=>l.trim().length);
       const rows = lines.map(parseCSVLine);
       processStatementRows(rows);
     };
@@ -6136,6 +6181,136 @@ function loadSheetJS(callback){
   script.onload = callback;
   script.onerror = ()=>{ toast('Could not load Excel support — no internet? Save the file as CSV instead.'); if(statusEl) statusEl.innerHTML=''; };
   document.head.appendChild(script);
+}
+
+/* ============ PDF BANK STATEMENT PARSING ============
+   Honest framing: unlike CSV/Excel, a PDF has no real structure — it's just text positioned on a
+   page. This extracts text via PDF.js, reconstructs table rows by grouping text at the same vertical
+   position, then uses heuristics (a date pattern; the right-most number is usually the running
+   balance; whether the balance went up or down decides debit vs credit) to guess each row. Bank PDF
+   layouts vary a lot, so this is best-effort — every extracted row is shown in an EDITABLE preview
+   before anything is used for reconciliation or interest calculation, specifically so a misread row
+   can be fixed or removed rather than silently feeding wrong numbers into a real calculation. */
+function loadPdfJs(callback){
+  if(window.pdfjsLib){ callback(); return; }
+  const script = document.createElement('script');
+  script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+  script.onload = ()=>{
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    callback();
+  };
+  script.onerror = ()=>{ toast('Could not load PDF support — no internet? Try uploading as CSV or Excel instead.'); };
+  document.head.appendChild(script);
+}
+async function extractLinesFromPDF(arrayBuffer){
+  const pdf = await window.pdfjsLib.getDocument({data: arrayBuffer}).promise;
+  const allLines = [];
+  for(let pageNum=1; pageNum<=pdf.numPages; pageNum++){
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    const lineMap = new Map();
+    content.items.forEach(item=>{
+      const y = Math.round(item.transform[5]);
+      let key = null;
+      for(const k of lineMap.keys()){ if(Math.abs(k-y)<=3){ key=k; break; } }
+      if(key===null) key = y;
+      if(!lineMap.has(key)) lineMap.set(key, []);
+      lineMap.get(key).push({x: item.transform[4], text: item.str});
+    });
+    const sortedKeys = Array.from(lineMap.keys()).sort((a,b)=>b-a); // PDF y-axis increases upward, so descending = top-to-bottom
+    sortedKeys.forEach(k=>{
+      const items = lineMap.get(k).sort((a,b)=>a.x-b.x);
+      const lineText = items.map(i=>i.text).join(' ').replace(/\s+/g,' ').trim();
+      if(lineText) allLines.push(lineText);
+    });
+  }
+  return allLines;
+}
+function parsePdfLinesToRows(lines){
+  const dateRe = /(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})|(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4})/i;
+  const numRe = /[\d][\d,]*\.\d{2}|[\d][\d,]{2,}/g;
+  const skipLineRe = /statement of account|account number|ifsc|micr|period\s*:|page\s+\d+\s+of|generated on|customer id|branch\s*:/i;
+  const rows = [];
+  let prevBalance = null;
+  lines.forEach(line=>{
+    if(skipLineRe.test(line)) return;
+    const allDateMatches = line.match(new RegExp(dateRe.source, 'gi')) || [];
+    if(allDateMatches.length !== 1) return; // exactly one date expected on a real transaction row; 0 or 2+ usually means a header/period-range/footer line
+    const dateMatch = line.match(dateRe);
+    if(!dateMatch) return;
+    const dateStr = dateMatch[0];
+    const rest = line.slice(dateMatch.index + dateStr.length);
+    const numberStrs = rest.match(numRe) || [];
+    if(!numberStrs.length) return;
+    const numbers = numberStrs.map(n=>Number(n.replace(/,/g,'')));
+    let desc = rest;
+    numberStrs.forEach(n=>{ desc = desc.replace(n, ' '); });
+    desc = desc.replace(/\s+/g,' ').trim();
+    let debit=0, credit=0, balance=null;
+    if(numbers.length===1){
+      // Only one number on the line — no separate balance visible, treat as the transaction amount and
+      // guess the side from common keywords; the preview lets this be corrected either way.
+      const amt = numbers[0];
+      if(/dr|debit|withdraw|paid|purchase/i.test(desc)) debit = amt; else credit = amt;
+    } else {
+      balance = numbers[numbers.length-1]; // right-most number is almost always the running balance
+      const amt = numbers[numbers.length-2];
+      if(prevBalance!==null) { if(balance > prevBalance) credit = amt; else debit = amt; }
+      else if(/dr|debit|withdraw|paid|purchase/i.test(desc)) debit = amt; else credit = amt;
+    }
+    if(balance!==null) prevBalance = balance;
+    rows.push({date: parseStatementDate(dateStr), desc, debit, credit, balance});
+  });
+  return rows;
+}
+function handlePdfStatementUpload(ev, targetKind){
+  const file = ev.target.files[0]; if(!file) return;
+  loadPdfJs(async ()=>{
+    try{
+      const buf = await file.arrayBuffer();
+      const lines = await extractLinesFromPDF(buf);
+      const rows = parsePdfLinesToRows(lines);
+      if(!rows.length){ toast('Could not find any recognisable transaction rows in this PDF — bank statement PDFs vary a lot in layout, so this doesn\'t always work. Try exporting as CSV or Excel from your bank\'s website instead, if available.'); return; }
+      openPdfPreviewModal(rows, targetKind);
+    }catch(err){ toast('Could not read this PDF — it may be a scanned image rather than real text, which cannot be extracted this way.'); }
+  });
+  ev.target.value='';
+}
+function openPdfPreviewModal(rows, targetKind){
+  window.__pdfPreviewRows = rows;
+  window.__pdfPreviewTarget = targetKind;
+  openModal(`<div class="modal-head"><h2>Review Extracted Rows</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">PDF layouts vary a lot, so this is a best-effort extraction — <b>check each row before continuing</b>, especially whether an amount landed in the right Debit/Credit column. Remove any row that isn't a real transaction (headers, page totals, etc).</p>
+    <div class="tbl-wrap" style="max-height:320px;overflow-y:auto;"><table><tr><th>Date</th><th>Description</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th><th class="num-cell">Balance</th><th></th></tr>
+    ${rows.map((r,i)=>`<tr>
+      <td><input type="date" value="${r.date}" style="width:120px;font-size:11px;padding:4px;" data-pdvfield="date" data-pdvidx="${i}"></td>
+      <td><input type="text" value="${(r.desc||'').replace(/"/g,'&quot;')}" style="width:140px;font-size:11px;padding:4px;" data-pdvfield="desc" data-pdvidx="${i}"></td>
+      <td><input type="number" value="${r.debit||''}" style="width:80px;font-size:11px;padding:4px;" data-pdvfield="debit" data-pdvidx="${i}"></td>
+      <td><input type="number" value="${r.credit||''}" style="width:80px;font-size:11px;padding:4px;" data-pdvfield="credit" data-pdvidx="${i}"></td>
+      <td><input type="number" value="${r.balance!=null?r.balance:''}" style="width:90px;font-size:11px;padding:4px;" data-pdvfield="balance" data-pdvidx="${i}"></td>
+      <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').style.display='none';window.__pdfPreviewRows[${i}]=null;">✕</button></td>
+    </tr>`).join('')}
+    </table></div>
+    <button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="confirmPdfPreview()">Use These Rows</button>`);
+}
+function confirmPdfPreview(){
+  document.querySelectorAll('[data-pdvfield]').forEach(inp=>{
+    const idx = Number(inp.dataset.pdvidx), field = inp.dataset.pdvfield;
+    if(window.__pdfPreviewRows[idx]) window.__pdfPreviewRows[idx][field] = field==='date'||field==='desc'? inp.value : (inp.value===''? (field==='balance'?null:0) : Number(inp.value));
+  });
+  const rows = window.__pdfPreviewRows.filter(r=>r!==null);
+  if(!rows.length){ toast('No rows left to use'); return; }
+  const asRows = [['Date','Description','Debit','Credit','Balance'], ...rows.map(r=>[r.date, r.desc, r.debit||'', r.credit||'', r.balance!=null?r.balance:''])];
+  const target = window.__pdfPreviewTarget;
+  if(target==='reconcile'){
+    closeModal();
+    processStatementRows(asRows);
+  } else if(target==='interest'){
+    // The preview modal replaced the Interest Verify modal's own fields — reopen it fresh first, then
+    // populate it, rather than writing into fields that no longer exist in the DOM.
+    openInterestVerifyModal(window.__ivBankId);
+    parseInterestVerificationRows(asRows);
+  }
 }
 function toggleReconClear(voucherId){
   const b = DB.bankAccounts.find(x=>x.id===window.__reconBankId); if(!b) return;
@@ -7297,7 +7472,9 @@ const FAQ = [
   {k:['logout tally check','before you log out','logout warning','check before logout'], q:'Does it check tallying before letting me log out?',
    a:'Yes \u2014 tapping \u23fb to log out now checks Trial Balance and Balance Sheet first. If both tally (the normal case), it logs out immediately with no interruption. If either doesn\'t, it stops you with the same diagnosis as Reports \u2192 Diagnose Tallying \u2014 the exact cause and the fix \u2014 and gives you two choices: <b>Fix This First</b> (stays logged in, jumps straight to the diagnosis) or <b>Log Out Anyway</b> (proceeds regardless, for when you need to leave now and will sort it out later). This only applies to tapping the logout button yourself \u2014 auto-logout from inactivity always proceeds immediately regardless, since there\'s no one there to respond to a prompt, and leaving a session open for security reasons matters more in that moment than a data check.'},
   {k:['verify interest','interest calculation','bank interest check','compare interest','interest rate calculate','check bank interest'], q:'Can I check if the bank calculated interest correctly on a savings account?',
-   a:'Yes \u2014 Setup \u2192 Bank & FD Accounts \u2192 "Verify Interest" next to any savings account. Upload the statement for the period (CSV or Excel) and enter the rate the bank quotes you; it computes what interest should have accrued on your daily closing balance \u2014 the same method banks themselves use \u2014 and compares it to whatever the statement shows was actually credited (it looks for a credit row mentioning "interest", "INT CR", or similar). A small gap is normal (banks vary slightly in day-count and rounding conventions); a large one is flagged clearly, with the exact rupee and percentage difference, so you know when it is worth raising with the bank. Works best if the statement has a running Balance column (the template now includes one) \u2014 without it, you will be asked for the opening balance instead so daily balances can still be worked out.'},
+   a:'Yes \u2014 Setup \u2192 Bank & FD Accounts \u2192 "Verify Interest" next to any savings account. Upload the statement (CSV or Excel) and it auto-detects the full calendar month(s) it covers \u2014 <b>not just the dates that happen to appear in the file</b>. So if your statement\u2019s first transaction is on the 15th and last is on the 26th, it still calculates interest for every day of that whole month: the balance carried from before the 15th (you\u2019ll be asked for that opening balance), then the actual transactions, then the last known balance carried forward through the end of the month too. Enter the rate the bank quotes you, and it compares its daily-balance calculation to whatever the statement shows was actually credited (it looks for a row mentioning "interest", "INT CR", or similar). A small gap is normal (banks vary slightly in day-count and rounding conventions); a large one is flagged clearly, with the exact rupee and percentage difference. The auto-detected period is also editable, in case you want to check a custom range instead of a full month.'},
+  {k:['pdf bank statement','upload pdf','pdf reconciliation','pdf interest','scanned statement'], q:'Can I upload a PDF bank statement instead of CSV or Excel?',
+   a:'Yes, for both Reconciliation and Verify Interest \u2014 but with an honest caveat: a PDF has no real structure like a spreadsheet does, it is just text positioned on a page, so this is best-effort rather than as reliable as CSV/Excel. It extracts the text, reconstructs table rows, and uses a few heuristics (whichever number is right-most is usually the running balance; whether that balance went up or down decides debit vs credit) to guess each row. Every extracted row is then shown in an <b>editable preview</b> before anything is used \u2014 fix a misread amount, correct which column a number landed in, or remove a row that is not really a transaction (page headers, totals, etc.) \u2014 only once you confirm does it feed into the same reconciliation or interest calculation used for CSV/Excel. This will not work on a scanned image PDF (one that is really a photo, not real text) \u2014 if your bank offers a CSV or Excel export instead, that will always be more reliable.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
