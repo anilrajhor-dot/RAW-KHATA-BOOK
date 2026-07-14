@@ -1917,6 +1917,40 @@ function statementFooter(){
     ${roles.map(r=>`<div style="border-top:1px solid var(--ink);padding-top:5px;font-size:11px;color:var(--ink-soft);">${r}</div>`).join('')}
   </div>`;
 }
+/* ============ LEDGER EXPORT (CSV / Excel / Share) ============
+   Exports any ledger-style report (Bank Book, General Ledger, Cash Book) as Date, Description,
+   Debit, Credit, Balance — the exact column layout the app's own Reconcile / Verify Interest uploads
+   expect, so the app's own records can round-trip through those features, or just be shared as-is. */
+function csvEscape(v){ const s=String(v==null?'':v); return /[",\n]/.test(s)? '"'+s.replace(/"/g,'""')+'"' : s; }
+function rowsToCSVText(rows){ return rows.map(r=>r.map(csvEscape).join(',')).join('\r\n'); }
+function downloadLedgerCSV(rows, filename){
+  const blob = new Blob([rowsToCSVText(rows)],{type:'text/csv'});
+  const url = URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download=filename; a.click();
+  toast('CSV downloaded');
+}
+function downloadLedgerExcel(rows, filename){
+  loadSheetJS(()=>{
+    try{
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Statement');
+      XLSX.writeFile(wb, filename);
+      toast('Excel file downloaded');
+    }catch(e){ toast('Could not generate the Excel file — try CSV instead'); }
+  });
+}
+async function shareLedgerCSV(rows, filename, title){
+  const text = rowsToCSVText(rows);
+  if(navigator.share && navigator.canShare){
+    try{
+      const file = new File([text], filename, {type:'text/csv'});
+      if(navigator.canShare({files:[file]})){ await navigator.share({files:[file], title}); return; }
+    }catch(e){ /* fall through to download */ }
+  }
+  downloadLedgerCSV(rows, filename);
+  toast('Sharing isn\'t available on this device/browser — downloaded instead, so you can share the file manually.');
+}
 function nowTS(){ return new Date().toISOString(); }
 function isReadOnly(){ return window.__currentRole==='Auditor' || window.__currentRole==='President'; }
 function canManageAccess(){ return window.__currentRole==='President'; }
@@ -4954,20 +4988,31 @@ function renderReports(){
       </div>`).join('')}
       <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Tap this anytime — it recomputes live from your current data, nothing is cached. You can also just ask the 💬 chat assistant "why is my balance sheet not matching" for the same analysis in conversational form.</p>` + statementFooter();
   } else if(sr==='genledger'){
+    window.__ledgerExportData = window.__ledgerExportData || {};
     const accsWithActivity = Object.keys(ACCOUNTS).filter(a=>{
       return DB.vouchers.some(v=>v.status==='approved' && v.date>=from && v.date<=to && v.entries.some(e=>e.account===a));
     });
-    const sections = accsWithActivity.map(accName=>{
+    const sections = accsWithActivity.map((accName,ai)=>{
       let bal = accBalance(accName,{upto:dayBefore(from)}).net;
       const opening = bal;
+      const exportKey = 'genl_'+ai;
+      const csvRows = [['Date','Description','Debit','Credit','Balance'], [from,'Opening Balance','','',opening]];
       const rows2 = DB.vouchers.filter(v=>v.status==='approved' && v.date>=from && v.date<=to && v.entries.some(e=>e.account===accName)).sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id)
         .map(v=>{ const e=v.entries.find(x=>x.account===accName); bal += (e.debit||0)-(e.credit||0);
+          csvRows.push([v.date, v.narration||v.type, e.debit||'', e.credit||'', bal]);
           return `<tr><td style="font-size:11px;">${v.voucherNo||'#'+v.id}</td><td>${v.date}</td><td style="font-size:12px;">${v.narration||v.type}</td><td class="num-cell">${e.debit?'₹'+fmt(e.debit):''}</td><td class="num-cell">${e.credit?'₹'+fmt(e.credit):''}</td><td class="num-cell">₹${fmt(bal)}</td></tr>`; }).join('');
+      window.__ledgerExportData[exportKey] = csvRows;
+      const filenameBase = `${accName.replace(/[^a-z0-9]/gi,'-')}-ledger-${from}-to-${to}`;
       return `<h3 style="font-size:13px;margin-top:16px;">${accName} <span style="font-weight:400;color:var(--ink-soft);font-size:11px;">(${ACCOUNTS[accName]})</span></h3>
         <div class="tbl-wrap"><table><tr><th>Voucher</th><th>Date</th><th>Narration</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th><th class="num-cell">Balance</th></tr>
         <tr style="color:var(--ink-soft);font-style:italic;"><td colspan="5">Opening Balance</td><td class="num-cell">₹${fmt(opening)}</td></tr>
         ${rows2}
-        <tr style="font-weight:700;border-top:2px solid var(--ink)"><td colspan="5">Closing Balance</td><td class="num-cell">₹${fmt(bal)}</td></tr></table></div>`;
+        <tr style="font-weight:700;border-top:2px solid var(--ink)"><td colspan="5">Closing Balance</td><td class="num-cell">₹${fmt(bal)}</td></tr></table></div>
+        <div class="no-print" style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 4px;">
+          <button class="btn btn-outline btn-sm" onclick="downloadLedgerCSV(window.__ledgerExportData['${exportKey}'],'${filenameBase}.csv')">⬇ CSV</button>
+          <button class="btn btn-outline btn-sm" onclick="downloadLedgerExcel(window.__ledgerExportData['${exportKey}'],'${filenameBase}.xlsx')">⬇ Excel</button>
+          <button class="btn btn-outline btn-sm" onclick="shareLedgerCSV(window.__ledgerExportData['${exportKey}'],'${filenameBase}.csv','${accName} Ledger')">📤 Share</button>
+        </div>`;
     }).join('');
     body = statementHeader('General Ledger — All Accounts', `For the period ${from} to ${to}`) + (sections || `<div class="empty"><div class="ic">§</div>No activity in this period.</div>`) + statementFooter();
   } else if(sr==='daybook'){
@@ -4983,30 +5028,56 @@ function renderReports(){
     }).join('');
     body = statementHeader('Day Book', `For the period ${from} to ${to}`) + (sections || `<div class="empty"><div class="ic">§</div>No approved entries in this period.</div>`) + statementFooter();
   } else if(sr==='cashbook'){
+    window.__ledgerExportData = window.__ledgerExportData || {};
     const accName = 'Cash in Hand';
     let bal = accBalance(accName,{upto:dayBefore(from)}).net; const opening = bal;
+    const csvRows = [['Date','Description','Debit','Credit','Balance'], [from,'Opening Balance','','',opening]];
     const rows2 = DB.vouchers.filter(v=>v.status==='approved' && v.date>=from && v.date<=to && v.entries.some(e=>e.account===accName)).sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id)
       .map(v=>{ const e=v.entries.find(x=>x.account===accName); bal += (e.debit||0)-(e.credit||0);
+        csvRows.push([v.date, v.narration||v.type, e.debit||'', e.credit||'', bal]);
         return `<tr><td style="font-size:11px;">${v.voucherNo||'#'+v.id}</td><td>${v.date}</td><td style="font-size:12px;">${v.narration||v.type}</td><td class="num-cell">${e.debit?'₹'+fmt(e.debit):''}</td><td class="num-cell">${e.credit?'₹'+fmt(e.credit):''}</td><td class="num-cell">₹${fmt(bal)}</td></tr>`; }).join('');
+    window.__ledgerExportData['cashbook'] = csvRows;
+    const cbFilenameBase = `cash-book-${from}-to-${to}`;
     body = statementHeader('Cash Book', `For the period ${from} to ${to}`) +
       `<div class="tbl-wrap"><table><tr><th>Voucher</th><th>Date</th><th>Narration</th><th class="num-cell">Receipts (Dr)</th><th class="num-cell">Payments (Cr)</th><th class="num-cell">Balance</th></tr>
       <tr style="color:var(--ink-soft);font-style:italic;"><td colspan="5">Opening Balance</td><td class="num-cell">₹${fmt(opening)}</td></tr>
       ${rows2||'<tr><td colspan=6 style="color:var(--ink-soft)">No cash movement in this period</td></tr>'}
-      <tr style="font-weight:700;border-top:2px solid var(--ink)"><td colspan="5">Closing Balance</td><td class="num-cell">₹${fmt(bal)}</td></tr></table></div>` + statementFooter();
+      <tr style="font-weight:700;border-top:2px solid var(--ink)"><td colspan="5">Closing Balance</td><td class="num-cell">₹${fmt(bal)}</td></tr></table></div>
+      <div class="no-print" style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 4px;">
+        <button class="btn btn-outline btn-sm" onclick="downloadLedgerCSV(window.__ledgerExportData['cashbook'],'${cbFilenameBase}.csv')">⬇ CSV</button>
+        <button class="btn btn-outline btn-sm" onclick="downloadLedgerExcel(window.__ledgerExportData['cashbook'],'${cbFilenameBase}.xlsx')">⬇ Excel</button>
+        <button class="btn btn-outline btn-sm" onclick="shareLedgerCSV(window.__ledgerExportData['cashbook'],'${cbFilenameBase}.csv','Cash Book')">📤 Share</button>
+      </div>` + statementFooter();
   } else if(sr==='bankbook'){
     syncBankLedgerAccounts();
+    window.__ledgerExportData = window.__ledgerExportData || {};
     const banks = DB.bankAccounts.filter(b=>b.type!=='FD' && b.ledgerAccountName);
-    const sections = (banks.length?banks:[{bankName:'Bank Account', ledgerAccountName:'Bank Account'}]).map(b=>{
+    const sections = (banks.length?banks:[{bankName:'Bank Account', ledgerAccountName:'Bank Account'}]).map((b,bi)=>{
       const accName = b.ledgerAccountName;
       let bal = accBalance(accName,{upto:dayBefore(from)}).net; const opening = bal;
+      const exportKey = 'bank_'+bi;
+      const csvRows = [['Date','Description','Debit','Credit','Balance'], [from,'Opening Balance','','',opening]];
       const rows2 = DB.vouchers.filter(v=>v.status==='approved' && v.date>=from && v.date<=to && v.entries.some(e=>e.account===accName)).sort((a,b2)=>a.date.localeCompare(b2.date)||a.id-b2.id)
         .map(v=>{ const e=v.entries.find(x=>x.account===accName); bal += (e.debit||0)-(e.credit||0);
+          // Note the deliberate swap: a bank statement's own Debit/Credit columns mean the OPPOSITE of
+          // this app's internal ledger Debit/Credit for an asset account (ledger debit = money IN to the
+          // bank = a statement CREDIT/deposit; ledger credit = money OUT = a statement DEBIT/withdrawal).
+          // Exporting with the ledger's own labels would silently fail to match anything if re-uploaded.
+          csvRows.push([v.date, v.narration||v.type, e.credit||'', e.debit||'', bal]);
           return `<tr><td style="font-size:11px;">${v.voucherNo||'#'+v.id}</td><td>${v.date}</td><td style="font-size:12px;">${v.narration||v.type}</td><td class="num-cell">${e.debit?'₹'+fmt(e.debit):''}</td><td class="num-cell">${e.credit?'₹'+fmt(e.credit):''}</td><td class="num-cell">₹${fmt(bal)}</td></tr>`; }).join('');
+      window.__ledgerExportData[exportKey] = csvRows;
+      const filenameBase = `${b.bankName.replace(/[^a-z0-9]/gi,'-')}-statement-${from}-to-${to}`;
       return `<h3 style="font-size:13px;margin-top:14px;">${b.bankName}${b.accountNumber?' · ×'+b.accountNumber.slice(-4):''}</h3>
         <div class="tbl-wrap"><table><tr><th>Voucher</th><th>Date</th><th>Narration</th><th class="num-cell">Deposits (Dr)</th><th class="num-cell">Withdrawals (Cr)</th><th class="num-cell">Balance</th></tr>
         <tr style="color:var(--ink-soft);font-style:italic;"><td colspan="5">Opening Balance</td><td class="num-cell">₹${fmt(opening)}</td></tr>
         ${rows2||'<tr><td colspan=6 style="color:var(--ink-soft)">No movement in this period</td></tr>'}
-        <tr style="font-weight:700;border-top:2px solid var(--ink)"><td colspan="5">Closing Balance</td><td class="num-cell">₹${fmt(bal)}</td></tr></table></div>`;
+        <tr style="font-weight:700;border-top:2px solid var(--ink)"><td colspan="5">Closing Balance</td><td class="num-cell">₹${fmt(bal)}</td></tr></table></div>
+        <div class="no-print" style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 4px;">
+          <button class="btn btn-outline btn-sm" onclick="downloadLedgerCSV(window.__ledgerExportData['${exportKey}'],'${filenameBase}.csv')">⬇ CSV</button>
+          <button class="btn btn-outline btn-sm" onclick="downloadLedgerExcel(window.__ledgerExportData['${exportKey}'],'${filenameBase}.xlsx')">⬇ Excel</button>
+          <button class="btn btn-outline btn-sm" onclick="shareLedgerCSV(window.__ledgerExportData['${exportKey}'],'${filenameBase}.csv','${b.bankName} Statement')">📤 Share</button>
+        </div>
+        <p class="no-print" style="font-size:10px;color:var(--ink-soft);margin-top:2px;">Same Date/Description/Debit/Credit/Balance layout the Reconcile and Verify Interest uploads expect — this is your own recorded transactions, not your bank's real statement, but ready to re-upload if useful.</p>`;
     }).join('');
     body = statementHeader('Bank Book', `For the period ${from} to ${to}`) + sections + statementFooter();
   } else if(sr==='journal'){
@@ -7475,6 +7546,8 @@ const FAQ = [
    a:'Yes \u2014 Setup \u2192 Bank & FD Accounts \u2192 "Verify Interest" next to any savings account. Upload the statement (CSV or Excel) and it auto-detects the full calendar month(s) it covers \u2014 <b>not just the dates that happen to appear in the file</b>. So if your statement\u2019s first transaction is on the 15th and last is on the 26th, it still calculates interest for every day of that whole month: the balance carried from before the 15th (you\u2019ll be asked for that opening balance), then the actual transactions, then the last known balance carried forward through the end of the month too. Enter the rate the bank quotes you, and it compares its daily-balance calculation to whatever the statement shows was actually credited (it looks for a row mentioning "interest", "INT CR", or similar). A small gap is normal (banks vary slightly in day-count and rounding conventions); a large one is flagged clearly, with the exact rupee and percentage difference. The auto-detected period is also editable, in case you want to check a custom range instead of a full month.'},
   {k:['pdf bank statement','upload pdf','pdf reconciliation','pdf interest','scanned statement'], q:'Can I upload a PDF bank statement instead of CSV or Excel?',
    a:'Yes, for both Reconciliation and Verify Interest \u2014 but with an honest caveat: a PDF has no real structure like a spreadsheet does, it is just text positioned on a page, so this is best-effort rather than as reliable as CSV/Excel. It extracts the text, reconstructs table rows, and uses a few heuristics (whichever number is right-most is usually the running balance; whether that balance went up or down decides debit vs credit) to guess each row. Every extracted row is then shown in an <b>editable preview</b> before anything is used \u2014 fix a misread amount, correct which column a number landed in, or remove a row that is not really a transaction (page headers, totals, etc.) \u2014 only once you confirm does it feed into the same reconciliation or interest calculation used for CSV/Excel. This will not work on a scanned image PDF (one that is really a photo, not real text) \u2014 if your bank offers a CSV or Excel export instead, that will always be more reliable.'},
+  {k:['download my own statement','export bank book','download ledger','share ledger','export csv ledger','export excel ledger','download statement csv'], q:'Can I download my own bank statement or any ledger from the app, and share it?',
+   a:'Yes \u2014 Reports \u2192 Bank Book, General Ledger, and Cash Book all have <b>CSV</b>, <b>Excel</b>, and <b>Share</b> buttons, for whatever period you have selected (a month, a year, or any custom range). General Ledger gives you every account head with activity in that period, each with its own export buttons, so any ledger you need \u2014 Housekeeping Expense, Maintenance Receivable, any account \u2014 is one tap away. The CSV/Excel layout (Date, Description, Debit, Credit, Balance) matches genuine bank-statement conventions exactly, so a Bank Book export can be re-uploaded into Reconcile or Verify Interest and will match correctly \u2014 useful for testing those features, or as a record of your own transactions in a portable format. Share uses your device\'s own share sheet where available (straight to WhatsApp, email, etc.); where it is not supported, it downloads the file instead so you can share it manually.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
