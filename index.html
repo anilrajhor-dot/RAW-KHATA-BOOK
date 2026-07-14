@@ -1821,6 +1821,7 @@ function paymentViaSelect(id, selected){
 /* ============ ROUTER ============ */
 const TABS = [
   {id:'dashboard', label:'Dash', ic:'⌂'},
+  {id:'controlpanel', label:'Status', ic:'◈'},
   {id:'flats', label:'Flats', ic:'⌘'},
   {id:'billing', label:'Billing', ic:'▤'},
   {id:'receipts', label:'Receipts', ic:'⊙'},
@@ -1862,6 +1863,7 @@ function render(){
   const fab = document.getElementById('fabBtn');
   fab.style.display='flex';
   if(route==='dashboard'){ c.innerHTML = renderDashboard(); fab.style.display='none'; }
+  else if(route==='controlpanel'){ c.innerHTML = renderControlPanel(); fab.style.display='none'; }
   else if(route==='flats'){ c.innerHTML = renderFlats(); fab.onclick=()=>openFlatModal(); }
   else if(route==='billing'){ c.innerHTML = renderBilling(); if(subroute==='meters'){ fab.style.display='none'; } else if(subroute==='consolidated'){ fab.onclick=()=>openConsolidatedBillModal(); } else { fab.onclick=()=>openGenerateBillModal(); } }
   else if(route==='receipts'){ c.innerHTML = renderReceipts(); fab.onclick=()=>openReceiptModal(); }
@@ -1988,7 +1990,7 @@ function receiptsPaymentsStatement(from, to){
 function statementHeader(title, periodLabel){
   return `<div style="text-align:center;margin-bottom:14px;">
     <div style="font-family:'Zilla Slab',serif;font-weight:700;font-size:16px;">${DB.society.name}</div>
-    <div style="font-size:12.5px;font-weight:600;margin-top:2px;">${title}</div>
+    <div id="printTitleSource" data-title="${title.replace(/"/g,'&quot;')}" style="font-size:12.5px;font-weight:600;margin-top:2px;">${title}</div>
     <div style="font-size:11.5px;color:var(--ink-soft);margin-top:1px;">${periodLabel}</div>
     <div style="font-size:9.5px;color:var(--ink-soft);margin-top:3px;">(All figures in ₹ · unaudited draft generated ${todayISO()})</div>
   </div>`;
@@ -2270,6 +2272,101 @@ function reverseApprovalSideEffects(v){
 }
 
 /* ============ DASHBOARD ============ */
+/* ============ SOCIETY CONTROL PANEL ============
+   One consolidated screen pulling together everything already computed separately elsewhere
+   (financial health, tamper-evidence, backup status, pending approvals) plus a few genuinely new
+   pieces — a security-practices score, and a device-status note. That last one is worded carefully:
+   it's an honest, informational nudge ("this looks like a different device"), not real security —
+   a static offline file has no way to actually enforce which device may open it, since there's no
+   server for one device to check in with. Presenting it as anything stronger would be misleading. */
+function computeSecurityScore(){
+  const items = [];
+  const add=(label,ok,weight,detail)=>items.push({label,ok,weight,detail});
+  const roles = ['Accountant','Treasurer','Auditor','President'];
+
+  const totpCount = roles.filter(r=>DB.security.totp?.[r]?.enabled).length;
+  add('Two-Factor Authentication Adopted', totpCount>=2, 20, `${totpCount} of ${roles.length} role(s) have 2FA enabled${totpCount<2?' — encourage at least the Treasurer and President to set it up (🔑 icon → Enable 2FA)':''}`);
+
+  const defaultPinRoles = roles.filter(r=>DB.security.pins[r]==='1234');
+  add('No Roles Still Using the Default PIN', defaultPinRoles.length===0, 20, defaultPinRoles.length? `${defaultPinRoles.join(', ')} still use the starting PIN (1234) — change this under 🔑` : 'Every role has changed their PIN from the default');
+
+  add('Auto-Logout Enabled', !!DB.security.autoLogoutMinutes, 15, DB.security.autoLogoutMinutes? `Logs out after ${DB.security.autoLogoutMinutes} minutes of inactivity` : 'Off — an unattended, unlocked session stays open indefinitely');
+
+  add('PIN Expiry Policy Set', !!DB.security.pinExpiryDays, 10, DB.security.pinExpiryDays? `PINs expire every ${DB.security.pinExpiryDays} days` : 'Off — PINs never expire on their own');
+
+  add('No Tampering Detected', window.__integrityCheckResult!=='mismatch', 20,
+    window.__integrityCheckResult==='mismatch'? 'Stored data does not match its recorded integrity hash' : window.__integrityCheckResult==='ok'? 'Matches its recorded integrity hash from last session' : 'Nothing to compare yet on this device');
+
+  const stuckPinChange = roles.filter(r=>DB.security.mustChangePin?.[r]);
+  add('No Roles Stuck On A Forced PIN Change', stuckPinChange.length===0, 15, stuckPinChange.length? `${stuckPinChange.join(', ')} ha${stuckPinChange.length===1?'s':'ve'} a pending forced PIN change` : 'Complete');
+
+  const totalWeight = items.reduce((s,i)=>s+i.weight,0);
+  const earned = items.reduce((s,i)=>s+(i.ok?i.weight:0),0);
+  const score = Math.round(earned/totalWeight*100);
+  const grade = score>=90?'A':score>=75?'B':score>=60?'C':'D';
+  return {score, grade, items};
+}
+function getDeviceStatus(){
+  if(!DB.registeredDevice){
+    // First time this check has ever run on this dataset — silently register the current device as
+    // the baseline, rather than immediately flagging a "mismatch" against nothing.
+    DB.registeredDevice = { fingerprint: `${navigator.userAgent}|${navigator.platform||''}|${screen.width}x${screen.height}`, registeredAt: nowTS() };
+    save();
+  }
+  const currentFingerprint = `${navigator.userAgent}|${navigator.platform||''}|${screen.width}x${screen.height}`;
+  return { matches: currentFingerprint === DB.registeredDevice.fingerprint, registeredAt: DB.registeredDevice.registeredAt };
+}
+function renderControlPanel(){
+  const health = computeAccountingHealthScore();
+  const security = computeSecurityScore();
+  const device = getDeviceStatus();
+  const pendingVouchers = DB.vouchers.filter(v=>v.status==='pending').length;
+  const pendingImport = !!DB.importRequest, pendingArchive = !!DB.archiveRequest;
+  const openObjections = DB.auditObservations.filter(o=>o.status!=='Closed').length;
+  const backupDays = DB.lastBackupAt? Math.floor((new Date()-new Date(DB.lastBackupAt))/86400000) : null;
+  const myLastLogin = DB.loginHistory.slice().reverse().find(l=>l.role===window.__currentRole);
+  const scoreColor = s=> s>=90?'var(--moss)':s>=75?'var(--gold)':'var(--brick)';
+
+  const statCard = (label, value, ok, detail)=>`<div class="card" style="box-shadow:none;border:1px solid var(--border);text-align:center;padding:14px 10px;">
+    <div style="font-size:22px;">${ok===true?'✅':ok===false?'⚠️':'●'}</div>
+    <div style="font-weight:700;font-size:16px;margin-top:2px;color:${ok===true?'var(--moss)':ok===false?'var(--brick)':'var(--ink)'};">${value}</div>
+    <div style="font-size:10.5px;color:var(--ink-soft);margin-top:2px;">${label}</div>
+    ${detail?`<div style="font-size:9.5px;color:var(--ink-soft);margin-top:3px;">${detail}</div>`:''}
+  </div>`;
+
+  return `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Everything below is computed live from current data — nothing cached, refresh anytime by revisiting this screen.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
+      ${statCard('Financial Health', health.score+'/100 · '+health.grade, health.score>=75, health.items.filter(i=>!i.ok).length? health.items.filter(i=>!i.ok).length+' item(s) need attention' : 'All checks passed')}
+      ${statCard('Security Score', security.score+'/100 · '+security.grade, security.score>=75, security.items.filter(i=>!i.ok).length? security.items.filter(i=>!i.ok).length+' item(s) need attention' : 'All checks passed')}
+      ${statCard('Data Integrity', window.__integrityCheckResult==='mismatch'?'Mismatch':window.__integrityCheckResult==='ok'?'Verified':'Unchecked', window.__integrityCheckResult==='mismatch'?false:window.__integrityCheckResult==='ok'?true:null, 'SHA-256 tamper-evidence check')}
+      ${statCard('Backup Status', backupDays===null?'None yet':backupDays===0?'Today':backupDays+'d ago', backupDays!==null && backupDays<7, DB.lastBackupVerified?'✓ Last export verified':backupDays!==null?'⚠ Not yet verified':'Export one from Setup → Data')}
+      ${statCard('Pending Approvals', pendingVouchers+(pendingImport?1:0)+(pendingArchive?1:0), (pendingVouchers+(pendingImport?1:0)+(pendingArchive?1:0))===0, 'Vouchers, imports & archives awaiting a different role')}
+      ${statCard('Open Audit Objections', openObjections, openObjections===0, openObjections?'See Audit → Observations':'None outstanding')}
+    </div>
+
+    <div class="card" style="margin-bottom:12px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:8px;">🔐 Device Status</div>
+      <p style="font-size:12px;">${device.matches
+        ? `✅ Matches the device this data was first used on (registered ${new Date(device.registeredAt).toLocaleDateString('en-IN')}).`
+        : `ℹ️ This looks like a different device/browser than where this data was first used (originally registered ${new Date(device.registeredAt).toLocaleDateString('en-IN')}).`}</p>
+      <p style="font-size:10.5px;color:var(--ink-soft);margin-top:6px;">Important honesty note: this is informational only, not a real security control — an offline file with no server has no way to truly verify or restrict which device opens it. A mismatch here often just means a browser update, cleared browser data, or a genuinely new device — not necessarily anything concerning. Your actual protection is the PIN/2FA login itself.</p>
+    </div>
+
+    <div class="card" style="margin-bottom:12px;">
+      <div style="font-weight:700;font-size:13px;margin-bottom:8px;">Security Score Breakdown</div>
+      ${security.items.map(i=>`<div style="display:flex;justify-content:space-between;align-items:start;padding:5px 0;border-top:1px solid var(--border);">
+        <div style="font-size:12px;">${i.ok?'✅':'⚠️'} ${i.label}<div style="font-size:10.5px;color:var(--ink-soft);">${i.detail}</div></div>
+        <div style="font-size:10.5px;color:var(--ink-soft);flex:0 0 auto;">${i.weight}pt</div>
+      </div>`).join('')}
+      <button class="btn btn-outline btn-sm" style="margin-top:10px;" onclick="go('settings')">Open Security Settings →</button>
+    </div>
+
+    <div class="card">
+      <div style="font-weight:700;font-size:13px;margin-bottom:8px;">Your Last Login</div>
+      <p style="font-size:12px;">${myLastLogin? new Date(myLastLogin.ts).toLocaleString('en-IN')+' · '+(myLastLogin.userAgent||'').slice(0,50) : 'This is your first recorded login on this device.'}</p>
+      <button class="btn btn-outline btn-sm" style="margin-top:6px;" onclick="go('settings')">View Full Login History →</button>
+    </div>`;
+}
 function renderDashboard(){
   const totalFlats = DB.flats.length;
   const occupied = DB.flats.filter(f=>f.occupancy!=='vacant').length;
@@ -2483,7 +2580,9 @@ function renderFlats(){
       </table></div></div>`;
     if(!body) body = `<div class="empty"><div class="ic">⌘</div>No categories defined yet — add one under Setup → Flat Categories.</div>`;
   } else {
-    const rows = DB.flats.slice().sort((a,b)=> (a.tower+a.flatNo).localeCompare(b.tower+b.flatNo)).map(f=>{
+    const flatsAll = DB.flats.slice().sort((a,b)=> (a.tower+a.flatNo).localeCompare(b.tower+b.flatNo));
+    const {pageItems: flatsPage, currentPage, totalPages, totalCount, pageSize} = paginateSlice(flatsAll, 'flatsList', 100);
+    const rows = flatsPage.map(f=>{
       const out = flatOutstanding(f.id);
       const cat = getFlatCategory(f);
       return `<tr onclick="openFlatModal('${f.id}')">
@@ -2493,11 +2592,10 @@ function renderFlats(){
       </tr>`;
     }).join('');
     body = `<div class="card"><div class="section-title"><span><span class="num">${String(DB.flats.length).padStart(2,'0')}</span>Flats & Owners</span></div>
-    <div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th class="num-cell">Due</th></tr>${rows}</table></div></div>`;
+    <div class="tbl-wrap"><table><tr><th>Flat</th><th>Owner</th><th class="num-cell">Due</th></tr>${rows}</table></div>${renderPaginationControls('flatsList', currentPage, totalPages, totalCount, pageSize)}</div>`;
   }
   return importBar + `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('flats','${t[0]}')">${t[1]}</button>`).join('')}</div>${body}`;
 }
-function csvEscape(v){ v=String(v??''); return /[,"\n]/.test(v)? '"'+v.replace(/"/g,'""')+'"' : v; }
 function parseCSVLine(line){
   const out=[]; let cur='', inQ=false;
   for(let i=0;i<line.length;i++){
@@ -2802,9 +2900,10 @@ function renderBilling(){
       <button class="btn btn-outline btn-sm" style="flex:1" onclick="openSendBillsQueue()">📤 Send Bills (WhatsApp/Email)</button>
     </div>`;
   if(sr==='bills'){
-    const bills = DB.bills.slice().sort((a,b)=> b.period.localeCompare(a.period) || flatLabel(getFlat(a.flatId)||{}).localeCompare(flatLabel(getFlat(b.flatId)||{})) );
-    if(!bills.length) body = actionBar + `<div class="empty"><div class="ic">▤</div>No bills generated yet — use either option above to get started.</div>`;
+    const billsAll = DB.bills.slice().sort((a,b)=> b.period.localeCompare(a.period) || flatLabel(getFlat(a.flatId)||{}).localeCompare(flatLabel(getFlat(b.flatId)||{})) );
+    if(!billsAll.length) body = actionBar + `<div class="empty"><div class="ic">▤</div>No bills generated yet — use either option above to get started.</div>`;
     else {
+      const {pageItems: bills, currentPage, totalPages, totalCount, pageSize} = paginateSlice(billsAll, 'bills', 50);
       const rows = bills.map(b=>{
         const f = getFlat(b.flatId); const out = billOutstanding(b);
         const status = out<=0?'paid': (b.dueDate && b.dueDate<todayISO()? 'overdue':'due');
@@ -2812,8 +2911,8 @@ function renderBilling(){
           <td class="num-cell">₹${fmt(b.total)}</td>
           <td><span class="stamp ${status}">${status}</span></td></tr>`;
       }).join('');
-      body = actionBar + `<div class="card"><div class="section-title"><span><span class="num">${String(bills.length).padStart(2,'0')}</span>Bills</span></div>
-      <div class="tbl-wrap"><table><tr><th>Flat / Period</th><th class="num-cell">Amount</th><th>Status</th></tr>${rows}</table></div></div>`;
+      body = actionBar + `<div class="card"><div class="section-title"><span><span class="num">${String(billsAll.length).padStart(2,'0')}</span>Bills</span></div>
+      <div class="tbl-wrap"><table><tr><th>Flat / Period</th><th class="num-cell">Amount</th><th>Status</th></tr>${rows}</table></div>${renderPaginationControls('bills', currentPage, totalPages, totalCount, pageSize)}</div>`;
     }
   } else if(sr==='meters'){
     body = renderMeterEntry();
@@ -3551,13 +3650,43 @@ function saveReceipt(){
 }
 
 /* ============ ACCOUNTS ============ */
+/* ============ PAGINATION ============
+   For large societies (hundreds of flats, years of vouchers), rendering every row into one giant
+   HTML table at once gets visibly slow — this keeps each page's render fast regardless of how much
+   history has built up, by only ever building the DOM for one page of rows at a time. */
+window.__paginationState = window.__paginationState || {};
+function paginateSlice(array, pageKey, pageSize){
+  pageSize = pageSize || 50;
+  const totalCount = array.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount/pageSize));
+  let page = window.__paginationState[pageKey] || 1;
+  if(page>totalPages) page = totalPages;
+  if(page<1) page = 1;
+  window.__paginationState[pageKey] = page;
+  const start = (page-1)*pageSize;
+  return { pageItems: array.slice(start, start+pageSize), currentPage: page, totalPages, totalCount, pageSize };
+}
+function goToPage(pageKey, page){ window.__paginationState[pageKey] = page; render(); }
+function renderPaginationControls(pageKey, currentPage, totalPages, totalCount, pageSize){
+  if(totalPages<=1) return '';
+  const start = (currentPage-1)*pageSize+1, end = Math.min(currentPage*pageSize, totalCount);
+  return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:8px;">
+    <span style="font-size:11px;color:var(--ink-soft);">Showing ${start}–${end} of ${totalCount}</span>
+    <div style="display:flex;gap:4px;align-items:center;">
+      <button class="btn btn-outline btn-sm" ${currentPage<=1?'disabled':''} onclick="goToPage('${pageKey}',${currentPage-1})">‹ Prev</button>
+      <span style="font-size:11.5px;padding:0 6px;">Page ${currentPage} of ${totalPages}</span>
+      <button class="btn btn-outline btn-sm" ${currentPage>=totalPages?'disabled':''} onclick="goToPage('${pageKey}',${currentPage+1})">Next ›</button>
+    </div>
+  </div>`;
+}
 function renderAccounts(){
   const sr = subroute || 'vouchers';
   const tabs = [['vouchers','Vouchers'],['ledger','Ledger'],['budget','Budget']];
   let body='';
   if(sr==='vouchers'){
-    const vs = DB.vouchers.slice().sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
-    body = vs.length? `<div class="tbl-wrap"><table><tr><th>Voucher No.</th><th>Date</th><th>Type</th><th>Narration</th><th class="num-cell">Amount</th><th>Status</th><th>Audit</th><th></th></tr>
+    const vsAll = DB.vouchers.slice().sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
+    const {pageItems: vs, currentPage, totalPages, totalCount, pageSize} = paginateSlice(vsAll, 'vouchers', 50);
+    body = vsAll.length? `<div class="tbl-wrap"><table><tr><th>Voucher No.</th><th>Date</th><th>Type</th><th>Narration</th><th class="num-cell">Amount</th><th>Status</th><th>Audit</th><th></th></tr>
       ${vs.map(v=>{
         let action='';
         if(!isReadOnly()){
@@ -3583,7 +3712,7 @@ function renderAccounts(){
         }
         return `<tr onclick="${v.status==='pending'?`go('approvals')`:''}"><td style="font-size:11px;font-family:'IBM Plex Mono',monospace;">${v.voucherNo||('#'+v.id)}</td><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">by ${actorLabel(v.maker,v.makerName)}</div></td><td>${v.type}</td><td>${v.narration||''}${reversalNote}</td><td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td><td><span class="stamp ${v.status}">${v.status}</span>${v.status==='approved'&&v.verificationCode?`<div style="font-size:9px;color:var(--ink-soft);font-family:monospace;cursor:pointer;text-decoration:underline dotted;" title="Tap to verify this hasn't been altered since approval" onclick="event.stopPropagation();verifyVoucherIntegrity(${v.id})">${v.verificationCode}</div>`:''}</td><td>${auditCell}</td><td>${action}</td></tr>`;
       }).join('')}
-      </table></div>` : `<div class="empty"><div class="ic">§</div>No vouchers yet.</div>`;
+      </table></div>${renderPaginationControls('vouchers', currentPage, totalPages, totalCount, pageSize)}` : `<div class="empty"><div class="ic">§</div>No vouchers yet.</div>`;
   } else if(sr==='ledger'){
     const accNames = Object.keys(ACCOUNTS);
     body = `<p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:10px;">Ledger reflects <b>approved</b> entries only — see Approve tab for items awaiting a checker.</p><div class="field"><label>Account</label><select id="ldg_acc" onchange="go('accounts','ledger')">${accNames.map(a=>`<option ${window.__ldgAcc===a?'selected':''}>${a}</option>`).join('')}</select></div>`;
@@ -3661,6 +3790,7 @@ function saveVoucher(){
   if(isReceipt && !narr) narr = `Receipt via ${document.getElementById('vc_modeDr').value}`;
   const dupVoucher = DB.vouchers.find(v=>v.status!=='rejected' && v.type===type && v.entries.some(e=>e.account===dr&&Math.abs((e.debit||0)-amt)<1) && v.entries.some(e=>e.account===cr&&Math.abs((e.credit||0)-amt)<1) && daysBetween(v.date,date)<=3);
   if(dupVoucher && !confirm(`A similar ${type.toLowerCase()} of ₹${fmt(amt)} between the same two accounts was already recorded on ${dupVoucher.date} (${dupVoucher.voucherNo||'#'+dupVoucher.id}). This could be a duplicate voucher.\n\nContinue anyway?`)) return;
+  if(!checkCashGuard([{account:dr,debit:amt,credit:0},{account:cr,debit:0,credit:amt}], date)) return;
   addVoucher({type,date,narration:narr,entries:[{account:dr,debit:amt,credit:0},{account:cr,debit:0,credit:amt}]});
   save(); closeModal(); clearDraft('voucher'); toast('Voucher submitted — awaiting checker approval'); go('accounts','vouchers');
 }
@@ -3867,6 +3997,21 @@ function drawVendorOutstanding(){
     ${open.map(b=>`<tr><td style="font-size:12px;">${b.date}${b.description?' · '+b.description:''}</td><td class="num-cell">₹${fmt(b.netPayable-b.paid)}</td></tr>`).join('')}
     <tr style="font-weight:700;"><td>Total Outstanding</td><td class="num-cell">₹${fmt(open.reduce((s,b)=>s+(b.netPayable-b.paid),0))}</td></tr></table></div>`;
 }
+/* ============ NEGATIVE CASH GUARD ============
+   Mirrors the existing negative-stock guard: you physically cannot pay out more cash than is on
+   hand, so this blocks (not just warns) before the entry is saved, the same hard-stop treatment
+   stock already gets. Only checks Cash in Hand specifically — bank accounts can legitimately run to
+   whatever the bank allows (overdraft, etc.), so this is deliberately cash-only. */
+function checkCashGuard(entries, date){
+  const cashEntry = entries.find(e=>e.account==='Cash in Hand' && (e.credit||0)>0);
+  if(!cashEntry) return true; // nothing paid out of cash in hand — nothing to check
+  const currentCash = accBalance('Cash in Hand', {upto: date}).net;
+  if(currentCash - cashEntry.credit < 0){
+    toast(`Cannot save — this would take Cash in Hand to ₹${fmt(currentCash-cashEntry.credit)} (currently ₹${fmt(currentCash)}, this pays out ₹${fmt(cashEntry.credit)}). Pay via bank instead, or record the cash you're actually holding first.`);
+    return false;
+  }
+  return true;
+}
 function saveVendorPayment(){
   if(!canEdit()) return;
   const vendorId=document.getElementById('vp_vendor').value, amount=Number(document.getElementById('vp_amt').value);
@@ -3876,8 +4021,9 @@ function saveVendorPayment(){
   if(blockIfPeriodClosed(date)) return;
   const dupPay = DB.vouchers.find(v=>v.status!=='rejected' && v.type==='VendorPayment' && v.vendorId===vendorId && Math.abs(v.entries.reduce((s,e)=>s+(e.debit||0),0)-amount)<1 && daysBetween(v.date,date)<=5);
   if(dupPay && !confirm(`A similar payment of ₹${fmt(amount)} to ${getVendor(vendorId).name} was already recorded on ${dupPay.date} (${dupPay.voucherNo||'#'+dupPay.id}). This could be a duplicate payment (e.g. the same cheque entered twice).\n\nContinue anyway?`)) return;
-  addVoucher({type:'VendorPayment', vendorId, date, narration:`Payment to ${getVendor(vendorId).name} (${via} → ${acc})`,
-    entries:[{account:'Vendor Creditors',debit:amount,credit:0},{account:acc,debit:0,credit:amount}]});
+  const entries = [{account:'Vendor Creditors',debit:amount,credit:0},{account:acc,debit:0,credit:amount}];
+  if(!checkCashGuard(entries, date)) return;
+  addVoucher({type:'VendorPayment', vendorId, date, narration:`Payment to ${getVendor(vendorId).name} (${via} → ${acc})`, entries});
   save(); closeModal(); toast('Payment submitted — awaiting checker approval'); go('vendors','payments');
 }
 
@@ -3981,6 +4127,7 @@ function processPayroll(){
     {account:'PF Payable',debit:0,credit:totalPFEmp+totalPFEmployer},
     {account:'ESI Payable',debit:0,credit:totalESIEmp+totalESIEmployer}
   ].filter(e=>e.debit>0||e.credit>0);
+  if(!checkCashGuard(entries, todayISO())){ DB.payrollRuns.pop(); return; }
   addVoucher({type:'Payroll', ref:run.id, date:todayISO(), narration:`Salary processing — ${period}`, entries});
   save(); closeModal(); toast('Payroll submitted — awaiting checker approval'); go('payroll','runs');
 }
@@ -4524,12 +4671,43 @@ function renderAudit(){
   const sr = subroute || 'overview';
   const openObsCount = DB.auditObservations.filter(o=>o.status!=='Closed').length;
   const openLegalCount = DB.legalCases.filter(c=>c.status==='Ongoing').length;
-  const tabs=[['overview','Overview'],['observations',`Observations${openObsCount?' ('+openObsCount+')':''}`],['compliance','Compliance Tracker'],
+  const tabs=[['overview','Overview'],['reviewassistant','Review Assistant'],['observations',`Observations${openObsCount?' ('+openObsCount+')':''}`],['compliance','Compliance Tracker'],
     ['checklist','Internal Controls'],['statutory','Statutory Registers'],['assetverify','Asset Verification'],
     ['cashverify','Cash Verification'],['exceptions','Exception Reports'],['legal',`Legal Cases${openLegalCount?' ('+openLegalCount+')':''}`],
     ['inspect','Inspect Society'],['statements','Statements'],['trail','Audit Trail']];
   let body='';
-  if(sr==='overview'){
+  if(sr==='reviewassistant'){
+    const HIGH_VALUE_THRESHOLD = Math.max(25000, (DB.internalControls?.cashPaymentLimit||10000)*2);
+    const approved = DB.vouchers.filter(v=>v.status==='approved');
+    const highValue = approved.filter(v=>v.entries.reduce((s,e)=>s+(e.debit||0),0) >= HIGH_VALUE_THRESHOLD).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,15);
+    const manualJournals = approved.filter(v=>v.type==='Journal' && !v.isArchiveOpeningBalance && !v.ref).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,15);
+    const cashTx = approved.filter(v=>v.entries.some(e=>e.account==='Cash in Hand')).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,15);
+    const exceptions = computeExceptionReport();
+    const duplicates = exceptions.filter(e=>/duplicate/i.test(e.type)).slice(0,15);
+    const pendingClarifications = DB.vouchers.filter(v=>v.queried && !v.responseNote);
+
+    const section = (title, icon, items, renderItem, emptyMsg, linkRoute)=>`<div class="card" style="margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div style="font-weight:700;font-size:13px;">${icon} ${title} ${items.length?`<span style="color:var(--ink-soft);font-weight:400;">(${items.length})</span>`:''}</div>
+        ${linkRoute?`<button class="btn btn-outline btn-sm" onclick="${linkRoute}">View All →</button>`:''}
+      </div>
+      ${items.length? items.map(renderItem).join('') : `<p style="font-size:12px;color:var(--ink-soft);">${emptyMsg}</p>`}
+    </div>`;
+    const voucherRow = v=>`<div style="padding:6px 0;border-top:1px solid var(--border);font-size:12px;cursor:pointer;" onclick="go('accounts','vouchers')">
+      <div style="display:flex;justify-content:space-between;"><b>${v.voucherNo||'#'+v.id}</b><span>₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</span></div>
+      <div style="font-size:11px;color:var(--ink-soft);">${v.date} · ${v.narration||v.type} · by ${actorLabel(v.maker,v.makerName)}</div>
+    </div>`;
+
+    body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:12px;">What's automatically surfaced for review — recomputed live, nothing cached — instead of needing to search through every voucher by hand. Each section links to the full detail.</p>
+      ${section('High-Value Vouchers', '💰', highValue, voucherRow, `No entries at or above ₹${fmt(HIGH_VALUE_THRESHOLD)} yet.`, `go('accounts','vouchers')`)}
+      ${section('Manual Journal Entries', '📝', manualJournals, voucherRow, 'None recorded — most activity is going through structured Receipt/Bill/Payment flows, which is generally a good sign.', `go('accounts','vouchers')`)}
+      ${section('Cash Transactions', '💵', cashTx, voucherRow, 'No cash-in-hand movement recorded.', `go('accounts','vouchers')`)}
+      ${section('Possible Duplicates', '⚠️', duplicates, e=>`<div style="padding:6px 0;border-top:1px solid var(--border);font-size:12px;">
+        <b>${e.type}</b><div style="font-size:11px;color:var(--ink-soft);">${e.detail} · ${e.date}</div></div>`, 'None flagged.', `go('audit','exceptions')`)}
+      ${section('Pending Clarifications', '❓', pendingClarifications, v=>`<div style="padding:6px 0;border-top:1px solid var(--border);font-size:12px;cursor:pointer;" onclick="go('approvals','history')">
+        <b>${v.voucherNo||'#'+v.id}</b><div style="font-size:11px;color:var(--ink-soft);">Asked ${new Date(v.queriedAt).toLocaleDateString('en-IN')}: ${v.queryNote}</div></div>`, 'Nothing awaiting a response.', null)}
+      <p style="font-size:10.5px;color:var(--ink-soft);">One honest gap: this app doesn't currently track file attachments per voucher (only Setup → Documents for society-level records like bye-laws and insurance), so a "missing attachments" check isn't something this can meaningfully surface yet.</p>`;
+  } else if(sr==='overview'){
     const ahs = computeAccountingHealthScore();
     const checks = runHealthChecks();
     const pending = DB.vouchers.filter(v=>v.status==='pending').length;
@@ -7776,6 +7954,18 @@ const FAQ = [
    a:'Storage now uses IndexedDB (see the separate question on that) rather than the much smaller storage older versions used, so this holds up well even for a large society over many years \u2014 tested directly with a full 12-month year across 336 flats (roughly 19MB) importing and reloading correctly. That said, <b>Setup \u2192 Financial Year \u2192 Archive</b> is still worth using once a year closes, since a smaller live dataset simply runs faster and stays easier to work with, however large the underlying limit is: it downloads that year\'s complete detail (every voucher, bill, meter reading) to its own file, then removes that detail from the live app \u2014 while every account\'s balance is carried forward <b>exactly</b>, via a single summary entry, so nothing about today\'s figures changes. Only the underlying detail moves out. Archiving needs a different role to confirm, the same as Wipe or Import, and a restore point is saved automatically (\"Restore Pre-Archive Backup\") in case the wrong year gets archived.'},
   {k:['indexeddb','storage upgrade','how much storage','storage limit','bigger storage','file too large to stage','import too large'], q:'How much data can this app actually hold now?',
    a:'This app stores data in IndexedDB, a browser storage system built for much larger amounts than older, simpler browser storage \u2014 typically hundreds of MB, depending on the device, rather than a handful of MB. Tested directly at real scale: a full 12-month financial year across 336 flats (roughly 7,800 vouchers, ~19MB) imported successfully, tallied correctly, and reloaded correctly after fully closing and reopening the app. If you are upgrading from an older copy of this app, your existing data is <b>migrated automatically</b> the first time you open this version \u2014 nothing to do on your part, and no data is lost in the process. One honest limit: IndexedDB is generous but not infinite, and it varies by device \u2014 Setup \u2192 Data shows a live storage-used indicator so you can see where things stand, and archiving old closed years (see the separate question on that) keeps the working app fast regardless of how large the true ceiling turns out to be on your specific device.'},
+  {k:['control panel','society status','security score','device status','single glance','status screen'], q:'Is there one screen that shows if everything is healthy, without opening several reports?',
+   a:'Yes \u2014 the \u25c8 <b>Status</b> tab (Society Control Panel) consolidates Financial Health, a new Security Score (2FA adoption, no default PINs left, auto-logout, PIN expiry policy, tamper-evidence check), Data Integrity, Backup Status, Pending Approvals, Open Audit Objections, and your last login, all computed live in one place. It also shows a Device Status note \u2014 worth being precise about what this is: an <i>informational</i> nudge (does this look like the same device the data was first used on), not real security. An offline file with no server genuinely cannot verify or restrict which device opens it \u2014 anyone presenting that as true device-locking would be overstating what is possible here. Your actual protection is the PIN/2FA login itself.'},
+  {k:['slow','performance','pagination','large society','many flats','years of vouchers','app slow'], q:'Will the app slow down for a large society with years of history?',
+   a:'The Vouchers list, Bills list, and Flats list all use pagination now \u2014 tested directly at real scale (7,822 vouchers, 4,032 bills, 336 flats): each page renders in about 30ms regardless of total history, because only the current page of rows is ever built, not the whole list at once. \"Showing X\u2013Y of Z\" plus Prev/Next controls appear automatically once a list is long enough to need them; a small society\'s data still just shows everything on one page, nothing changes there. Combined with archiving old closed years (see that question) and the IndexedDB storage upgrade (see that question too), this app is built to stay fast and usable at genuinely large scale, not just for a handful of flats.'},
+  {k:['negative cash','cash guard','cash in hand negative','cannot pay cash','pdf filename','pdf naming','save as pdf name'], q:'Does the app stop me from paying out more cash than is actually on hand?',
+   a:'Yes \u2014 Vendor Payments, manual Vouchers, and Payroll all check this before saving, the same hard-stop treatment the negative-stock guard already gives stock: if a cash payment would take Cash in Hand below zero, it is blocked outright (not just a warning) with the exact numbers shown \u2014 current balance, what is being paid out, what it would drop to. This is deliberately cash-only, not bank accounts, since a bank balance can legitimately go through an overdraft or similar arrangement in ways physical cash never can.'},
+  {k:['pdf filename','pdf naming','save as pdf name','auto name pdf'], q:'What filename does Print / Save as PDF suggest?',
+   a:'Financial statements (Trial Balance, Balance Sheet, Income & Expenditure, and the rest under Reports) automatically suggest a clean filename when you choose \"Save as PDF\" in the print dialog \u2014 for example <code>Balance_Sheet_2026-27.pdf</code> \u2014 built from the report name and the financial year, instead of a generic browser default.'},
+  {k:['daily summary','president summary','yesterday summary','president login'], q:"Does the President see a daily summary on login?",
+   a:'Yes \u2014 once per day, the first time the President logs in, a summary of yesterday\'s activity pops up: vouchers entered, amounts received and paid, approvals pending, bank reconciliation status, and backup status \u2014 the day\'s picture in one glance rather than opening several reports. It won\'t reappear on a second login the same day. The same information (and more) is always available anytime at \u25c8 Status (Society Control Panel).'},
+  {k:['auditor review assistant','auditor focus','high value vouchers','manual journal entries review'], q:'Does the app help an Auditor know where to look, instead of searching through every voucher?',
+   a:'Yes \u2014 Audit \u2192 <b>Review Assistant</b> automatically surfaces High-Value Vouchers, Manual Journal Entries, Cash Transactions, Possible Duplicates, and Pending Clarifications, each linking through to the full detail \u2014 recomputed live every time, nothing cached. One honest gap, stated directly on that screen: this app does not currently track file attachments per voucher, only society-level documents (bye-laws, insurance, etc. under Setup \u2192 Documents), so a "missing attachments" check is not something it can meaningfully do yet.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
@@ -8200,8 +8390,14 @@ function renderHelp(){
 
 /* ============ THEME ============ */
 function printStatement(){
+  const originalTitle = document.title;
+  const titleEl = document.getElementById('printTitleSource');
+  const reportName = titleEl? (titleEl.dataset.title||titleEl.textContent) : 'Statement';
+  const fy = currentFY();
+  const safeName = reportName.replace(/[^a-zA-Z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+  document.title = `${safeName}_${fy.label}`; // browsers use document.title as the suggested filename in "Save as PDF"
   document.body.classList.add('printing');
-  setTimeout(()=>{ window.print(); setTimeout(()=>document.body.classList.remove('printing'), 300); }, 50);
+  setTimeout(()=>{ window.print(); setTimeout(()=>{ document.body.classList.remove('printing'); document.title = originalTitle; }, 300); }, 50);
 }
 function toggleTheme(){
   document.body.classList.toggle('dark');
@@ -8292,6 +8488,44 @@ function performLogout(){
   restoreLockCard();
   document.getElementById('lockscreen').style.display='flex';
 }
+/* ============ PRESIDENT'S DAILY SUMMARY ============
+   Shown once per day, right after login, President only — yesterday's activity in one glance
+   rather than needing to open several reports to piece it together. */
+function computeDailySummary(){
+  const yesterday = new Date(); yesterday.setDate(yesterday.getDate()-1);
+  const yStr = yesterday.toISOString().slice(0,10);
+  const yVouchers = DB.vouchers.filter(v=>v.date===yStr && v.status==='approved');
+  const received = yVouchers.filter(v=>v.type==='Receipt').reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
+  const paid = yVouchers.filter(v=>v.type==='VendorPayment'||v.type==='Payroll').reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
+  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
+  const unreconciledBanks = DB.bankAccounts.filter(b=>b.type!=='FD').filter(b=>{
+    const accName = b.ledgerAccountName; if(!accName) return false;
+    return DB.vouchers.some(v=>v.status==='approved' && v.entries.some(e=>e.account===accName) && !(b.clearedVouchers||[]).includes(v.id));
+  }).length;
+  const backupDays = DB.lastBackupAt? Math.floor((new Date()-new Date(DB.lastBackupAt))/86400000) : null;
+  return {
+    dateLabel: yesterday.toLocaleDateString('en-IN', {weekday:'long', day:'numeric', month:'long'}),
+    voucherCount: yVouchers.length, received: Math.round(received), paid: Math.round(paid),
+    pendingApprovals, unreconciledBanks,
+    backupOk: backupDays!==null && backupDays<7, backupDays,
+  };
+}
+function openDailySummaryModal(){
+  const s = computeDailySummary();
+  localStorage.setItem('smartrwa_daily_summary_shown', todayISO());
+  openModal(`<div class="modal-head"><h2>Yesterday — ${s.dateLabel}</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <div class="stat-grid">
+      <div class="stat"><div class="lbl">Vouchers Entered</div><div class="val">${s.voucherCount}</div></div>
+      <div class="stat good"><div class="lbl">Received</div><div class="val">₹${fmt(s.received)}</div></div>
+      <div class="stat"><div class="lbl">Paid</div><div class="val">₹${fmt(s.paid)}</div></div>
+      <div class="stat ${s.pendingApprovals?'alert':''}"><div class="lbl">Approvals Pending</div><div class="val">${s.pendingApprovals}</div></div>
+    </div>
+    <div style="margin-top:12px;">
+      <p style="font-size:12.5px;">${s.unreconciledBanks===0?'✅':'⚠️'} Bank reconciliation ${s.unreconciledBanks===0?'up to date':s.unreconciledBanks+' account(s) have unreconciled entries'}</p>
+      <p style="font-size:12.5px;margin-top:4px;">${s.backupOk?'✅':'⚠️'} Backup ${s.backupDays===null?'never taken':s.backupDays+' day(s) ago'}</p>
+    </div>
+    <button class="btn btn-outline btn-block" style="margin-top:12px;" onclick="closeModal();go('controlpanel');">Open Full Status →</button>`);
+}
 function enterApp(role){
   window.__currentRole = role;
   document.getElementById('lockscreen').style.display='none';
@@ -8315,6 +8549,9 @@ function enterApp(role){
   }
   go('dashboard');
   showFabChatBubble();
+  if(role==='President' && localStorage.getItem('smartrwa_daily_summary_shown')!==todayISO()){
+    setTimeout(openDailySummaryModal, 400);
+  }
 }
 function openForcedPinChangeModal(role){
   const expired = DB.security.mustChangePinReason && DB.security.mustChangePinReason[role]==='expired';
