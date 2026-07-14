@@ -1406,9 +1406,8 @@ function computeExceptionReport(){
 
 /* ============ STORE ============ */
 const DB_KEY='smartrwa_v1';
-let DB = load();
-function load(){
-  try{ const raw = localStorage.getItem(DB_KEY); if(raw) return JSON.parse(raw); }catch(e){}
+let DB = defaultDB();
+function defaultDB(){
   return {
     society:{name:'My Housing Society', flatsCount:0},
     flats:[], chargeHeads:defaultCharges(), vouchers:[], bills:[], complaints:[],
@@ -1430,14 +1429,21 @@ function computeIntegrityHash(dbObj){
   const payload = JSON.stringify({vouchers:dbObj.vouchers||[], flats:dbObj.flats||[], bankAccounts:dbObj.bankAccounts||[], security:dbObj.security||{}});
   return sha256Hex(payload);
 }
-window.__integrityCheckResult = (()=>{
-  if(!DB.__integrityHash) return 'unchecked'; // first run, or an older save from before this feature existed — nothing to compare against yet
-  const recomputed = computeIntegrityHash(DB);
-  return recomputed === DB.__integrityHash ? 'ok' : 'mismatch';
-})();
-if(!DB.security) DB.security = {pins:{Accountant:'1234',Treasurer:'1234',Auditor:'1234',President:'1234'}};
-if(!DB.security.names) DB.security.names = {Accountant:'',Treasurer:'',Auditor:'',President:''};
-if(!DB.security.mustChangePin) DB.security.mustChangePin = {Accountant:false,Treasurer:false,Auditor:false,President:false};
+/* Called once with the placeholder default DB (so anything that accidentally runs before the async
+   storage load completes still sees a fully-shaped, valid DB), and again once the real data has
+   loaded from storage — every migration below is an idempotent "set default if missing" check, so
+   running it twice is harmless, and the second pass is what actually applies to real saved data. */
+const COMMON_UNITS = ['Pieces (pcs)','Kg','Gram (g)','Litre (L)','Millilitre (ml)','Meter (m)','Box','Roll','Bag','Set','Other'];
+function initializeLoadedDB(loadedData){
+  DB = loadedData || defaultDB();
+  window.__integrityCheckResult = (()=>{
+    if(!DB.__integrityHash) return 'unchecked'; // first run, or an older save from before this feature existed — nothing to compare against yet
+    const recomputed = computeIntegrityHash(DB);
+    return recomputed === DB.__integrityHash ? 'ok' : 'mismatch';
+  })();
+  if(!DB.security) DB.security = {pins:{Accountant:'1234',Treasurer:'1234',Auditor:'1234',President:'1234'}};
+  if(!DB.security.names) DB.security.names = {Accountant:'',Treasurer:'',Auditor:'',President:''};
+  if(!DB.security.mustChangePin) DB.security.mustChangePin = {Accountant:false,Treasurer:false,Auditor:false,President:false};
 if(!DB.security.pins.President) DB.security.pins.President='1234';
 if(DB.security.names.President===undefined) DB.security.names.President='';
 ['vendors','vendorBills','employees','payrollRuns','assets','inventoryItems','inventoryTx','flatTypes','meterReadings','consolidatedBills','towers','mainMeterReadings'].forEach(k=>{ if(!DB[k]) DB[k]=[]; });
@@ -1499,7 +1505,6 @@ if(!DB.inventorySeeded){
     DB.seq.item = 33;
   }
 }
-const COMMON_UNITS = ['Pieces (pcs)','Kg','Gram (g)','Litre (L)','Millilitre (ml)','Meter (m)','Box','Roll','Bag','Set','Other'];
 if(DB.society.minBalanceThreshold===undefined) DB.society.minBalanceThreshold = 0;
 if(!DB.bankAccounts) DB.bankAccounts = [];
 if(!DB.seq.bank) DB.seq.bank=1;
@@ -1564,7 +1569,83 @@ DB.assets.forEach(a=>{
   if(a.invoiceFile===undefined) a.invoiceFile = null;
 });
 if(DB.society.upiId===undefined) DB.society.upiId='';
-function save(){ DB.__integrityHash = computeIntegrityHash(DB); localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
+}
+initializeLoadedDB(DB); // run once synchronously against the placeholder default, so anything that
+                          // accidentally runs before the real async storage load completes still sees
+                          // a fully-shaped, valid DB — replaced with real data once boot() finishes below.
+/* ============ INDEXEDDB STORAGE LAYER ============
+   Browsers cap localStorage at roughly 5-10MB total — nowhere near enough for a large society's
+   history over years. IndexedDB allows far more (typically hundreds of MB, sometimes GB, depending
+   on the device), while staying 100% offline and client-side — no server, no ongoing cost, same as
+   everything else here. save() stays "fire and forget" exactly as every part of the app already
+   calls it — the one thing that genuinely can't stay synchronous is the very first load, since
+   IndexedDB has no synchronous read API; that's handled once, in boot(), at the bottom of this file. */
+const IDB_NAME = 'smartrwa_storage', IDB_STORE = 'kv', IDB_VERSION = 1;
+let __idbInstance = null;
+function idbOpen(){
+  if(__idbInstance) return Promise.resolve(__idbInstance);
+  return new Promise((resolve,reject)=>{
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = ()=>{ if(!req.result.objectStoreNames.contains(IDB_STORE)) req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = ()=>{ __idbInstance = req.result; resolve(__idbInstance); };
+    req.onerror = ()=>reject(req.error);
+  });
+}
+async function idbGet(key){
+  const db = await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction(IDB_STORE,'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error);
+  });
+}
+async function idbSet(key, value){
+  const db = await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction(IDB_STORE,'readwrite');
+    tx.objectStore(IDB_STORE).put(value, key);
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+async function idbDelete(key){
+  const db = await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction(IDB_STORE,'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+window.__lastSaveError = null;
+function save(){
+  DB.__integrityHash = computeIntegrityHash(DB);
+  idbSet(DB_KEY, DB).then(()=>{ window.__lastSaveError = null; }).catch(e=>{
+    console.error('IndexedDB save failed', e);
+    window.__lastSaveError = e.name || 'unknown error';
+  });
+}
+async function updateStorageUsageDisplay(){
+  const el = document.getElementById('storageUsageDisplay'); if(!el) return;
+  let usedMB, quotaMB;
+  try{
+    if(navigator.storage && navigator.storage.estimate){
+      const est = await navigator.storage.estimate();
+      usedMB = (est.usage||0)/1024/1024;
+      quotaMB = (est.quota||0)/1024/1024;
+    }
+  }catch(e){}
+  if(usedMB===undefined){ usedMB = JSON.stringify(DB).length/1024/1024; quotaMB = null; } // fallback if the estimate API isn't available
+  const el2 = document.getElementById('storageUsageDisplay'); if(!el2) return; // user may have navigated away while this was loading
+  const pct = quotaMB? Math.min(100, Math.round(usedMB/quotaMB*100)) : null;
+  const color = pct===null? 'var(--moss)' : pct>=80?'var(--brick)':pct>=50?'var(--gold)':'var(--moss)';
+  el2.innerHTML = `<div style="margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--ink-soft);"><span>Storage used</span><span>${usedMB.toFixed(1)} MB${quotaMB?' of ~'+Math.round(quotaMB)+' MB available':''}</span></div>
+    ${pct!==null?`<div style="background:var(--paper);border-radius:6px;height:6px;overflow:hidden;margin-top:3px;"><div style="background:${color};height:100%;width:${pct}%;"></div></div>`:''}
+    ${pct!==null && pct>=70? `<p style="font-size:10.5px;color:${color};margin-top:4px;">Getting close to what this device's storage allows — consider archiving older closed years (Setup → Financial Year) to free up room.</p>` : ''}
+  </div>`;
+}
 function nextId(k){ DB.seq[k]=(DB.seq[k]||0)+1; return DB.seq[k]; }
 
 /* ============ FINANCIAL YEAR / PERIOD LOCKING ============ */
@@ -1795,7 +1876,7 @@ function render(){
   else if(route==='gst'){ c.innerHTML = renderGST(); fab.style.display='none'; }
   else if(route==='audit'){ c.innerHTML = renderAudit(); fab.style.display='none'; }
   else if(route==='documents'){ c.innerHTML = renderDocuments(); fab.onclick=()=>openDocumentModal(); }
-  else if(route==='settings'){ c.innerHTML = renderSettings(); fab.style.display='none'; }
+  else if(route==='settings'){ c.innerHTML = renderSettings(); fab.style.display='none'; updateStorageUsageDisplay(); }
   else if(route==='help'){ c.innerHTML = renderHelp(); fab.style.display='none'; }
   if(isReadOnly() && ['flats','billing','receipts','vendors','payroll','assets','inventory','accounts','complaints','documents'].includes(route)) fab.style.display='none';
 }
@@ -5497,15 +5578,8 @@ function renderSettings(){
     ${renderSecurityGovernanceCard()}
   </div>
   <div class="card"><div class="section-title">Data</div>
-    <p style="font-size:12.5px;color:var(--ink-soft)">All data is stored offline on this device (localStorage). Export a backup regularly.</p>
-    ${(()=>{ const usedMB = ((localStorage.getItem(DB_KEY)||'').length/1024/1024);
-      const pct = Math.min(100, Math.round(usedMB/5*100)); // ~5MB is a conservative typical browser floor for this storage type
-      const color = pct>=80?'var(--brick)':pct>=50?'var(--gold)':'var(--moss)';
-      return `<div style="margin-bottom:10px;">
-        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--ink-soft);"><span>Storage used</span><span>${usedMB.toFixed(1)} MB</span></div>
-        <div style="background:var(--paper);border-radius:6px;height:6px;overflow:hidden;margin-top:3px;"><div style="background:${color};height:100%;width:${pct}%;"></div></div>
-        ${pct>=70? `<p style="font-size:10.5px;color:${color};margin-top:4px;">Getting close to what browser storage reliably holds — this is a hard limit, not something a bigger download can fix. Consider archiving older data or asking about a database-backed version for a society this size.</p>` : ''}
-      </div>`; })()}
+    <p style="font-size:12.5px;color:var(--ink-soft)">All data is stored offline on this device (IndexedDB — allows far more room than older browser storage, typically hundreds of MB depending on the device). Export a backup regularly.</p>
+    <div id="storageUsageDisplay"><p style="font-size:11px;color:var(--ink-soft);">Checking storage used…</p></div>
     ${(()=>{ const days = DB.lastBackupAt? Math.floor((new Date()-new Date(DB.lastBackupAt))/86400000) : null;
       if(days===null) return `<div class="readonly-note" style="margin-bottom:10px;">No backup taken yet in this app — export one now.</div>`;
       const verifyLine = DB.lastBackupChecksum? `<div style="font-size:10.5px;color:var(--ink-soft);">${DB.lastBackupVerified?'✓ Verified readable & complete':'⚠ Verification found a problem'} · checksum ${DB.lastBackupChecksum}</div>` : '';
@@ -5683,7 +5757,7 @@ function confirmArchiveFY(){
 
   // Safety net: a full pre-archive snapshot, best-effort (may not fit if storage is already tight —
   // which, ironically, is exactly the situation archiving exists to relieve).
-  try{ localStorage.setItem('smartrwa_v1_pre_archive_backup', JSON.stringify(DB)); DB.preArchiveBackupAt = nowTS(); }catch(e){ /* proceed without it if it doesn't fit */ }
+  try{ idbSet('pre_archive_backup', JSON.stringify(DB)); DB.preArchiveBackupAt = nowTS(); }catch(e){ /* proceed without it if it doesn't fit */ }
 
   // 1. Capture every account's cumulative balance as of the archive cutoff, BEFORE removing anything.
   const allAccounts = Object.keys(ACCOUNTS);
@@ -5723,9 +5797,10 @@ function confirmArchiveFY(){
   toast(`${fy.label} archived — live app is lighter, today's balances are unchanged`);
   checkTrialBalanceNow(); // belt-and-suspenders: confirm the balance-preserving entry didn't disturb anything
 }
-function restorePreArchiveBackup(){
+async function restorePreArchiveBackup(){
   if(!canEdit()) return;
-  const raw = localStorage.getItem('smartrwa_v1_pre_archive_backup');
+  let raw;
+  try{ raw = await idbGet('pre_archive_backup'); }catch(e){}
   if(!raw){ toast('No pre-archive backup found'); return; }
   if(!confirm('Restore the data from just before the last archive? This undoes the archiving and brings that year\'s detail back into the live app.')) return;
   try{ DB = JSON.parse(raw); DB.archiveRequest=null; save(); toast('Restored to the state before archiving'); go('dashboard'); }
@@ -7038,7 +7113,7 @@ async function stageEncryptedImport(text, sourceLabel){
     toast('Could not decrypt — the passphrase is likely wrong, or the file is corrupted.');
   }
 }
-function stageImport(text, sourceLabel){
+async function stageImport(text, sourceLabel){
   if(!canEdit()) return;
   if(looksLikeEncryptedEnvelope(text)){ stageEncryptedImport(text, sourceLabel); return; }
   let parsed;
@@ -7055,18 +7130,13 @@ function stageImport(text, sourceLabel){
   if(typeof parsed!=='object' || !parsed || !Array.isArray(parsed.flats)){
     toast('This JSON is valid but does not look like a SmartRWA backup (no flats array found).'); return;
   }
-  try{ localStorage.setItem('smartrwa_v1_pending_import', text); }
+  try{ await idbSet('pending_import', text); }
   catch(e){
     const fileMB = (text.length/1024/1024).toFixed(1);
-    const currentMB = ((localStorage.getItem(DB_KEY)||'').length/1024/1024).toFixed(1);
     openModal(`<div class="modal-head"><h2 style="color:var(--brick);">File Too Large To Stage</h2><button class="close-x" onclick="closeModal()">×</button></div>
-      <p style="font-size:13px;">This browser's storage couldn't hold both the current app data and this file at the same time.</p>
-      <div class="tbl-wrap"><table>
-      <tr><td style="font-size:12px;">This file</td><td class="num-cell">${fileMB} MB</td></tr>
-      <tr><td style="font-size:12px;">Current app data</td><td class="num-cell">${currentMB} MB</td></tr>
-      <tr><td style="font-size:12px;">Browser storage limit</td><td class="num-cell">~4–10 MB total</td></tr>
-      </table></div>
-      <p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">This is a hard limit of browser storage, not something that can be worked around by retrying. For a society this size or years of history, this app's storage approach genuinely runs out of room — ask about archiving older years or a database-backed version if this keeps happening.</p>`);
+      <p style="font-size:13px;">This device's storage couldn't hold this file, even with the much larger room IndexedDB normally allows.</p>
+      <div class="tbl-wrap"><table><tr><td style="font-size:12px;">This file</td><td class="num-cell">${fileMB} MB</td></tr></table></div>
+      <p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">This usually means the device itself is nearly out of free storage space, not a limit of the app. Free up space on the device and try again.</p>`);
     return;
   }
   const verify = verifyBackupText(text);
@@ -7075,36 +7145,39 @@ function stageImport(text, sourceLabel){
   logAction('Import Requested', `${sourceLabel} — ${parsed.flats.length} flat(s), ${(parsed.vouchers||[]).length} voucher(s) — checksum ${verify.checksum} — awaiting a different role to confirm`);
   save(); render(); toast('Import staged — a different role must confirm before it replaces current data');
 }
-function cancelImportRequest(){
+async function cancelImportRequest(){
   if(!canEdit()) return;
   logAction('Import Request Cancelled', DB.importRequest? `${DB.importRequest.sourceLabel} (requested by ${DB.importRequest.requestedBy})` : '');
-  DB.importRequest = null; localStorage.removeItem('smartrwa_v1_pending_import');
+  DB.importRequest = null;
+  try{ await idbDelete('pending_import'); }catch(e){}
   save(); render(); toast('Import request cancelled');
 }
-function confirmImportBackup(){
+async function confirmImportBackup(){
   if(isReadOnly()){ toast(window.__currentRole+' cannot confirm an import.'); return; }
   if(!DB.importRequest){ toast('No import pending'); return; }
   if(DB.importRequest.requestedBy===window.__currentRole){ toast('A different role must confirm this.'); return; }
-  const raw = localStorage.getItem('smartrwa_v1_pending_import');
+  let raw;
+  try{ raw = await idbGet('pending_import'); }catch(e){}
   if(!raw){ toast('Staged file not found — ask the requester to upload it again.'); DB.importRequest=null; save(); render(); return; }
   let parsed;
   try{ parsed = JSON.parse(raw); }
   catch(e){ toast('Staged data is corrupted — ask the requester to upload it again.'); DB.importRequest=null; save(); render(); return; }
   if(!confirm('This replaces everything currently in the app with the staged file (a restore point will be saved first). Continue?')) return;
-  try{ localStorage.setItem('smartrwa_v1_pre_import_backup', JSON.stringify(DB)); }catch(e){}
+  try{ await idbSet('pre_import_backup', JSON.stringify(DB)); }catch(e){}
   const preImportBackupAt = nowTS();
   const confirmedBy = window.__currentRole;
   DB = parsed;
   DB.importRequest = null;
   DB.preImportBackupAt = preImportBackupAt;
   logAction('Import Confirmed', `Data replaced (confirmed by ${confirmedBy}) — previous state saved as a restore point`);
-  localStorage.removeItem('smartrwa_v1_pending_import');
+  try{ await idbDelete('pending_import'); }catch(e){}
   save(); toast('Import complete — previous data saved as a restore point below'); go('dashboard');
   checkTrialBalanceNow();
 }
-function restorePreImportBackup(){
+async function restorePreImportBackup(){
   if(!canEdit()) return;
-  const raw = localStorage.getItem('smartrwa_v1_pre_import_backup');
+  let raw;
+  try{ raw = await idbGet('pre_import_backup'); }catch(e){}
   if(!raw){ toast('No pre-import backup found'); return; }
   if(!confirm('Restore the data from just before the last import? This replaces everything currently in the app.')) return;
   try{ DB = JSON.parse(raw); DB.importRequest=null; save(); toast('Restored to the state before the last import'); go('dashboard'); }
@@ -7131,7 +7204,7 @@ function confirmWipeAll(){
   if(DB.wipeRequest.requestedBy===window.__currentRole){ toast('A different role must confirm this.'); return; }
   if(!confirm('This will erase all data on this device (a restore point will be saved). Continue?')) return;
   const security = DB.security, society = DB.society, utilityRates = DB.utilityRates;
-  try{ localStorage.setItem('smartrwa_v1_wipe_backup', JSON.stringify(DB)); }catch(e){}
+  try{ idbSet('wipe_backup', JSON.stringify(DB)); }catch(e){}
   const wipeBackupAt = nowTS();
   DB = {
     society, security, utilityRates,
@@ -7144,9 +7217,10 @@ function confirmWipeAll(){
   };
   save(); toast('All data wiped — restore point saved'); go('dashboard');
 }
-function restoreWipeBackup(){
+async function restoreWipeBackup(){
   if(!canEdit()) return;
-  const raw = localStorage.getItem('smartrwa_v1_wipe_backup');
+  let raw;
+  try{ raw = await idbGet('wipe_backup'); }catch(e){}
   if(!raw){ toast('No wipe backup found'); return; }
   if(!confirm('Restore the data from before the last wipe? This replaces everything currently in the app.')) return;
   try{ DB = JSON.parse(raw); DB.wipeRequest=null; save(); toast('Restored from wipe backup'); go('dashboard'); }
@@ -8274,15 +8348,34 @@ function startAutoLogoutTimer(){
   document.addEventListener(evt, ()=>{ if(window.__currentRole) startAutoLogoutTimer(); }, {passive:true}));
 
 /* ============ INIT ============ */
-syncBankLedgerAccounts();
-window.__originalLockCardHTML = document.querySelector('.lock-card')?.innerHTML || '';
-if(!localStorage.getItem('smartrwa_chat_used')) document.getElementById('chatIconBtn')?.classList.add('chat-highlight');
-const savedRole = sessionStorage.getItem('smartrwa_role');
-if(savedRole && ALLOWED_ROLES.includes(savedRole)){
-  enterApp(savedRole);
-} else {
-  document.getElementById('lockscreen').style.display='flex';
+async function boot(){
+  let loaded = null;
+  try{ loaded = await idbGet(DB_KEY); }catch(e){ console.error('IndexedDB read failed', e); }
+  if(!loaded){
+    // Nothing in IndexedDB yet — check for data from before this storage upgrade (old localStorage-based
+    // saves) and migrate it over automatically, so nobody upgrading loses anything.
+    try{
+      const raw = localStorage.getItem(DB_KEY);
+      if(raw){
+        loaded = JSON.parse(raw);
+        await idbSet(DB_KEY, loaded);
+        localStorage.removeItem(DB_KEY); // reclaim the old, much smaller localStorage quota now that it's safely in IndexedDB
+      }
+    }catch(e){ console.error('localStorage migration failed', e); }
+  }
+  initializeLoadedDB(loaded);
+
+  syncBankLedgerAccounts();
+  window.__originalLockCardHTML = document.querySelector('.lock-card')?.innerHTML || '';
+  if(!localStorage.getItem('smartrwa_chat_used')) document.getElementById('chatIconBtn')?.classList.add('chat-highlight');
+  const savedRole = sessionStorage.getItem('smartrwa_role');
+  if(savedRole && ALLOWED_ROLES.includes(savedRole)){
+    enterApp(savedRole);
+  } else {
+    document.getElementById('lockscreen').style.display='flex';
+  }
 }
+boot();
 </script>
 </body>
 </html>
