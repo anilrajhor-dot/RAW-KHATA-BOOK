@@ -1722,26 +1722,36 @@ function disconnectCloudSync(){
   toast('Cloud sync disconnected — this device now works offline-only again, exactly as before.');
   render();
 }
+const CLOUD_SYNC_CHUNK_SIZE = 700000; // characters — safely under Firestore's ~1 MiB per-document limit, leaving margin for field overhead
 function startCloudSyncListener(){
   const cfg = cloudSyncConfig(); if(!cfg) return;
   loadFirebaseSDK(()=>{
     if(!firebase.apps.length) firebase.initializeApp(cfg.firebaseConfig);
     const docRef = firebase.firestore().collection('smartrwa_societies').doc(cfg.accessCode);
     if(window.__cloudSyncUnsubscribe) window.__cloudSyncUnsubscribe();
-    window.__cloudSyncUnsubscribe = docRef.onSnapshot(snap=>{
+    window.__cloudSyncUnsubscribe = docRef.onSnapshot(async snap=>{
       if(!snap.exists) return; // nothing pushed yet from any device
-      const remote = snap.data();
-      if(!remote || !remote.db) return;
-      const remoteModified = remote.lastModified || 0;
+      const manifest = snap.data();
+      if(!manifest || !manifest.chunkCount) return;
+      const remoteModified = manifest.lastModified || 0;
       const localModified = DB.__lastModified || 0;
-      if(remoteModified > localModified){
+      if(remoteModified <= localModified) return; // already up to date, or this is just an echo of our own push
+      try{
+        const chunkDocs = await Promise.all(
+          Array.from({length: manifest.chunkCount}, (_,i)=> docRef.collection('chunks').doc(String(i)).get())
+        );
+        const text = chunkDocs.map(d=>d.data()?.part||'').join('');
+        const parsed = JSON.parse(text);
         window.__cloudSyncState.pulling = true;
-        DB = JSON.parse(remote.db);
+        DB = parsed;
         window.__cloudSyncState.pulling = false;
         window.__cloudSyncState.lastSyncedAt = nowTS();
+        window.__cloudSyncState.lastError = null;
         idbSet(DB_KEY, DB).catch(()=>{}); // keep local IndexedDB copy in step with what was just pulled
         toast('Updated with changes from another device');
         render();
+      }catch(e){
+        window.__cloudSyncState.lastError = 'Could not read update from another device: '+(e.message||e);
       }
     }, err=>{
       window.__cloudSyncState.lastError = err.message || String(err);
@@ -1753,12 +1763,25 @@ function pushToCloudSync(){
   const cfg = cloudSyncConfig(); if(!cfg) return; // sync not configured — no-op, exactly like before this feature existed
   clearTimeout(__cloudSyncPushTimer);
   __cloudSyncPushTimer = setTimeout(()=>{
-    loadFirebaseSDK(()=>{
+    loadFirebaseSDK(async ()=>{
       if(!firebase.apps.length) firebase.initializeApp(cfg.firebaseConfig);
       const docRef = firebase.firestore().collection('smartrwa_societies').doc(cfg.accessCode);
-      docRef.set({db: JSON.stringify(DB), lastModified: DB.__lastModified, pushedBy: window.__currentRole||'', pushedAt: nowTS()})
-        .then(()=>{ window.__cloudSyncState.connected=true; window.__cloudSyncState.lastSyncedAt = nowTS(); window.__cloudSyncState.lastError = null; })
-        .catch(e=>{ window.__cloudSyncState.lastError = e.message||String(e); }); // offline or misconfigured — local IndexedDB save already succeeded regardless
+      try{
+        const text = JSON.stringify(DB);
+        const chunks = [];
+        for(let i=0;i<text.length;i+=CLOUD_SYNC_CHUNK_SIZE) chunks.push(text.slice(i, i+CLOUD_SYNC_CHUNK_SIZE));
+        const batch = firebase.firestore().batch();
+        chunks.forEach((part,i)=> batch.set(docRef.collection('chunks').doc(String(i)), {part}));
+        await batch.commit();
+        // Clean up any leftover chunks from a previous, larger push (e.g. after an Archive shrank the data)
+        const existing = await docRef.collection('chunks').get();
+        const staleDeletes = existing.docs.filter(d=>Number(d.id)>=chunks.length);
+        if(staleDeletes.length){ const delBatch = firebase.firestore().batch(); staleDeletes.forEach(d=>delBatch.delete(d.ref)); await delBatch.commit(); }
+        await docRef.set({chunkCount: chunks.length, lastModified: DB.__lastModified, pushedBy: window.__currentRole||'', pushedAt: nowTS()});
+        window.__cloudSyncState.connected=true; window.__cloudSyncState.lastSyncedAt = nowTS(); window.__cloudSyncState.lastError = null;
+      }catch(e){
+        window.__cloudSyncState.lastError = e.message||String(e); // offline or misconfigured — local IndexedDB save already succeeded regardless
+      }
     });
   }, 1200); // debounced — several rapid saves (e.g. a bulk approval) push once, not once per voucher
 }
