@@ -1630,6 +1630,46 @@ window.__lastSaveError = null;
      small private group, not the same as individual authenticated accounts.
    - Firebase config is stored separately from the main DB (a different storage key) precisely so
      Wipe / Import / Archive never touch sync settings by accident. */
+function parseFirebaseConfigText(text){
+  if(!text) return null;
+  text = text.trim()
+    .replace(/[\u201C\u201D]/g, '"')   // smart double quotes → straight (common on iOS after paste/autocorrect)
+    .replace(/[\u2018\u2019]/g, "'");  // smart single quotes → straight
+  // Handle the raw snippet Firebase actually shows people — which may include import statements and
+  // comments (each with their own {}) above the actual config — so anchor on the "{" that starts the
+  // object containing apiKey, then count braces to find its true matching close, rather than a naive
+  // greedy match that could span from an unrelated import statement's brace to the real one's.
+  const anchorIdx = text.search(/apiKey\s*[:=]/);
+  if(anchorIdx>=0){
+    const openIdx = text.lastIndexOf('{', anchorIdx);
+    if(openIdx>=0){
+      let depth=0, closeIdx=-1;
+      for(let i=openIdx;i<text.length;i++){
+        if(text[i]==='{') depth++;
+        else if(text[i]==='}'){ depth--; if(depth===0){ closeIdx=i; break; } }
+      }
+      if(closeIdx>=0) text = text.slice(openIdx, closeIdx+1);
+    } else {
+      // No opening brace anywhere before apiKey — a very plausible partial copy (e.g. starting the
+      // selection right at "apiKey:" and missing the "const firebaseConfig = {" line above it).
+      // Take from apiKey onward, stop at the first standalone closing brace, and wrap it ourselves.
+      const rest = text.slice(anchorIdx);
+      const closeMatch = rest.match(/\}/);
+      const body = closeMatch? rest.slice(0, closeMatch.index) : rest.replace(/;[\s\S]*$/, '');
+      text = '{' + body.replace(/,\s*$/, '') + '}';
+    }
+  }
+  // Try strict JSON first (in case someone already cleaned it up)
+  try{ return JSON.parse(text); }catch(e){}
+  // Fall back to the actual Firebase format: unquoted keys, single quotes, trailing commas
+  try{
+    let cleaned = text
+      .replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, '$1"$2":') // quote unquoted keys
+      .replace(/'/g, '"')                                              // single quotes → double
+      .replace(/,(\s*[}\]])/g, '$1');                                  // strip trailing commas
+    return JSON.parse(cleaned);
+  }catch(e){ return null; }
+}
 function cloudSyncConfig(){
   try{ const raw = localStorage.getItem('smartrwa_cloud_sync_config'); return raw? JSON.parse(raw) : null; }catch(e){ return null; }
 }
@@ -1655,10 +1695,9 @@ function loadFirebaseSDK(callback){
   }
   loadNext();
 }
-async function connectCloudSync(configJson, accessCode){
-  let parsedConfig;
-  try{ parsedConfig = JSON.parse(configJson); }
-  catch(e){ toast('That doesn\'t look like valid Firebase config JSON — copy it exactly from the Firebase console.'); return; }
+async function connectCloudSync(configText, accessCode){
+  const parsedConfig = parseFirebaseConfigText(configText);
+  if(!parsedConfig){ toast('Could not read that config — paste the block starting with "apiKey" through the closing brace, exactly as Firebase showed it (either the JSON or the JavaScript version both work).'); return; }
   if(!accessCode || accessCode.trim().length<6){ toast('Set a Society Access Code of at least 6 characters — this is the shared secret every device uses to sync to the same data.'); return; }
   loadFirebaseSDK(async ()=>{
     try{
@@ -6338,8 +6377,8 @@ function renderCloudSyncCard(){
   const s = window.__cloudSyncState;
   if(!cfg){
     return `<p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Off by default — this app works entirely offline as normal. Connect it to sync data across every device using the same access code, so an entry made on one phone appears on the others. Needs your own free Firebase project (takes about 5 minutes to set up — ask the chat for step-by-step help if needed).</p>
-      <div class="field"><label>Firebase Config (paste the JSON from your Firebase project settings)</label><textarea id="cs_config" rows="4" style="font-family:monospace;font-size:11px;" placeholder='{"apiKey": "...", "projectId": "...", ...}'></textarea></div>
-      <div class="field"><label>Society Access Code (shared secret — set once, every device uses the same one)</label><input id="cs_code" type="text" placeholder="e.g. greenpark-crossing-2026"></div>
+      <div class="field"><label>Firebase Config (paste the JSON from your Firebase project settings)</label><textarea id="cs_config" rows="4" style="font-family:monospace;font-size:11px;" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder='{"apiKey": "...", "projectId": "...", ...}'></textarea></div>
+      <div class="field"><label>Society Access Code (shared secret — set once, every device uses the same one)</label><input id="cs_code" type="text" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="e.g. greenpark-crossing-2026"></div>
       ${isReadOnly()?'':`<button class="btn btn-primary btn-block" onclick="connectCloudSync(document.getElementById('cs_config').value, document.getElementById('cs_code').value)">Connect</button>`}
       <p style="font-size:10.5px;color:var(--ink-soft);margin-top:8px;">Honest limits: this syncs the whole dataset, "last write wins" — if two people save at the exact same moment on two devices, one save can overwrite the other's (unlikely for a small committee, not impossible). Security is this access code plus anonymous sign-in — reasonable for a small private group, not the same as individual logins.</p>`;
   }
