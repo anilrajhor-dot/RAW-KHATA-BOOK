@@ -1520,6 +1520,7 @@ if(!DB.billingRules) DB.billingRules = {interestEnabled:false, interestRatePctPe
 if(!DB.internalControls) DB.internalControls = {cashPaymentLimit:10000, roundFigureThreshold:10000, backdatedDaysThreshold:30, vendorConcentrationPct:40};
 if(!DB.legalCases) DB.legalCases = [];
 if(DB.importRequest===undefined) DB.importRequest = null;
+if(DB.archiveRequest===undefined) DB.archiveRequest = null;
 if(DB.preImportBackupAt===undefined) DB.preImportBackupAt = null;
 if(!DB.seq.legal) DB.seq.legal = 1;
 if(!DB.agmReports) DB.agmReports = {}; // keyed by FY id: {chairmanReport: string}
@@ -2212,7 +2213,7 @@ function renderDashboard(){
   const vendorDue = DB.vendorBills.reduce((s,b)=>s+(b.netPayable-b.paid),0);
   const pfEsiDue = -accBalance('PF Payable').net + -accBalance('ESI Payable').net;
   const gstDue = -accBalance('GST Payable').net - accBalance('GST Input Credit').net;
-  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0);
+  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
 
   // Asset alerts (AMC/warranty due within 30 days or expired)
   const today = todayISO();
@@ -4685,7 +4686,7 @@ function deleteDocument(id){
 function renderApprovals(){
   const sr = subroute || 'pending';
   const delReqCount = DB.vouchers.filter(v=>v.reversalRequested).length;
-  const pendingCountForTab = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0);
+  const pendingCountForTab = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
   const tabs=[['pending',`Pending${pendingCountForTab?' ('+pendingCountForTab+')':''}`],['deletions',`Reversals${delReqCount?' ('+delReqCount+')':''}`],['history','Decision History'],['audit','Audit Log']];
   let body='';
   if(sr==='deletions'){
@@ -4748,6 +4749,18 @@ function renderApprovals(){
           : ''}
       </div>`;
     }
+    if(DB.archiveRequest){
+      const req = DB.archiveRequest;
+      const afy = DB.financialYears.find(f=>f.id===req.fyId);
+      const canActOnThis = !isReadOnly() && req.requestedBy!==window.__currentRole;
+      body += `<div class="card" style="border:2px solid var(--gold);margin-bottom:12px;">
+        <div style="font-weight:700;font-size:13.5px;">📦 Year Archive Awaiting Approval — ${afy?afy.label:req.fyId}</div>
+        <div style="font-size:12.5px;margin-top:6px;"><b>${actorLabel(req.requestedBy,req.requestedByName)}</b> requested archiving on ${new Date(req.requestedAt).toLocaleString('en-IN')} (${req.voucherCount} voucher(s)) — the archive file has already been downloaded to their device.</div>
+        <div class="readonly-note" style="margin-top:8px;">Confirming removes that year's detail from the live app; balances carry forward exactly via a summary entry.</div>
+        ${canActOnThis? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-danger" style="flex:1" onclick="confirmArchiveFY()">Confirm Archive</button><button class="btn btn-outline" style="flex:1" onclick="cancelArchiveRequest()">Decline</button></div>`
+          : req.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelArchiveRequest()">Withdraw Request</button>` : ''}
+      </div>`;
+    }
     if(actionable.length){
       body += `<div style="background:var(--paper);padding:8px 0 10px;margin-bottom:4px;">
         <label style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;margin-bottom:8px;"><input type="checkbox" onchange="toggleSelectAllPending(this)" style="width:16px;height:16px;"> Select all (${actionable.length})</label>
@@ -4755,7 +4768,7 @@ function renderApprovals(){
       </div>`;
     }
     body += rows + lockedRows;
-    if(!pend.length && !DB.importRequest) body = `<div class="empty"><div class="ic">✓</div>Nothing pending approval. All caught up.</div>`;
+    if(!pend.length && !DB.importRequest && !DB.archiveRequest) body = `<div class="empty"><div class="ic">✓</div>Nothing pending approval. All caught up.</div>`;
     else if(!actionable.length && pend.length) body += `<p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">All pending entries above were raised by you or are locked to your role — nothing here for you to authorise right now.</p>`;
   } else if(sr==='history'){
     const done = DB.vouchers.filter(v=>v.status==='approved'||v.status==='rejected').sort((a,b)=>b.id-a.id).slice(0,100);
@@ -5485,6 +5498,14 @@ function renderSettings(){
   </div>
   <div class="card"><div class="section-title">Data</div>
     <p style="font-size:12.5px;color:var(--ink-soft)">All data is stored offline on this device (localStorage). Export a backup regularly.</p>
+    ${(()=>{ const usedMB = ((localStorage.getItem(DB_KEY)||'').length/1024/1024);
+      const pct = Math.min(100, Math.round(usedMB/5*100)); // ~5MB is a conservative typical browser floor for this storage type
+      const color = pct>=80?'var(--brick)':pct>=50?'var(--gold)':'var(--moss)';
+      return `<div style="margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--ink-soft);"><span>Storage used</span><span>${usedMB.toFixed(1)} MB</span></div>
+        <div style="background:var(--paper);border-radius:6px;height:6px;overflow:hidden;margin-top:3px;"><div style="background:${color};height:100%;width:${pct}%;"></div></div>
+        ${pct>=70? `<p style="font-size:10.5px;color:${color};margin-top:4px;">Getting close to what browser storage reliably holds — this is a hard limit, not something a bigger download can fix. Consider archiving older data or asking about a database-backed version for a society this size.</p>` : ''}
+      </div>`; })()}
     ${(()=>{ const days = DB.lastBackupAt? Math.floor((new Date()-new Date(DB.lastBackupAt))/86400000) : null;
       if(days===null) return `<div class="readonly-note" style="margin-bottom:10px;">No backup taken yet in this app — export one now.</div>`;
       const verifyLine = DB.lastBackupChecksum? `<div style="font-size:10.5px;color:var(--ink-soft);">${DB.lastBackupVerified?'✓ Verified readable & complete':'⚠ Verification found a problem'} · checksum ${DB.lastBackupChecksum}</div>` : '';
@@ -5521,8 +5542,9 @@ function renderFYCard(){
   const fy = currentFY();
   const rows = DB.financialYears.slice().sort((a,b)=>b.startDate.localeCompare(a.startDate)).map(f=>`
     <tr><td><b>${f.label}</b><div style="font-size:10.5px;color:var(--ink-soft)">${f.startDate} to ${f.endDate}</div></td>
-    <td><span class="stamp ${f.status==='closed'?'approved':'pending'}">${f.status}</span>${f.status==='closed'?`<div style="font-size:10px;color:var(--ink-soft);margin-top:2px;">by ${f.closedBy} on ${new Date(f.closedAt).toLocaleDateString('en-IN')}</div>`:''}</td>
-    <td>${f.status==='closed'?`<button class="btn btn-outline btn-sm" onclick="viewFYClosingSnapshot('${f.id}')">View Statement</button>`:''}</td></tr>`).join('');
+    <td><span class="stamp ${f.status==='closed'?'approved':'pending'}">${f.status}</span>${f.status==='closed'?`<div style="font-size:10px;color:var(--ink-soft);margin-top:2px;">by ${f.closedBy} on ${new Date(f.closedAt).toLocaleDateString('en-IN')}</div>`:''}${f.archived?`<div style="font-size:10px;color:var(--moss);margin-top:2px;">📦 Archived ${new Date(f.archivedAt).toLocaleDateString('en-IN')}</div>`:''}</td>
+    <td>${f.status==='closed'?`<button class="btn btn-outline btn-sm" onclick="viewFYClosingSnapshot('${f.id}')">View Statement</button>`:''}
+      ${f.status==='closed' && !f.archived && !isReadOnly()? `<button class="btn btn-outline btn-sm" style="margin-top:4px;" onclick="requestArchiveFY('${f.id}')">Archive</button>`:''}</td></tr>`).join('');
   const pendingInFY = DB.vouchers.filter(v=>v.status==='pending' && v.date<=fy.endDate).length;
   let actionBlock = '';
   if(fy.status==='open' && !isReadOnly()){
@@ -5536,10 +5558,23 @@ function renderFYCard(){
         : `<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="requestCloseFY('${fy.id}')">Request Closing of ${fy.label}</button>`;
     }
   }
+  const archiveBlock = DB.archiveRequest? (()=>{
+    const req = DB.archiveRequest; const afy = DB.financialYears.find(f=>f.id===req.fyId);
+    const canAct = !isReadOnly() && req.requestedBy!==window.__currentRole;
+    return `<div class="card" style="border:2px solid var(--gold);margin-top:12px;">
+      <div style="font-weight:700;font-size:13px;">📦 Archive Pending — ${afy?afy.label:req.fyId}</div>
+      <div style="font-size:12px;margin-top:6px;"><b>${actorLabel(req.requestedBy,req.requestedByName)}</b> requested archiving on ${new Date(req.requestedAt).toLocaleString('en-IN')}. The archive file (${req.voucherCount} voucher(s), ${req.otherRecordCount} other record(s)) has already been downloaded to their device.</div>
+      <div class="readonly-note" style="margin-top:8px;">Confirming this removes that year's detailed records from the live app. Every account's balance is carried forward exactly as-is via a single summary entry — nothing about today's figures changes, only the underlying detail moves out. Make sure the downloaded file is saved safely first.</div>
+      ${canAct? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-danger" style="flex:1" onclick="confirmArchiveFY()">Confirm Archive</button><button class="btn btn-outline" style="flex:1" onclick="cancelArchiveRequest()">Decline</button></div>`
+        : req.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelArchiveRequest()">Withdraw Request</button>` : ''}
+    </div>`;
+  })() : '';
   return `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Current year: <b>${fy.label}</b> (${fy.startDate} to ${fy.endDate}). Closing a year locks every date on or before ${fy.endDate} against new postings, and the next year opens automatically — account balances carry forward on their own since the ledger is cumulative, so there's nothing to re-enter. Closing needs a different role to confirm, same as any other control action here.</p>
     ${fy.status==='open'? renderClosingWizard(fy) : ''}
     <div class="tbl-wrap"><table><tr><th>Year</th><th>Status</th><th></th></tr>${rows}</table></div>
-    ${actionBlock}`;
+    ${actionBlock}
+    ${archiveBlock}
+    ${DB.preArchiveBackupAt? `<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="restorePreArchiveBackup()">Restore Pre-Archive Backup (from ${new Date(DB.preArchiveBackupAt).toLocaleString('en-IN')})</button>` : ''}`;
 }
 function renderClosingWizard(fy){
   const cashVerifyOk = DB.cashVerifications.some(v=>v.date>=fy.startDate);
@@ -5592,6 +5627,109 @@ function cancelCloseFYRequest(){
   DB.fyCloseRequest = null;
   logAction('FY Closing Request Cancelled', fy?fy.label:'');
   save(); render(); toast('Closing request withdrawn');
+}
+/* ============ ARCHIVE CLOSED YEARS ============
+   Keeps the live app small indefinitely as years accumulate: a closed year's full detail (vouchers,
+   bills, meter readings, payroll runs) is exported to its own file, then removed from the live app —
+   with every account's balance preserved EXACTLY via a single summary opening entry, so nothing about
+   today's figures changes, only where the underlying detail lives. Same maker-checker pattern as Wipe
+   and Import: staged by one role, confirmed by a different one, with an automatic restore point. */
+function requestArchiveFY(fyId){
+  if(!canEdit()) return;
+  const fy = DB.financialYears.find(f=>f.id===fyId);
+  if(!fy || fy.status!=='closed'){ toast('Only a closed financial year can be archived'); return; }
+  if(fy.archived){ toast('Already archived'); return; }
+  if(DB.archiveRequest){ toast('There is already an archive request pending'); return; }
+
+  const archiveData = {
+    smartrwaArchive: true, fyLabel: fy.label, fyStartDate: fy.startDate, fyEndDate: fy.endDate,
+    archivedAt: nowTS(), archivedBy: window.__currentRole, societyName: DB.society.name,
+    vouchers: DB.vouchers.filter(v=>v.date>=fy.startDate && v.date<=fy.endDate),
+    bills: DB.bills.filter(b=>b.period>=fy.startDate.slice(0,7) && b.period<=fy.endDate.slice(0,7)),
+    vendorBills: DB.vendorBills.filter(b=>b.date>=fy.startDate && b.date<=fy.endDate),
+    meterReadings: DB.meterReadings.filter(r=>r.period>=fy.startDate.slice(0,7) && r.period<=fy.endDate.slice(0,7)),
+    payrollRuns: DB.payrollRuns.filter(p=>p.period>=fy.startDate.slice(0,7) && p.period<=fy.endDate.slice(0,7)),
+    inventoryTx: DB.inventoryTx.filter(t=>t.date>=fy.startDate && t.date<=fy.endDate),
+  };
+  const otherRecordCount = archiveData.bills.length+archiveData.vendorBills.length+archiveData.meterReadings.length+archiveData.payrollRuns.length+archiveData.inventoryTx.length;
+  if(!archiveData.vouchers.length && !otherRecordCount){ toast('Nothing dated in this year to archive'); return; }
+
+  const text = JSON.stringify(archiveData, null, 2);
+  const blob = new Blob([text],{type:'application/json'});
+  const url = URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download=`smartrwa-archive-${fy.label}.json`; a.click();
+
+  DB.archiveRequest = {fyId, requestedBy:window.__currentRole, requestedByName:actorName(), requestedAt:nowTS(),
+    voucherCount:archiveData.vouchers.length, otherRecordCount, checksum: computeChecksum(text)};
+  logAction('Archive Requested', `${fy.label} — ${archiveData.vouchers.length} voucher(s), checksum ${DB.archiveRequest.checksum} — file downloaded, awaiting a different role to confirm`);
+  save(); render();
+  toast('Archive file downloaded — save it safely, then a different role needs to confirm before the year is removed from the live app');
+}
+function cancelArchiveRequest(){
+  if(!canEdit()) return;
+  const fy = DB.financialYears.find(f=>f.id===DB.archiveRequest?.fyId);
+  logAction('Archive Request Cancelled', fy?fy.label:'');
+  DB.archiveRequest = null;
+  save(); render(); toast('Archive request cancelled — nothing was removed');
+}
+function confirmArchiveFY(){
+  if(isReadOnly()){ toast(window.__currentRole+' cannot confirm this.'); return; }
+  if(!DB.archiveRequest){ toast('No archive request pending'); return; }
+  if(DB.archiveRequest.requestedBy===window.__currentRole){ toast('A different role must confirm this.'); return; }
+  const req = DB.archiveRequest;
+  const fy = DB.financialYears.find(f=>f.id===req.fyId);
+  if(!fy){ toast('That financial year no longer exists'); DB.archiveRequest=null; save(); render(); return; }
+  if(!confirm(`This removes ${fy.label}'s detailed records from the live app (balances are preserved exactly). Make sure the downloaded archive file is saved safely first. Continue?`)) return;
+
+  // Safety net: a full pre-archive snapshot, best-effort (may not fit if storage is already tight —
+  // which, ironically, is exactly the situation archiving exists to relieve).
+  try{ localStorage.setItem('smartrwa_v1_pre_archive_backup', JSON.stringify(DB)); DB.preArchiveBackupAt = nowTS(); }catch(e){ /* proceed without it if it doesn't fit */ }
+
+  // 1. Capture every account's cumulative balance as of the archive cutoff, BEFORE removing anything.
+  const allAccounts = Object.keys(ACCOUNTS);
+  const balances = {};
+  allAccounts.forEach(acc=>{ balances[acc] = accBalance(acc, {upto: fy.endDate}).net; });
+
+  // 2. Remove the detail dated within this year.
+  DB.vouchers = DB.vouchers.filter(v=>!(v.date>=fy.startDate && v.date<=fy.endDate));
+  DB.bills = DB.bills.filter(b=>!(b.period>=fy.startDate.slice(0,7) && b.period<=fy.endDate.slice(0,7)));
+  DB.vendorBills = DB.vendorBills.filter(b=>!(b.date>=fy.startDate && b.date<=fy.endDate));
+  DB.meterReadings = DB.meterReadings.filter(r=>!(r.period>=fy.startDate.slice(0,7) && r.period<=fy.endDate.slice(0,7)));
+  DB.payrollRuns = DB.payrollRuns.filter(p=>!(p.period>=fy.startDate.slice(0,7) && p.period<=fy.endDate.slice(0,7)));
+  DB.inventoryTx = DB.inventoryTx.filter(t=>!(t.date>=fy.startDate && t.date<=fy.endDate));
+
+  // 3. Recreate the exact same balances via one summary voucher, dated the day after this year ends —
+  // so every report and every later year's opening balance is completely unaffected by the removal.
+  const openingDate = new Date(fy.endDate+'T00:00:00'); openingDate.setDate(openingDate.getDate()+1);
+  const openingDateStr = openingDate.toISOString().slice(0,10);
+  const entries = [];
+  allAccounts.forEach(acc=>{
+    const bal = balances[acc]; if(Math.abs(bal)<1) return;
+    if(bal>0) entries.push({account:acc, debit:Math.round(bal), credit:0});
+    else entries.push({account:acc, debit:0, credit:Math.round(-bal)});
+  });
+  DB.vouchers.push({
+    id: nextId('voucher'), voucherNo: nextVoucherNo('Journal', openingDateStr), type:'Journal', date: openingDateStr,
+    narration: `Opening balances carried forward — ${fy.label} archived (see ${req.checksum} archive file for full detail)`,
+    entries, status:'approved', maker:req.requestedBy, makerName:req.requestedByName, makerAt: req.requestedAt,
+    checker:window.__currentRole, checkerName:actorName(), checkerAt: nowTS(), checkerNote:'Auto-generated by year archiving — not a real transaction',
+    isArchiveOpeningBalance:true, archivedFYLabel: fy.label
+  });
+
+  fy.archived = true; fy.archivedAt = nowTS(); fy.archivedBy = window.__currentRole; fy.archiveChecksum = req.checksum;
+  DB.archiveRequest = null;
+  logAction('Archive Confirmed', `${fy.label} — detail removed, balances preserved via summary entry (confirmed by ${window.__currentRole})`);
+  save(); render();
+  toast(`${fy.label} archived — live app is lighter, today's balances are unchanged`);
+  checkTrialBalanceNow(); // belt-and-suspenders: confirm the balance-preserving entry didn't disturb anything
+}
+function restorePreArchiveBackup(){
+  if(!canEdit()) return;
+  const raw = localStorage.getItem('smartrwa_v1_pre_archive_backup');
+  if(!raw){ toast('No pre-archive backup found'); return; }
+  if(!confirm('Restore the data from just before the last archive? This undoes the archiving and brings that year\'s detail back into the live app.')) return;
+  try{ DB = JSON.parse(raw); DB.archiveRequest=null; save(); toast('Restored to the state before archiving'); go('dashboard'); }
+  catch(e){ toast('Could not read backup'); }
 }
 function confirmCloseFY(){
   if(isReadOnly()){ toast(window.__currentRole+' cannot close the financial year — view only.'); return; }
@@ -6918,7 +7056,19 @@ function stageImport(text, sourceLabel){
     toast('This JSON is valid but does not look like a SmartRWA backup (no flats array found).'); return;
   }
   try{ localStorage.setItem('smartrwa_v1_pending_import', text); }
-  catch(e){ toast('Could not stage this file — it may be too large for this browser to hold twice at once. Try Restore Last Wipe/Import first if storage is nearly full.'); return; }
+  catch(e){
+    const fileMB = (text.length/1024/1024).toFixed(1);
+    const currentMB = ((localStorage.getItem(DB_KEY)||'').length/1024/1024).toFixed(1);
+    openModal(`<div class="modal-head"><h2 style="color:var(--brick);">File Too Large To Stage</h2><button class="close-x" onclick="closeModal()">×</button></div>
+      <p style="font-size:13px;">This browser's storage couldn't hold both the current app data and this file at the same time.</p>
+      <div class="tbl-wrap"><table>
+      <tr><td style="font-size:12px;">This file</td><td class="num-cell">${fileMB} MB</td></tr>
+      <tr><td style="font-size:12px;">Current app data</td><td class="num-cell">${currentMB} MB</td></tr>
+      <tr><td style="font-size:12px;">Browser storage limit</td><td class="num-cell">~4–10 MB total</td></tr>
+      </table></div>
+      <p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">This is a hard limit of browser storage, not something that can be worked around by retrying. For a society this size or years of history, this app's storage approach genuinely runs out of room — ask about archiving older years or a database-backed version if this keeps happening.</p>`);
+    return;
+  }
   const verify = verifyBackupText(text);
   DB.importRequest = {requestedBy:window.__currentRole, requestedByName:actorName(), requestedAt:nowTS(), sourceLabel,
     flatCount:parsed.flats.length, voucherCount:(parsed.vouchers||[]).length, verified:verify.readable&&verify.complete, checksum:verify.checksum, verifyError:verify.error};
@@ -7548,6 +7698,8 @@ const FAQ = [
    a:'Yes, for both Reconciliation and Verify Interest \u2014 but with an honest caveat: a PDF has no real structure like a spreadsheet does, it is just text positioned on a page, so this is best-effort rather than as reliable as CSV/Excel. It extracts the text, reconstructs table rows, and uses a few heuristics (whichever number is right-most is usually the running balance; whether that balance went up or down decides debit vs credit) to guess each row. Every extracted row is then shown in an <b>editable preview</b> before anything is used \u2014 fix a misread amount, correct which column a number landed in, or remove a row that is not really a transaction (page headers, totals, etc.) \u2014 only once you confirm does it feed into the same reconciliation or interest calculation used for CSV/Excel. This will not work on a scanned image PDF (one that is really a photo, not real text) \u2014 if your bank offers a CSV or Excel export instead, that will always be more reliable.'},
   {k:['download my own statement','export bank book','download ledger','share ledger','export csv ledger','export excel ledger','download statement csv'], q:'Can I download my own bank statement or any ledger from the app, and share it?',
    a:'Yes \u2014 Reports \u2192 Bank Book, General Ledger, and Cash Book all have <b>CSV</b>, <b>Excel</b>, and <b>Share</b> buttons, for whatever period you have selected (a month, a year, or any custom range). General Ledger gives you every account head with activity in that period, each with its own export buttons, so any ledger you need \u2014 Housekeeping Expense, Maintenance Receivable, any account \u2014 is one tap away. The CSV/Excel layout (Date, Description, Debit, Credit, Balance) matches genuine bank-statement conventions exactly, so a Bank Book export can be re-uploaded into Reconcile or Verify Interest and will match correctly \u2014 useful for testing those features, or as a record of your own transactions in a portable format. Share uses your device\'s own share sheet where available (straight to WhatsApp, email, etc.); where it is not supported, it downloads the file instead so you can share it manually.'},
+  {k:['archive year','archive closed year','storage full','too much data','15 years','20 years','long term storage','many years of data'], q:'What happens as years of data pile up \u2014 will the app slow down or run out of room?',
+   a:'Browser storage genuinely has a small limit (roughly 4\u201310 MB depending on the browser), so a large society over many years will eventually outgrow it \u2014 that is a real limit of this app, not something a setting fixes. The answer is <b>Setup \u2192 Financial Year \u2192 Archive</b>, available once a year is closed: it downloads that year\'s complete detail (every voucher, bill, meter reading) to its own file, then removes that detail from the live app \u2014 while every account\'s balance is carried forward <b>exactly</b>, via a single summary entry, so nothing about today\'s figures changes. Only the underlying detail moves out. Archiving needs a different role to confirm, the same as Wipe or Import, and a restore point is saved automatically (\"Restore Pre-Archive Backup\") in case the wrong year gets archived. This keeps the live app small indefinitely, however many years pass \u2014 each year\'s full history stays safe in its own file, one import away if you ever need to look something up again.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
