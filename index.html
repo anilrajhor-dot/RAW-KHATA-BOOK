@@ -1526,6 +1526,7 @@ if(!DB.internalControls) DB.internalControls = {cashPaymentLimit:10000, roundFig
 if(!DB.legalCases) DB.legalCases = [];
 if(DB.importRequest===undefined) DB.importRequest = null;
 if(DB.archiveRequest===undefined) DB.archiveRequest = null;
+if(DB.cloudSyncChangeRequest===undefined) DB.cloudSyncChangeRequest = null;
 if(DB.preImportBackupAt===undefined) DB.preImportBackupAt = null;
 if(!DB.seq.legal) DB.seq.legal = 1;
 if(!DB.agmReports) DB.agmReports = {}; // keyed by FY id: {chairmanReport: string}
@@ -1695,6 +1696,32 @@ function loadFirebaseSDK(callback){
   }
   loadNext();
 }
+function canManageCloudSync(){ return window.__currentRole==='President' || window.__currentRole==='Treasurer'; }
+function requestCloudSyncChange(configText, accessCode){
+  if(!canManageCloudSync()){ toast('Only the President or Treasurer can change Cloud Sync settings.'); return; }
+  const parsedConfig = parseFirebaseConfigText(configText);
+  if(!parsedConfig){ toast('Could not read that config — paste the block starting with "apiKey" through the closing brace, exactly as Firebase showed it (either the JSON or the JavaScript version both work).'); return; }
+  if(!accessCode || accessCode.trim().length<6){ toast('Set a Society Access Code of at least 6 characters — this is the shared secret every device uses to sync to the same data.'); return; }
+  if(DB.cloudSyncChangeRequest){ toast('There is already a Cloud Sync change pending confirmation.'); return; }
+  DB.cloudSyncChangeRequest = {requestedBy:window.__currentRole, requestedByName:actorName(), requestedAt:nowTS(), configText, accessCode:accessCode.trim()};
+  logAction('Cloud Sync Change Requested', `Access code change requested by ${window.__currentRole} — awaiting a different one of President/Treasurer to confirm`);
+  save(); render(); toast('Cloud Sync change staged — the President or Treasurer (whichever role did not request this) must confirm before it takes effect.');
+}
+function cancelCloudSyncChangeRequest(){
+  if(!canManageCloudSync()) return;
+  logAction('Cloud Sync Change Cancelled', DB.cloudSyncChangeRequest? `requested by ${DB.cloudSyncChangeRequest.requestedBy}` : '');
+  DB.cloudSyncChangeRequest = null;
+  save(); render(); toast('Cloud Sync change request withdrawn');
+}
+async function confirmCloudSyncChange(){
+  if(!canManageCloudSync()){ toast('Only the President or Treasurer can confirm this.'); return; }
+  if(!DB.cloudSyncChangeRequest){ toast('No Cloud Sync change pending'); return; }
+  if(DB.cloudSyncChangeRequest.requestedBy===window.__currentRole){ toast('A different one of President/Treasurer must confirm this — not the same role that requested it.'); return; }
+  const {configText, accessCode} = DB.cloudSyncChangeRequest;
+  DB.cloudSyncChangeRequest = null;
+  save();
+  await connectCloudSync(configText, accessCode);
+}
 async function connectCloudSync(configText, accessCode){
   const parsedConfig = parseFirebaseConfigText(configText);
   if(!parsedConfig){ toast('Could not read that config — paste the block starting with "apiKey" through the closing brace, exactly as Firebase showed it (either the JSON or the JavaScript version both work).'); return; }
@@ -1717,8 +1744,10 @@ async function connectCloudSync(configText, accessCode){
   });
 }
 function disconnectCloudSync(){
+  if(!canManageCloudSync()){ toast('Only the President or Treasurer can disconnect Cloud Sync.'); return; }
   if(window.__cloudSyncUnsubscribe) window.__cloudSyncUnsubscribe();
   clearCloudSyncConfig();
+  logAction('Cloud Sync Disconnected', `by ${window.__currentRole}`);
   toast('Cloud sync disconnected — this device now works offline-only again, exactly as before.');
   render();
 }
@@ -2583,7 +2612,7 @@ function renderDashboard(){
   const vendorDue = DB.vendorBills.reduce((s,b)=>s+(b.netPayable-b.paid),0);
   const pfEsiDue = -accBalance('PF Payable').net + -accBalance('ESI Payable').net;
   const gstDue = -accBalance('GST Payable').net - accBalance('GST Input Credit').net;
-  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
+  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0) + (DB.cloudSyncChangeRequest?1:0);
 
   // Asset alerts (AMC/warranty due within 30 days or expired)
   const today = todayISO();
@@ -3730,14 +3759,15 @@ function saveOneTimeCharge(){
 
 /* ============ RECEIPTS ============ */
 function renderReceipts(){
-  const receipts = DB.vouchers.filter(v=>v.type==='Receipt').slice().sort((a,b)=>b.date.localeCompare(a.date));
-  if(!receipts.length) return `<div class="empty"><div class="ic">⊙</div>No receipts recorded yet.<br><br>${isReadOnly()?'':'<button class="btn btn-primary" onclick="openReceiptModal()">Record Receipt</button>'}</div>`;
+  const receiptsAll = DB.vouchers.filter(v=>v.type==='Receipt').slice().sort((a,b)=>b.date.localeCompare(a.date));
+  if(!receiptsAll.length) return `<div class="empty"><div class="ic">⊙</div>No receipts recorded yet.<br><br>${isReadOnly()?'':'<button class="btn btn-primary" onclick="openReceiptModal()">Record Receipt</button>'}</div>`;
+  const {pageItems: receipts, currentPage, totalPages, totalCount, pageSize} = paginateSlice(receiptsAll, 'receipts', 50);
   const rows = receipts.map(v=>{
     const f = getFlat(v.flatId); const amt = v.entries.find(e=>e.debit>0)?.debit||0;
     return `<tr><td style="font-size:11px;font-family:'IBM Plex Mono',monospace;">${v.voucherNo||('#'+v.id)}</td><td>${v.date}<div style="font-size:11px;color:var(--ink-soft)">${v.narration||''} · by ${actorLabel(v.maker,v.makerName)}</div></td><td>${f?flatLabel(f):'—'}</td><td class="num-cell">₹${fmt(amt)}</td><td><span class="stamp ${v.status}">${v.status}</span></td></tr>`;
   }).join('');
-  return `<div class="card"><div class="section-title"><span><span class="num">${String(receipts.length).padStart(2,'0')}</span>Receipts</span></div>
-  <div class="tbl-wrap"><table><tr><th>Receipt No.</th><th>Date</th><th>Flat</th><th class="num-cell">Amount</th><th>Status</th></tr>${rows}</table></div></div>`;
+  return `<div class="card"><div class="section-title"><span><span class="num">${String(receiptsAll.length).padStart(2,'0')}</span>Receipts</span></div>
+  <div class="tbl-wrap"><table><tr><th>Receipt No.</th><th>Date</th><th>Flat</th><th class="num-cell">Amount</th><th>Status</th></tr>${rows}</table></div>${renderPaginationControls('receipts', currentPage, totalPages, totalCount, pageSize)}</div>`;
 }
 /* ============ CRASH RECOVERY — draft auto-save for quick-entry forms ============
    While a Receipt/Vendor Bill/manual Voucher form is open, its field values are periodically saved
@@ -5010,12 +5040,13 @@ function renderAudit(){
     const sevColor = s=>({High:'brick',Medium:'gold',Low:'moss'}[s]); const sevBg = s=>({High:'brick-soft',Medium:'amber-soft',Low:'moss-soft'}[s]);
     const categories = ['All','Internal Control','Fraud Pattern','Data Quality'];
     const counts = {}; exceptions.forEach(e=> counts[e.category]=(counts[e.category]||0)+1);
-    const shown = window.__excFilter==='All'? exceptions : exceptions.filter(e=>e.category===window.__excFilter);
+    const shownAll = window.__excFilter==='All'? exceptions : exceptions.filter(e=>e.category===window.__excFilter);
+    const {pageItems: shown, currentPage, totalPages, totalCount, pageSize} = paginateSlice(shownAll, 'exceptions', 50);
     body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Computed live from current data across three areas: <b>Internal Control</b> (procedural checks — cash limits, back-dating, voucher-numbering integrity, budget overspend), <b>Fraud Pattern</b> (behavioural/statistical checks borrowed from bank inspection practice), and <b>Data Quality</b> (missing GST/PAN, dormant flats). ${isReadOnly()?'':'<a href="#" onclick="event.preventDefault();go(\'settings\')">Adjust thresholds under Setup → Internal Controls.</a>'}</p>
-      <div class="subtabs">${categories.map(c=>`<button class="subtab ${window.__excFilter===c?'active':''}" onclick="window.__excFilter='${c}';render();">${c}${c!=='All'&&counts[c]?' ('+counts[c]+')':''}</button>`).join('')}</div>
-      ${shown.length? `<div class="tbl-wrap"><table><tr><th>Type</th><th>Severity</th><th>Detail</th></tr>
+      <div class="subtabs">${categories.map(c=>`<button class="subtab ${window.__excFilter===c?'active':''}" onclick="window.__excFilter='${c}';window.__paginationState.exceptions=1;render();">${c}${c!=='All'&&counts[c]?' ('+counts[c]+')':''}</button>`).join('')}</div>
+      ${shownAll.length? `<div class="tbl-wrap"><table><tr><th>Type</th><th>Severity</th><th>Detail</th></tr>
       ${shown.map(e=>`<tr><td style="font-size:12px;">${e.type}</td><td><span class="stamp" style="background:var(--${sevBg(e.severity)});color:var(--${sevColor(e.severity)});">${e.severity}</span></td><td style="font-size:12px;">${e.detail}</td></tr>`).join('')}
-      </table></div>` : `<div class="empty"><div class="ic">✓</div>No exceptions found${window.__excFilter!=='All'?' in '+window.__excFilter:''}.</div>`}`;
+      </table></div>${renderPaginationControls('exceptions', currentPage, totalPages, totalCount, pageSize)}` : `<div class="empty"><div class="ic">✓</div>No exceptions found${window.__excFilter!=='All'?' in '+window.__excFilter:''}.</div>`}`;
   } else if(sr==='legal'){
     const cases = DB.legalCases.slice().sort((a,b)=>(b.status==='Ongoing')-(a.status==='Ongoing') || b.filedDate.localeCompare(a.filedDate));
     body = `${isAuditReadOnly()?'':'<button class="btn btn-primary btn-sm" style="margin-bottom:12px;" onclick="openLegalCaseModal()">+ Add Legal Case</button>'}
@@ -5137,7 +5168,7 @@ function deleteDocument(id){
 function renderApprovals(){
   const sr = subroute || 'pending';
   const delReqCount = DB.vouchers.filter(v=>v.reversalRequested).length;
-  const pendingCountForTab = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
+  const pendingCountForTab = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0) + (DB.cloudSyncChangeRequest?1:0);
   const tabs=[['pending',`Pending${pendingCountForTab?' ('+pendingCountForTab+')':''}`],['deletions',`Reversals${delReqCount?' ('+delReqCount+')':''}`],['history','Decision History'],['audit','Audit Log']];
   let body='';
   if(sr==='deletions'){
@@ -5212,6 +5243,17 @@ function renderApprovals(){
           : req.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelArchiveRequest()">Withdraw Request</button>` : ''}
       </div>`;
     }
+    if(DB.cloudSyncChangeRequest){
+      const req = DB.cloudSyncChangeRequest;
+      const canActOnThis = canManageCloudSync() && req.requestedBy!==window.__currentRole;
+      body += `<div class="card" style="border:2px solid var(--gold);margin-bottom:12px;">
+        <div style="font-weight:700;font-size:13.5px;">☁ Cloud Sync Change Awaiting Approval</div>
+        <div style="font-size:12.5px;margin-top:6px;"><b>${actorLabel(req.requestedBy,req.requestedByName)}</b> requested a Cloud Sync access code change on ${new Date(req.requestedAt).toLocaleString('en-IN')}.</div>
+        <div class="readonly-note" style="margin-top:8px;">Only the President or Treasurer — whichever did not request this — can confirm.</div>
+        ${canActOnThis? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-danger" style="flex:1" onclick="confirmCloudSyncChange()">Confirm Change</button><button class="btn btn-outline" style="flex:1" onclick="cancelCloudSyncChangeRequest()">Decline</button></div>`
+          : req.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelCloudSyncChangeRequest()">Withdraw Request</button>` : ''}
+      </div>`;
+    }
     if(actionable.length){
       body += `<div style="background:var(--paper);padding:8px 0 10px;margin-bottom:4px;">
         <label style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;margin-bottom:8px;"><input type="checkbox" onchange="toggleSelectAllPending(this)" style="width:16px;height:16px;"> Select all (${actionable.length})</label>
@@ -5219,7 +5261,7 @@ function renderApprovals(){
       </div>`;
     }
     body += rows + lockedRows;
-    if(!pend.length && !DB.importRequest && !DB.archiveRequest) body = `<div class="empty"><div class="ic">✓</div>Nothing pending approval. All caught up.</div>`;
+    if(!pend.length && !DB.importRequest && !DB.archiveRequest && !DB.cloudSyncChangeRequest) body = `<div class="empty"><div class="ic">✓</div>Nothing pending approval. All caught up.</div>`;
     else if(!actionable.length && pend.length) body += `<p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">All pending entries above were raised by you or are locked to your role — nothing here for you to authorise right now.</p>`;
   } else if(sr==='history'){
     const done = DB.vouchers.filter(v=>v.status==='approved'||v.status==='rejected').sort((a,b)=>b.id-a.id).slice(0,100);
@@ -6422,19 +6464,35 @@ function applyLateCharges(){
 function renderCloudSyncCard(){
   const cfg = cloudSyncConfig();
   const s = window.__cloudSyncState;
-  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-C</code></p>`;
+  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-D</code></p>`;
+  const canManage = canManageCloudSync();
+  const req = DB.cloudSyncChangeRequest;
+
+  if(req){
+    const canConfirm = canManage && req.requestedBy!==window.__currentRole;
+    return `<div class="readonly-note" style="border-color:var(--gold);margin-bottom:10px;">
+      <b>Change pending:</b> ${actorLabel(req.requestedBy,req.requestedByName)} requested a Cloud Sync change on ${new Date(req.requestedAt).toLocaleString('en-IN')}. The President or Treasurer — whichever did not request this — needs to confirm before it takes effect.
+      </div>
+      ${canConfirm? `<div style="display:flex;gap:8px;"><button class="btn btn-danger" style="flex:1" onclick="confirmCloudSyncChange()">Confirm Change</button><button class="btn btn-outline" style="flex:1" onclick="cancelCloudSyncChangeRequest()">Decline</button></div>`
+        : req.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" onclick="cancelCloudSyncChangeRequest()">Withdraw Request</button>`
+        : `<p style="font-size:12px;color:var(--ink-soft);">Only the President or Treasurer can confirm this.</p>`}
+      ${versionTag}`;
+  }
+
   if(!cfg){
-    return `<p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Off by default — this app works entirely offline as normal. Connect it to sync data across every device using the same access code, so an entry made on one phone appears on the others. Needs your own free Firebase project (takes about 5 minutes to set up — ask the chat for step-by-step help if needed).</p>
-      <div class="field"><label>Firebase Config (paste the JSON from your Firebase project settings)</label><textarea id="cs_config" rows="4" style="font-family:monospace;font-size:11px;" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder='{"apiKey": "...", "projectId": "...", ...}'></textarea></div>
+    return `<p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Off by default — this app works entirely offline as normal. Connect it to sync data across every device using the same access code, so an entry made on one phone appears on the others. Needs your own free Firebase project (takes about 5 minutes to set up — ask the chat for step-by-step help if needed). Managed by the <b>President or Treasurer only</b>, with the other confirming any change — the same protection given to any other security-sensitive setting here.</p>
+      ${canManage? `<div class="field"><label>Firebase Config (paste the JSON from your Firebase project settings)</label><textarea id="cs_config" rows="4" style="font-family:monospace;font-size:11px;" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder='{"apiKey": "...", "projectId": "...", ...}'></textarea></div>
       <div class="field"><label>Society Access Code (shared secret — set once, every device uses the same one)</label><input id="cs_code" type="text" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="e.g. greenpark-crossing-2026"></div>
-      ${isReadOnly()?'':`<button class="btn btn-primary btn-block" onclick="connectCloudSync(document.getElementById('cs_config').value, document.getElementById('cs_code').value)">Connect</button>`}
+      <button class="btn btn-primary btn-block" onclick="requestCloudSyncChange(document.getElementById('cs_config').value, document.getElementById('cs_code').value)">Request Connect</button>`
+      : `<p style="font-size:12px;color:var(--ink-soft);">Only the President or Treasurer can set this up.</p>`}
       <p style="font-size:10.5px;color:var(--ink-soft);margin-top:8px;">Honest limits: this syncs the whole dataset, "last write wins" — if two people save at the exact same moment on two devices, one save can overwrite the other's (unlikely for a small committee, not impossible). Security is this access code plus anonymous sign-in — reasonable for a small private group, not the same as individual logins.</p>
       ${versionTag}`;
   }
   return `<p style="font-size:12.5px;">${s.connected?'🟢 Connected':'🟡 Configured, not yet confirmed connected'} — access code: <code>${cfg.accessCode}</code></p>
     <p style="font-size:11px;color:var(--ink-soft);margin-top:4px;">${s.lastSyncedAt? 'Last synced '+new Date(s.lastSyncedAt).toLocaleString('en-IN') : 'Not synced yet this session'}</p>
     ${s.lastError? `<div class="readonly-note" style="border-color:var(--brick);color:var(--brick);margin-top:8px;">⚠ ${s.lastError} — this device keeps working offline via IndexedDB regardless; sync will resume once this clears.</div>` : ''}
-    ${isReadOnly()?'':`<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="if(confirm('Disconnect cloud sync on this device? Local data is unaffected — this device just stops syncing.'))disconnectCloudSync();">Disconnect</button>`}
+    ${canManage? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="if(confirm('Disconnect cloud sync on this device? Local data is unaffected — this device just stops syncing.'))disconnectCloudSync();">Disconnect</button>`
+      : `<p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Only the President or Treasurer can change or disconnect this.</p>`}
     ${versionTag}`;
 }
 function renderSecurityGovernanceCard(){
@@ -8172,6 +8230,8 @@ const FAQ = [
    a:'Yes \u2014 Audit \u2192 <b>Review Assistant</b> automatically surfaces High-Value Vouchers, Manual Journal Entries, Cash Transactions, Possible Duplicates, and Pending Clarifications, each linking through to the full detail \u2014 recomputed live every time, nothing cached. One honest gap, stated directly on that screen: this app does not currently track file attachments per voucher, only society-level documents (bye-laws, insurance, etc. under Setup \u2192 Documents), so a "missing attachments" check is not something it can meaningfully do yet.'},
   {k:['cloud sync','sync across devices','firebase','live sync','multiple devices','same data on phones'], q:'Can entries made on one phone show up on another device automatically?',
    a:'Yes, if you turn on Setup \u2192 Cloud Sync \u2014 off by default, and the app works fully offline exactly as always unless you enable it. It needs your own free Firebase project (a 5-minute setup on Google\'s side \u2014 ask this chat for "cloud sync setup steps" for the exact walkthrough) plus a shared Society Access Code you set once and use on every device. Two honest limits: it syncs the whole dataset "last write wins," not a per-field merge, so two people saving at the exact same instant on two devices could have one overwrite the other\'s (unlikely for a small committee); and security is that access code plus anonymous sign-in, reasonable for a small private group but not the same as individual logins. If sync ever fails to connect, the app keeps working offline exactly as before \u2014 nothing about the existing offline mode is at risk.'},
+  {k:['change access code','who can change cloud sync','cloud sync permission','cloud sync maker checker'], q:'Who can set up or change Cloud Sync?',
+   a:'Only the <b>President or Treasurer</b> \u2014 the Accountant and Auditor can see the connection status but cannot connect, disconnect, or change the access code. Setting up or changing the access code needs the other of the two (President or Treasurer, whichever did not request it) to confirm, the same maker-checker protection given to other security-sensitive actions here \u2014 the request shows up in Approvals just like an import or archive request would.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
@@ -8704,7 +8764,7 @@ function computeDailySummary(){
   const yVouchers = DB.vouchers.filter(v=>v.date===yStr && v.status==='approved');
   const received = yVouchers.filter(v=>v.type==='Receipt').reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
   const paid = yVouchers.filter(v=>v.type==='VendorPayment'||v.type==='Payroll').reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
-  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
+  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0) + (DB.cloudSyncChangeRequest?1:0);
   const unreconciledBanks = DB.bankAccounts.filter(b=>b.type!=='FD').filter(b=>{
     const accName = b.ledgerAccountName; if(!accName) return false;
     return DB.vouchers.some(v=>v.status==='approved' && v.entries.some(e=>e.account===accName) && !(b.clearedVouchers||[]).includes(v.id));
