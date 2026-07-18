@@ -1674,8 +1674,8 @@ function cloudSyncConfig(){
   try{ const raw = localStorage.getItem('smartrwa_cloud_sync_config'); return raw? JSON.parse(raw) : null; }catch(e){ return null; }
 }
 function saveCloudSyncConfig(cfg){ localStorage.setItem('smartrwa_cloud_sync_config', JSON.stringify(cfg)); }
-function clearCloudSyncConfig(){ localStorage.removeItem('smartrwa_cloud_sync_config'); window.__cloudSyncState = {connected:false}; }
-window.__cloudSyncState = {connected:false, lastSyncedAt:null, lastError:null, pulling:false};
+function clearCloudSyncConfig(){ localStorage.removeItem('smartrwa_cloud_sync_config'); window.__cloudSyncState = {connected:false, lastKnownRemoteModified:0}; }
+window.__cloudSyncState = {connected:false, lastSyncedAt:null, lastError:null, pulling:false, lastKnownRemoteModified:0};
 
 function loadFirebaseSDK(callback){
   if(window.firebase && window.firebase.firestore){ callback(); return; }
@@ -1751,8 +1751,14 @@ function startCloudSyncListener(){
       const manifest = snap.data();
       if(!manifest || !manifest.chunkCount) return;
       const remoteModified = manifest.lastModified || 0;
-      const localModified = DB.__lastModified || 0;
-      if(remoteModified <= localModified) return; // already up to date, or this is just an echo of our own push
+      // Compare against the last point we ourselves actually synced TO or FROM — not DB.__lastModified,
+      // which bumps on every local save including ones with nothing to do with sync (e.g. routine
+      // background bookkeeping on this device). Using that as the gate meant one device's own unrelated
+      // activity could look "newer" than a genuinely important update from another device and silently
+      // block the pull — exactly the bug that caused an update to never arrive despite everything else
+      // working. window.__cloudSyncState.lastKnownRemoteModified is sync-specific and starts at 0 each
+      // session, so the very first snapshot after connecting always gets evaluated properly.
+      if(remoteModified <= (window.__cloudSyncState.lastKnownRemoteModified||0)) return; // genuinely already have this exact version
       try{
         const chunkDocs = await Promise.all(
           Array.from({length: manifest.chunkCount}, (_,i)=> docRef.collection('chunks').doc(String(i)).get({source:'server'}))
@@ -1764,6 +1770,7 @@ function startCloudSyncListener(){
         window.__cloudSyncState.pulling = false;
         window.__cloudSyncState.lastSyncedAt = nowTS();
         window.__cloudSyncState.lastError = null;
+        window.__cloudSyncState.lastKnownRemoteModified = remoteModified;
         idbSet(DB_KEY, DB).catch(()=>{}); // keep local IndexedDB copy in step with what was just pulled
         toast('Updated with changes from another device');
         render();
@@ -1795,6 +1802,7 @@ function pushToCloudSync(){
         if(staleDeletes.length){ const delBatch = firebase.firestore().batch(); staleDeletes.forEach(d=>delBatch.delete(d.ref)); await delBatch.commit(); }
         await docRef.set({chunkCount: chunks.length, lastModified: DB.__lastModified, pushedBy: window.__currentRole||'', pushedAt: nowTS()});
         window.__cloudSyncState.connected=true; window.__cloudSyncState.lastSyncedAt = nowTS(); window.__cloudSyncState.lastError = null;
+        window.__cloudSyncState.lastKnownRemoteModified = DB.__lastModified;
       }catch(e){
         window.__cloudSyncState.lastError = e.message||String(e); // offline or misconfigured — local IndexedDB save already succeeded regardless
       }
@@ -6414,7 +6422,7 @@ function applyLateCharges(){
 function renderCloudSyncCard(){
   const cfg = cloudSyncConfig();
   const s = window.__cloudSyncState;
-  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-B</code></p>`;
+  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-C</code></p>`;
   if(!cfg){
     return `<p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Off by default — this app works entirely offline as normal. Connect it to sync data across every device using the same access code, so an entry made on one phone appears on the others. Needs your own free Firebase project (takes about 5 minutes to set up — ask the chat for step-by-step help if needed).</p>
       <div class="field"><label>Firebase Config (paste the JSON from your Firebase project settings)</label><textarea id="cs_config" rows="4" style="font-family:monospace;font-size:11px;" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder='{"apiKey": "...", "projectId": "...", ...}'></textarea></div>
