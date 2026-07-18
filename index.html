@@ -1722,7 +1722,24 @@ function disconnectCloudSync(){
   toast('Cloud sync disconnected — this device now works offline-only again, exactly as before.');
   render();
 }
-const CLOUD_SYNC_CHUNK_SIZE = 700000; // characters — safely under Firestore's ~1 MiB per-document limit, leaving margin for field overhead
+const CLOUD_SYNC_CHUNK_BYTES = 700000; // measured in actual UTF-8 bytes, not JS string length — Devanagari names, ₹ symbols, and other non-ASCII text take 2-4 bytes each, so a 700,000-CHARACTER chunk could be 1.4-2.8MB in real bytes despite looking safe by character count. Splitting on encoded bytes, not characters, is what actually respects Firestore's ~1 MiB per-document limit.
+function splitIntoByteSafeChunks(text, maxBytes){
+  const encoder = new TextEncoder();
+  const chunks = [];
+  let start = 0;
+  while(start < text.length){
+    // Binary-search the largest slice from `start` whose UTF-8 encoding still fits under maxBytes
+    let lo = 1, hi = text.length - start, best = 1;
+    while(lo <= hi){
+      const mid = Math.floor((lo+hi)/2);
+      if(encoder.encode(text.slice(start, start+mid)).length <= maxBytes){ best = mid; lo = mid+1; }
+      else hi = mid-1;
+    }
+    chunks.push(text.slice(start, start+best));
+    start += best;
+  }
+  return chunks;
+}
 function startCloudSyncListener(){
   const cfg = cloudSyncConfig(); if(!cfg) return;
   loadFirebaseSDK(()=>{
@@ -1768,8 +1785,7 @@ function pushToCloudSync(){
       const docRef = firebase.firestore().collection('smartrwa_societies').doc(cfg.accessCode);
       try{
         const text = JSON.stringify(DB);
-        const chunks = [];
-        for(let i=0;i<text.length;i+=CLOUD_SYNC_CHUNK_SIZE) chunks.push(text.slice(i, i+CLOUD_SYNC_CHUNK_SIZE));
+        const chunks = splitIntoByteSafeChunks(text, CLOUD_SYNC_CHUNK_BYTES);
         const batch = firebase.firestore().batch();
         chunks.forEach((part,i)=> batch.set(docRef.collection('chunks').doc(String(i)), {part}));
         await batch.commit();
