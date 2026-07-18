@@ -6414,17 +6414,20 @@ function applyLateCharges(){
 function renderCloudSyncCard(){
   const cfg = cloudSyncConfig();
   const s = window.__cloudSyncState;
+  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-B</code></p>`;
   if(!cfg){
     return `<p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Off by default — this app works entirely offline as normal. Connect it to sync data across every device using the same access code, so an entry made on one phone appears on the others. Needs your own free Firebase project (takes about 5 minutes to set up — ask the chat for step-by-step help if needed).</p>
       <div class="field"><label>Firebase Config (paste the JSON from your Firebase project settings)</label><textarea id="cs_config" rows="4" style="font-family:monospace;font-size:11px;" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder='{"apiKey": "...", "projectId": "...", ...}'></textarea></div>
       <div class="field"><label>Society Access Code (shared secret — set once, every device uses the same one)</label><input id="cs_code" type="text" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="e.g. greenpark-crossing-2026"></div>
       ${isReadOnly()?'':`<button class="btn btn-primary btn-block" onclick="connectCloudSync(document.getElementById('cs_config').value, document.getElementById('cs_code').value)">Connect</button>`}
-      <p style="font-size:10.5px;color:var(--ink-soft);margin-top:8px;">Honest limits: this syncs the whole dataset, "last write wins" — if two people save at the exact same moment on two devices, one save can overwrite the other's (unlikely for a small committee, not impossible). Security is this access code plus anonymous sign-in — reasonable for a small private group, not the same as individual logins.</p>`;
+      <p style="font-size:10.5px;color:var(--ink-soft);margin-top:8px;">Honest limits: this syncs the whole dataset, "last write wins" — if two people save at the exact same moment on two devices, one save can overwrite the other's (unlikely for a small committee, not impossible). Security is this access code plus anonymous sign-in — reasonable for a small private group, not the same as individual logins.</p>
+      ${versionTag}`;
   }
   return `<p style="font-size:12.5px;">${s.connected?'🟢 Connected':'🟡 Configured, not yet confirmed connected'} — access code: <code>${cfg.accessCode}</code></p>
     <p style="font-size:11px;color:var(--ink-soft);margin-top:4px;">${s.lastSyncedAt? 'Last synced '+new Date(s.lastSyncedAt).toLocaleString('en-IN') : 'Not synced yet this session'}</p>
     ${s.lastError? `<div class="readonly-note" style="border-color:var(--brick);color:var(--brick);margin-top:8px;">⚠ ${s.lastError} — this device keeps working offline via IndexedDB regardless; sync will resume once this clears.</div>` : ''}
-    ${isReadOnly()?'':`<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="if(confirm('Disconnect cloud sync on this device? Local data is unaffected — this device just stops syncing.'))disconnectCloudSync();">Disconnect</button>`}`;
+    ${isReadOnly()?'':`<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="if(confirm('Disconnect cloud sync on this device? Local data is unaffected — this device just stops syncing.'))disconnectCloudSync();">Disconnect</button>`}
+    ${versionTag}`;
 }
 function renderSecurityGovernanceCard(){
   const recentLogins = DB.loginHistory.slice().reverse().slice(0,15);
