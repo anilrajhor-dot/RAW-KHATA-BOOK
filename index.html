@@ -1779,12 +1779,12 @@ function startCloudSyncListener(){
     // reopened rather than freshly connected. Signing in here too, every time, fixes that for good.
     try{
       if(!firebase.auth().currentUser) await firebase.auth().signInAnonymously();
+      window.__cloudSyncState.connected = true;
+      window.__cloudSyncState.lastError = null;
     }catch(e){
       window.__cloudSyncState.lastError = 'Could not authenticate: '+(e.message||e);
       return;
     }
-    const docRef = firebase.firestore().collection('smartrwa_societies').doc(cfg.accessCode);
-    if(window.__cloudSyncUnsubscribe) window.__cloudSyncUnsubscribe();
     window.__cloudSyncUnsubscribe = docRef.onSnapshot(async snap=>{
       if(!snap.exists) return; // nothing pushed yet from any device
       const manifest = snap.data();
@@ -1808,6 +1808,7 @@ function startCloudSyncListener(){
         window.__cloudSyncState.pulling = true;
         DB = parsed;
         window.__cloudSyncState.pulling = false;
+        window.__cloudSyncState.connected = true;
         window.__cloudSyncState.lastSyncedAt = nowTS();
         window.__cloudSyncState.lastError = null;
         window.__cloudSyncState.lastKnownRemoteModified = remoteModified;
@@ -6521,7 +6522,7 @@ function applyLateCharges(){
 function renderCloudSyncCard(){
   const cfg = cloudSyncConfig();
   const s = window.__cloudSyncState;
-  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-F</code></p>`;
+  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-G</code></p>`;
   const canManage = canManageCloudSync();
   const req = DB.cloudSyncChangeRequest;
 
