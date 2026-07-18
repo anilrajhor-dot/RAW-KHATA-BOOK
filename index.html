@@ -1771,8 +1771,18 @@ function splitIntoByteSafeChunks(text, maxBytes){
 }
 function startCloudSyncListener(){
   const cfg = cloudSyncConfig(); if(!cfg) return;
-  loadFirebaseSDK(()=>{
+  loadFirebaseSDK(async ()=>{
     if(!firebase.apps.length) firebase.initializeApp(cfg.firebaseConfig);
+    // This function is also the auto-reconnect path used on every fresh page load — unlike the initial
+    // Connect flow, nothing here previously established an authenticated session first, so Firestore
+    // correctly rejected reads with "Missing or insufficient permissions" every time the app was simply
+    // reopened rather than freshly connected. Signing in here too, every time, fixes that for good.
+    try{
+      if(!firebase.auth().currentUser) await firebase.auth().signInAnonymously();
+    }catch(e){
+      window.__cloudSyncState.lastError = 'Could not authenticate: '+(e.message||e);
+      return;
+    }
     const docRef = firebase.firestore().collection('smartrwa_societies').doc(cfg.accessCode);
     if(window.__cloudSyncUnsubscribe) window.__cloudSyncUnsubscribe();
     window.__cloudSyncUnsubscribe = docRef.onSnapshot(async snap=>{
@@ -1818,6 +1828,12 @@ function pushToCloudSync(){
   __cloudSyncPushTimer = setTimeout(()=>{
     loadFirebaseSDK(async ()=>{
       if(!firebase.apps.length) firebase.initializeApp(cfg.firebaseConfig);
+      try{
+        if(!firebase.auth().currentUser) await firebase.auth().signInAnonymously();
+      }catch(e){
+        window.__cloudSyncState.lastError = 'Could not authenticate: '+(e.message||e);
+        return;
+      }
       const docRef = firebase.firestore().collection('smartrwa_societies').doc(cfg.accessCode);
       try{
         const text = JSON.stringify(DB);
@@ -6130,18 +6146,49 @@ function requestArchiveFY(fyId){
   if(fy.archived){ toast('Already archived'); return; }
   if(DB.archiveRequest){ toast('There is already an archive request pending'); return; }
 
-  const archiveData = {
-    smartrwaArchive: true, fyLabel: fy.label, fyStartDate: fy.startDate, fyEndDate: fy.endDate,
-    archivedAt: nowTS(), archivedBy: window.__currentRole, societyName: DB.society.name,
-    vouchers: DB.vouchers.filter(v=>v.date>=fy.startDate && v.date<=fy.endDate),
-    bills: DB.bills.filter(b=>b.period>=fy.startDate.slice(0,7) && b.period<=fy.endDate.slice(0,7)),
-    vendorBills: DB.vendorBills.filter(b=>b.date>=fy.startDate && b.date<=fy.endDate),
-    meterReadings: DB.meterReadings.filter(r=>r.period>=fy.startDate.slice(0,7) && r.period<=fy.endDate.slice(0,7)),
-    payrollRuns: DB.payrollRuns.filter(p=>p.period>=fy.startDate.slice(0,7) && p.period<=fy.endDate.slice(0,7)),
-    inventoryTx: DB.inventoryTx.filter(t=>t.date>=fy.startDate && t.date<=fy.endDate),
+  const yearVouchers = DB.vouchers.filter(v=>v.date>=fy.startDate && v.date<=fy.endDate);
+  const bills = DB.bills.filter(b=>b.period>=fy.startDate.slice(0,7) && b.period<=fy.endDate.slice(0,7));
+  const vendorBills = DB.vendorBills.filter(b=>b.date>=fy.startDate && b.date<=fy.endDate);
+  const meterReadings = DB.meterReadings.filter(r=>r.period>=fy.startDate.slice(0,7) && r.period<=fy.endDate.slice(0,7));
+  const payrollRuns = DB.payrollRuns.filter(p=>p.period>=fy.startDate.slice(0,7) && p.period<=fy.endDate.slice(0,7));
+  const inventoryTx = DB.inventoryTx.filter(t=>t.date>=fy.startDate && t.date<=fy.endDate);
+  const otherRecordCount = bills.length+vendorBills.length+meterReadings.length+payrollRuns.length+inventoryTx.length;
+  if(!yearVouchers.length && !otherRecordCount){ toast('Nothing dated in this year to archive'); return; }
+
+  // Opening balances as of the day before this year started — included as a single summary voucher,
+  // so this file is self-contained: standing entirely on its own with correct opening → year's
+  // activity → closing balances, exactly as it looked while this was the live, active year. This is
+  // what makes it directly restorable later via the normal Import Backup flow — not just a reference
+  // file, but a real standalone snapshot of just this one year.
+  const allAccounts = Object.keys(ACCOUNTS);
+  const openingEntries = [];
+  allAccounts.forEach(acc=>{
+    const bal = accBalance(acc, {upto: dayBefore(fy.startDate)}).net; if(Math.abs(bal)<1) return;
+    if(bal>0) openingEntries.push({account:acc, debit:Math.round(bal), credit:0});
+    else openingEntries.push({account:acc, debit:0, credit:Math.round(-bal)});
+  });
+  const safeOpeningId = Math.max(0, ...yearVouchers.map(v=>v.id)) + 1000000; // guaranteed not to collide with any real voucher id from that year
+  const openingVoucher = {
+    id: safeOpeningId, voucherNo: `OPN/${fy.label}/0001`, type:'Journal', date: fy.startDate,
+    narration: `Opening balances as of ${fy.startDate} — carried forward into this standalone archive of ${fy.label}`,
+    entries: openingEntries, status:'approved', maker:window.__currentRole, makerName:actorName(), makerAt: nowTS(),
+    checker:window.__currentRole, checkerName:actorName(), checkerAt: nowTS(), checkerNote:'Auto-generated archive opening balance',
+    isArchiveOpeningBalance:true,
   };
-  const otherRecordCount = archiveData.bills.length+archiveData.vendorBills.length+archiveData.meterReadings.length+archiveData.payrollRuns.length+archiveData.inventoryTx.length;
-  if(!archiveData.vouchers.length && !otherRecordCount){ toast('Nothing dated in this year to archive'); return; }
+
+  const archiveData = {
+    smartrwaArchive: true, standaloneRestorable: true, fyLabel: fy.label, fyStartDate: fy.startDate, fyEndDate: fy.endDate,
+    archivedAt: nowTS(), archivedBy: window.__currentRole,
+    // Master data as it stood at archive time — needed for this file to function as a complete,
+    // standalone dataset on its own, not just a list of transactions.
+    society: DB.society, flats: DB.flats, towers: DB.towers, flatTypes: DB.flatTypes, chargeHeads: DB.chargeHeads,
+    vendors: DB.vendors, employees: DB.employees, assets: DB.assets, inventoryItems: DB.inventoryItems,
+    bankAccounts: DB.bankAccounts, categoryRates: DB.categoryRates, security: DB.security, seq: DB.seq,
+    financialYears: [{...fy, archived:false}], // this year alone, shown as the only year that exists in this standalone file
+    // This year's actual activity, plus the opening-balance voucher that makes it self-consistent
+    vouchers: [openingVoucher, ...yearVouchers],
+    bills, vendorBills, meterReadings, payrollRuns, inventoryTx,
+  };
 
   const text = JSON.stringify(archiveData, null, 2);
   const blob = new Blob([text],{type:'application/json'});
@@ -6149,10 +6196,10 @@ function requestArchiveFY(fyId){
   a.href=url; a.download=`smartrwa-archive-${fy.label}.json`; a.click();
 
   DB.archiveRequest = {fyId, requestedBy:window.__currentRole, requestedByName:actorName(), requestedAt:nowTS(),
-    voucherCount:archiveData.vouchers.length, otherRecordCount, checksum: computeChecksum(text)};
-  logAction('Archive Requested', `${fy.label} — ${archiveData.vouchers.length} voucher(s), checksum ${DB.archiveRequest.checksum} — file downloaded, awaiting a different role to confirm`);
+    voucherCount:yearVouchers.length, otherRecordCount, checksum: computeChecksum(text)};
+  logAction('Archive Requested', `${fy.label} — ${yearVouchers.length} voucher(s), checksum ${DB.archiveRequest.checksum} — standalone file downloaded, awaiting a different role to confirm`);
   save(); render();
-  toast('Archive file downloaded — save it safely, then a different role needs to confirm before the year is removed from the live app');
+  toast('Archive file downloaded — this file is a complete, standalone copy of just this year, restorable anytime via Setup → Import Backup. Save it safely, then a different role needs to confirm before the year is removed from the live app.');
 }
 function cancelArchiveRequest(){
   if(!canEdit()) return;
@@ -6464,7 +6511,7 @@ function applyLateCharges(){
 function renderCloudSyncCard(){
   const cfg = cloudSyncConfig();
   const s = window.__cloudSyncState;
-  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-D</code></p>`;
+  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-E</code></p>`;
   const canManage = canManageCloudSync();
   const req = DB.cloudSyncChangeRequest;
 
@@ -8213,7 +8260,7 @@ const FAQ = [
   {k:['download my own statement','export bank book','download ledger','share ledger','export csv ledger','export excel ledger','download statement csv'], q:'Can I download my own bank statement or any ledger from the app, and share it?',
    a:'Yes \u2014 Reports \u2192 Bank Book, General Ledger, and Cash Book all have <b>CSV</b>, <b>Excel</b>, and <b>Share</b> buttons, for whatever period you have selected (a month, a year, or any custom range). General Ledger gives you every account head with activity in that period, each with its own export buttons, so any ledger you need \u2014 Housekeeping Expense, Maintenance Receivable, any account \u2014 is one tap away. The CSV/Excel layout (Date, Description, Debit, Credit, Balance) matches genuine bank-statement conventions exactly, so a Bank Book export can be re-uploaded into Reconcile or Verify Interest and will match correctly \u2014 useful for testing those features, or as a record of your own transactions in a portable format. Share uses your device\'s own share sheet where available (straight to WhatsApp, email, etc.); where it is not supported, it downloads the file instead so you can share it manually.'},
   {k:['archive year','archive closed year','storage full','too much data','15 years','20 years','long term storage','many years of data'], q:'What happens as years of data pile up \u2014 will the app slow down or run out of room?',
-   a:'Storage now uses IndexedDB (see the separate question on that) rather than the much smaller storage older versions used, so this holds up well even for a large society over many years \u2014 tested directly with a full 12-month year across 336 flats (roughly 19MB) importing and reloading correctly. That said, <b>Setup \u2192 Financial Year \u2192 Archive</b> is still worth using once a year closes, since a smaller live dataset simply runs faster and stays easier to work with, however large the underlying limit is: it downloads that year\'s complete detail (every voucher, bill, meter reading) to its own file, then removes that detail from the live app \u2014 while every account\'s balance is carried forward <b>exactly</b>, via a single summary entry, so nothing about today\'s figures changes. Only the underlying detail moves out. Archiving needs a different role to confirm, the same as Wipe or Import, and a restore point is saved automatically (\"Restore Pre-Archive Backup\") in case the wrong year gets archived.'},
+   a:'Storage now uses IndexedDB (see the separate question on that) rather than the much smaller storage older versions used, so this holds up well even for a large society over many years. That said, <b>Setup \u2192 Financial Year \u2192 Archive</b> is still the right habit once a year closes, since a smaller live dataset stays faster to work with regardless of the underlying limit: it downloads that year\'s complete detail to its own file, then removes that detail from the live app \u2014 while every account\'s balance is carried forward <b>exactly</b>, via a single summary entry, so nothing about today\'s figures changes. The downloaded file is a genuinely complete, standalone copy of just that year \u2014 not just a reference \u2014 restorable anytime via Setup \u2192 Import Backup, showing only that year\'s data on its own with everything else replaced, correct opening and closing balances included. Archiving needs a different role to confirm, the same as Wipe or Import, and a restore point is saved automatically (\"Restore Pre-Archive Backup\") in case the wrong year gets archived.'},
   {k:['indexeddb','storage upgrade','how much storage','storage limit','bigger storage','file too large to stage','import too large'], q:'How much data can this app actually hold now?',
    a:'This app stores data in IndexedDB, a browser storage system built for much larger amounts than older, simpler browser storage \u2014 typically hundreds of MB, depending on the device, rather than a handful of MB. Tested directly at real scale: a full 12-month financial year across 336 flats (roughly 7,800 vouchers, ~19MB) imported successfully, tallied correctly, and reloaded correctly after fully closing and reopening the app. If you are upgrading from an older copy of this app, your existing data is <b>migrated automatically</b> the first time you open this version \u2014 nothing to do on your part, and no data is lost in the process. One honest limit: IndexedDB is generous but not infinite, and it varies by device \u2014 Setup \u2192 Data shows a live storage-used indicator so you can see where things stand, and archiving old closed years (see the separate question on that) keeps the working app fast regardless of how large the true ceiling turns out to be on your specific device.'},
   {k:['control panel','society status','security score','device status','single glance','status screen'], q:'Is there one screen that shows if everything is healthy, without opening several reports?',
