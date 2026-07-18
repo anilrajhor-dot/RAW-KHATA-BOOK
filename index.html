@@ -1755,7 +1755,7 @@ function startCloudSyncListener(){
       if(remoteModified <= localModified) return; // already up to date, or this is just an echo of our own push
       try{
         const chunkDocs = await Promise.all(
-          Array.from({length: manifest.chunkCount}, (_,i)=> docRef.collection('chunks').doc(String(i)).get())
+          Array.from({length: manifest.chunkCount}, (_,i)=> docRef.collection('chunks').doc(String(i)).get({source:'server'}))
         );
         const text = chunkDocs.map(d=>d.data()?.part||'').join('');
         const parsed = JSON.parse(text);
