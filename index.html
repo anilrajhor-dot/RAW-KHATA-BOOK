@@ -1675,8 +1675,8 @@ function cloudSyncConfig(){
   try{ const raw = localStorage.getItem('smartrwa_cloud_sync_config'); return raw? JSON.parse(raw) : null; }catch(e){ return null; }
 }
 function saveCloudSyncConfig(cfg){ localStorage.setItem('smartrwa_cloud_sync_config', JSON.stringify(cfg)); }
-function clearCloudSyncConfig(){ localStorage.removeItem('smartrwa_cloud_sync_config'); window.__cloudSyncState = {connected:false, lastKnownRemoteModified:0}; }
-window.__cloudSyncState = {connected:false, lastSyncedAt:null, lastError:null, pulling:false, lastKnownRemoteModified:0};
+function clearCloudSyncConfig(){ localStorage.removeItem('smartrwa_cloud_sync_config'); window.__cloudSyncState = {connected:false, lastKnownRemoteModified:0, pushInProgress:false}; }
+window.__cloudSyncState = {connected:false, lastSyncedAt:null, lastError:null, pulling:false, lastKnownRemoteModified:0, pushInProgress:false};
 
 function loadFirebaseSDK(callback){
   if(window.firebase && window.firebase.firestore){ callback(); return; }
@@ -1797,6 +1797,7 @@ function startCloudSyncListener(){
       // block the pull — exactly the bug that caused an update to never arrive despite everything else
       // working. window.__cloudSyncState.lastKnownRemoteModified is sync-specific and starts at 0 each
       // session, so the very first snapshot after connecting always gets evaluated properly.
+      if(window.__cloudSyncState.pushInProgress) return; // this device is mid-write right now — never act on a snapshot while our own push is still in flight
       if(remoteModified <= (window.__cloudSyncState.lastKnownRemoteModified||0)) return; // genuinely already have this exact version
       try{
         const chunkDocs = await Promise.all(
@@ -1835,6 +1836,14 @@ function pushToCloudSync(){
         return;
       }
       const docRef = firebase.firestore().collection('smartrwa_societies').doc(cfg.accessCode);
+      // A push writes several separate chunk documents before the small manifest document — if this
+      // same device's own listener happened to see an intermediate state mid-write (a real race, given
+      // Firestore delivers each document write as its own event), it could read back a partial version
+      // of what's still being written. Closing the listener's gate FIRST, before any chunk writes even
+      // start, guarantees this device's own listener ignores every one of its own echoes for this push,
+      // however the writes land — not relying on timing to work out in the right order.
+      window.__cloudSyncState.pushInProgress = true;
+      window.__cloudSyncState.lastKnownRemoteModified = DB.__lastModified;
       try{
         const text = JSON.stringify(DB);
         const chunks = splitIntoByteSafeChunks(text, CLOUD_SYNC_CHUNK_BYTES);
@@ -1847,9 +1856,10 @@ function pushToCloudSync(){
         if(staleDeletes.length){ const delBatch = firebase.firestore().batch(); staleDeletes.forEach(d=>delBatch.delete(d.ref)); await delBatch.commit(); }
         await docRef.set({chunkCount: chunks.length, lastModified: DB.__lastModified, pushedBy: window.__currentRole||'', pushedAt: nowTS()});
         window.__cloudSyncState.connected=true; window.__cloudSyncState.lastSyncedAt = nowTS(); window.__cloudSyncState.lastError = null;
-        window.__cloudSyncState.lastKnownRemoteModified = DB.__lastModified;
       }catch(e){
         window.__cloudSyncState.lastError = e.message||String(e); // offline or misconfigured — local IndexedDB save already succeeded regardless
+      }finally{
+        window.__cloudSyncState.pushInProgress = false;
       }
     });
   }, 1200); // debounced — several rapid saves (e.g. a bulk approval) push once, not once per voucher
@@ -6511,7 +6521,7 @@ function applyLateCharges(){
 function renderCloudSyncCard(){
   const cfg = cloudSyncConfig();
   const s = window.__cloudSyncState;
-  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-E</code></p>`;
+  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-F</code></p>`;
   const canManage = canManageCloudSync();
   const req = DB.cloudSyncChangeRequest;
 
