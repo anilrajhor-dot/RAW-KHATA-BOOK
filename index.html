@@ -7521,35 +7521,26 @@ async function stageImport(text, sourceLabel){
   if(typeof parsed!=='object' || !parsed || !Array.isArray(parsed.flats)){
     toast('This JSON is valid but does not look like a SmartRWA backup (no flats array found).'); return;
   }
-  try{ await idbSet('pending_import', text); }
-  catch(e){
-    const fileMB = (text.length/1024/1024).toFixed(1);
-    openModal(`<div class="modal-head"><h2 style="color:var(--brick);">File Too Large To Stage</h2><button class="close-x" onclick="closeModal()">×</button></div>
-      <p style="font-size:13px;">This device's storage couldn't hold this file, even with the much larger room IndexedDB normally allows.</p>
-      <div class="tbl-wrap"><table><tr><td style="font-size:12px;">This file</td><td class="num-cell">${fileMB} MB</td></tr></table></div>
-      <p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">This usually means the device itself is nearly out of free storage space, not a limit of the app. Free up space on the device and try again.</p>`);
-    return;
-  }
   const verify = verifyBackupText(text);
+  DB.pendingImportText = text; // lives inside DB itself (not a separate local-only key) so it travels with Cloud Sync to whichever device needs to confirm it
   DB.importRequest = {requestedBy:window.__currentRole, requestedByName:actorName(), requestedAt:nowTS(), sourceLabel,
     flatCount:parsed.flats.length, voucherCount:(parsed.vouchers||[]).length, verified:verify.readable&&verify.complete, checksum:verify.checksum, verifyError:verify.error};
   logAction('Import Requested', `${sourceLabel} — ${parsed.flats.length} flat(s), ${(parsed.vouchers||[]).length} voucher(s) — checksum ${verify.checksum} — awaiting a different role to confirm`);
   save(); render(); toast('Import staged — a different role must confirm before it replaces current data');
 }
-async function cancelImportRequest(){
+function cancelImportRequest(){
   if(!canEdit()) return;
   logAction('Import Request Cancelled', DB.importRequest? `${DB.importRequest.sourceLabel} (requested by ${DB.importRequest.requestedBy})` : '');
   DB.importRequest = null;
-  try{ await idbDelete('pending_import'); }catch(e){}
+  DB.pendingImportText = null;
   save(); render(); toast('Import request cancelled');
 }
 async function confirmImportBackup(){
   if(isReadOnly()){ toast(window.__currentRole+' cannot confirm an import.'); return; }
   if(!DB.importRequest){ toast('No import pending'); return; }
   if(DB.importRequest.requestedBy===window.__currentRole){ toast('A different role must confirm this.'); return; }
-  let raw;
-  try{ raw = await idbGet('pending_import'); }catch(e){}
-  if(!raw){ toast('Staged file not found — ask the requester to upload it again.'); DB.importRequest=null; save(); render(); return; }
+  const raw = DB.pendingImportText;
+  if(!raw){ toast('Staged file not found — if this was staged on a different device, make sure Cloud Sync has finished syncing first, or ask the requester to upload it again.'); DB.importRequest=null; save(); render(); return; }
   let parsed;
   try{ parsed = JSON.parse(raw); }
   catch(e){ toast('Staged data is corrupted — ask the requester to upload it again.'); DB.importRequest=null; save(); render(); return; }
@@ -7559,9 +7550,9 @@ async function confirmImportBackup(){
   const confirmedBy = window.__currentRole;
   DB = parsed;
   DB.importRequest = null;
+  DB.pendingImportText = null;
   DB.preImportBackupAt = preImportBackupAt;
   logAction('Import Confirmed', `Data replaced (confirmed by ${confirmedBy}) — previous state saved as a restore point`);
-  try{ await idbDelete('pending_import'); }catch(e){}
   save(); toast('Import complete — previous data saved as a restore point below'); go('dashboard');
   checkTrialBalanceNow();
 }
