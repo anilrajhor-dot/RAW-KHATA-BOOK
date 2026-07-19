@@ -2006,7 +2006,12 @@ function isPeriodClosed(dateISO){
 }
 function blockIfPeriodClosed(dateISO){
   if(isPeriodClosed(dateISO)){
-    toast(`${dateISO} falls in a closed accounting period (up to ${latestClosedFYEndDate()}) — this can't be posted. Use a current-period date, or reopen the year under Setup → Financial Year if this was a genuine error.`);
+    const lockEnd = latestClosedFYEndDate();
+    const lockingFY = DB.financialYears.find(f=>f.status==='closed' && f.endDate===lockEnd);
+    const reopenHint = lockingFY && lockingFY.auditLocked
+      ? `${lockingFY.label} is audit-locked and can never be reopened.`
+      : `Use a current-period date, or reopen the year under Setup → Financial Year if this was a genuine error.`;
+    toast(`${dateISO} falls in a closed accounting period (up to ${lockEnd}) — this can't be posted. ${reopenHint}`);
     return true;
   }
   return false;
@@ -2709,7 +2714,7 @@ function renderDashboard(){
   const vendorDue = DB.vendorBills.reduce((s,b)=>s+(b.netPayable-b.paid),0);
   const pfEsiDue = -accBalance('PF Payable').net + -accBalance('ESI Payable').net;
   const gstDue = -accBalance('GST Payable').net - accBalance('GST Input Credit').net;
-  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
+  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0) + (DB.fyReopenRequest?1:0) + (DB.auditLockRequest?1:0);
 
   // Asset alerts (AMC/warranty due within 30 days or expired)
   const today = todayISO();
@@ -5265,7 +5270,7 @@ function deleteDocument(id){
 function renderApprovals(){
   const sr = subroute || 'pending';
   const delReqCount = DB.vouchers.filter(v=>v.reversalRequested).length;
-  const pendingCountForTab = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
+  const pendingCountForTab = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0) + (DB.fyReopenRequest?1:0) + (DB.auditLockRequest?1:0);
   const tabs=[['pending',`Pending${pendingCountForTab?' ('+pendingCountForTab+')':''}`],['deletions',`Reversals${delReqCount?' ('+delReqCount+')':''}`],['history','Decision History'],['audit','Audit Log']];
   let body='';
   if(sr==='deletions'){
@@ -5340,6 +5345,29 @@ function renderApprovals(){
           : req.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelArchiveRequest()">Withdraw Request</button>` : ''}
       </div>`;
     }
+    if(DB.fyReopenRequest){
+      const req = DB.fyReopenRequest; const rfy = DB.financialYears.find(f=>f.id===req.fyId);
+      const canActOnThis = !isReadOnly() && req.requestedBy!==window.__currentRole;
+      body += `<div class="card" style="border:2px solid var(--gold);margin-bottom:12px;">
+        <div style="font-weight:700;font-size:13.5px;">↺ Year Reopen Awaiting Approval — ${rfy?rfy.label:req.fyId}</div>
+        <div style="font-size:12.5px;margin-top:6px;"><b>${actorLabel(req.requestedBy,req.requestedByName)}</b> requested reopening on ${new Date(req.requestedAt).toLocaleString('en-IN')}.<br>Reason: ${req.reason}</div>
+        <div class="readonly-note" style="margin-top:8px;">Confirming unlocks ${rfy?rfy.label:''} for new postings again — permanently recorded in that year's history either way.</div>
+        ${canActOnThis? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-danger" style="flex:1" onclick="confirmReopenFY()">Confirm Reopen</button><button class="btn btn-outline" style="flex:1" onclick="cancelReopenFYRequest()">Decline</button></div>`
+          : req.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelReopenFYRequest()">Withdraw Request</button>` : ''}
+      </div>`;
+    }
+    if(DB.auditLockRequest){
+      const req = DB.auditLockRequest; const lfy = DB.financialYears.find(f=>f.id===req.fyId);
+      const canActOnThis = window.__currentRole==='President';
+      body += `<div class="card" style="border:2px solid var(--brick);margin-bottom:12px;">
+        <div style="font-weight:700;font-size:13.5px;color:var(--brick);">🔒 Audit Lock Awaiting Confirmation — ${lfy?lfy.label:req.fyId}</div>
+        <div style="font-size:12.5px;margin-top:6px;">Proposed by the <b>Auditor</b> on ${new Date(req.requestedAt).toLocaleString('en-IN')}, certifying review is complete.</div>
+        <div class="readonly-note" style="border-color:var(--brick);color:var(--brick);margin-top:8px;">Permanent once confirmed — ${lfy?lfy.label:'this year'} can never be reopened again.</div>
+        ${canActOnThis? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-danger" style="flex:1" onclick="confirmAuditLock()">Confirm — Lock Permanently</button><button class="btn btn-outline" style="flex:1" onclick="cancelAuditLockRequest()">Decline</button></div>`
+          : window.__currentRole==='Auditor'? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelAuditLockRequest()">Withdraw Request</button>`
+          : `<p style="font-size:11.5px;color:var(--ink-soft);margin-top:8px;">Only the President can confirm this.</p>`}
+      </div>`;
+    }
     if(actionable.length){
       body += `<div style="background:var(--paper);padding:8px 0 10px;margin-bottom:4px;">
         <label style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;margin-bottom:8px;"><input type="checkbox" onchange="toggleSelectAllPending(this)" style="width:16px;height:16px;"> Select all (${actionable.length})</label>
@@ -5347,7 +5375,7 @@ function renderApprovals(){
       </div>`;
     }
     body += rows + lockedRows;
-    if(!pend.length && !DB.importRequest && !DB.archiveRequest) body = `<div class="empty"><div class="ic">✓</div>Nothing pending approval. All caught up.</div>`;
+    if(!pend.length && !DB.importRequest && !DB.archiveRequest && !DB.fyReopenRequest && !DB.auditLockRequest) body = `<div class="empty"><div class="ic">✓</div>Nothing pending approval. All caught up.</div>`;
     else if(!actionable.length && pend.length) body += `<p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">All pending entries above were raised by you or are locked to your role — nothing here for you to authorise right now.</p>`;
   } else if(sr==='history'){
     const done = DB.vouchers.filter(v=>v.status==='approved'||v.status==='rejected').sort((a,b)=>b.id-a.id).slice(0,100);
@@ -6117,9 +6145,11 @@ function renderFYCard(){
   const fy = currentFY();
   const rows = DB.financialYears.slice().sort((a,b)=>b.startDate.localeCompare(a.startDate)).map(f=>`
     <tr><td><b>${f.label}</b><div style="font-size:10.5px;color:var(--ink-soft)">${f.startDate} to ${f.endDate}</div></td>
-    <td><span class="stamp ${f.status==='closed'?'approved':'pending'}">${f.status}</span>${f.status==='closed'?`<div style="font-size:10px;color:var(--ink-soft);margin-top:2px;">by ${f.closedBy} on ${new Date(f.closedAt).toLocaleDateString('en-IN')}</div>`:''}${f.archived?`<div style="font-size:10px;color:var(--moss);margin-top:2px;">📦 Archived ${new Date(f.archivedAt).toLocaleDateString('en-IN')}</div>`:''}</td>
+    <td><span class="stamp ${f.status==='closed'?'approved':'pending'}">${f.status}</span>${f.auditLocked?`<div style="font-size:10px;color:var(--brick);margin-top:2px;font-weight:700;">🔒 Audit-Locked</div>`:''}${f.status==='closed'?`<div style="font-size:10px;color:var(--ink-soft);margin-top:2px;">by ${f.closedBy} on ${new Date(f.closedAt).toLocaleDateString('en-IN')}</div>`:''}${f.reopenHistory&&f.reopenHistory.length?`<div style="font-size:10px;color:var(--gold);margin-top:2px;">↺ Reopened ${f.reopenHistory.length}× previously</div>`:''}${f.archived?`<div style="font-size:10px;color:var(--moss);margin-top:2px;">📦 Archived ${new Date(f.archivedAt).toLocaleDateString('en-IN')}</div>`:''}</td>
     <td>${f.status==='closed'?`<button class="btn btn-outline btn-sm" onclick="viewFYClosingSnapshot('${f.id}')">View Statement</button>`:''}
-      ${f.status==='closed' && !f.archived && !isReadOnly()? `<button class="btn btn-outline btn-sm" style="margin-top:4px;" onclick="requestArchiveFY('${f.id}')">Archive</button>`:''}</td></tr>`).join('');
+      ${f.status==='closed' && !f.archived && !isReadOnly()? `<button class="btn btn-outline btn-sm" style="margin-top:4px;" onclick="requestArchiveFY('${f.id}')">Archive</button>`:''}
+      ${f.status==='closed' && !f.auditLocked && f.endDate===latestClosedFYEndDate() && !isReadOnly() && !DB.fyReopenRequest? `<button class="btn btn-outline btn-sm" style="margin-top:4px;" onclick="openReopenFYPrompt('${f.id}')">Reopen for Correction</button>`:''}
+      ${f.status==='closed' && !f.auditLocked && window.__currentRole==='Auditor' && !DB.auditLockRequest? `<button class="btn btn-outline btn-sm" style="margin-top:4px;border-color:var(--brick);color:var(--brick);" onclick="requestAuditLock('${f.id}')">🔒 Propose Audit Lock</button>`:''}</td></tr>`).join('');
   const pendingInFY = DB.vouchers.filter(v=>v.status==='pending' && v.date<=fy.endDate).length;
   let actionBlock = '';
   if(fy.status==='open' && !isReadOnly()){
@@ -6133,6 +6163,29 @@ function renderFYCard(){
         : `<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="requestCloseFY('${fy.id}')">Request Closing of ${fy.label}</button>`;
     }
   }
+  const reopenBlock = DB.fyReopenRequest? (()=>{
+    const req = DB.fyReopenRequest; const rfy = DB.financialYears.find(f=>f.id===req.fyId);
+    const canAct = !isReadOnly() && req.requestedBy!==window.__currentRole;
+    return `<div class="card" style="border:2px solid var(--gold);margin-top:12px;">
+      <div style="font-weight:700;font-size:13px;">↺ Reopen Pending — ${rfy?rfy.label:req.fyId}</div>
+      <div style="font-size:12px;margin-top:6px;"><b>${actorLabel(req.requestedBy,req.requestedByName)}</b> requested reopening on ${new Date(req.requestedAt).toLocaleString('en-IN')}.<br>Reason: ${req.reason}</div>
+      <div class="readonly-note" style="margin-top:8px;">Confirming this unlocks ${rfy?rfy.label:''} for new postings again — re-close it through the normal process once the correction is made. This reopening becomes a permanent part of the year's history, visible even after re-closing.</div>
+      ${canAct? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-danger" style="flex:1" onclick="confirmReopenFY()">Confirm Reopen</button><button class="btn btn-outline" style="flex:1" onclick="cancelReopenFYRequest()">Decline</button></div>`
+        : req.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelReopenFYRequest()">Withdraw Request</button>` : ''}
+    </div>`;
+  })() : '';
+  const auditLockBlock = DB.auditLockRequest? (()=>{
+    const req = DB.auditLockRequest; const lfy = DB.financialYears.find(f=>f.id===req.fyId);
+    const canAct = window.__currentRole==='President';
+    return `<div class="card" style="border:2px solid var(--brick);margin-top:12px;">
+      <div style="font-weight:700;font-size:13px;color:var(--brick);">🔒 Audit Lock Pending — ${lfy?lfy.label:req.fyId}</div>
+      <div style="font-size:12px;margin-top:6px;">Proposed by the <b>Auditor</b> on ${new Date(req.requestedAt).toLocaleString('en-IN')}, certifying review of ${lfy?lfy.label:''} is complete.</div>
+      <div class="readonly-note" style="border-color:var(--brick);color:var(--brick);margin-top:8px;">This is permanent. Once the President confirms, ${lfy?lfy.label:'this year'} can never be reopened again, by anyone, under any circumstance.</div>
+      ${canAct? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-danger" style="flex:1" onclick="confirmAuditLock()">Confirm — Lock Permanently</button><button class="btn btn-outline" style="flex:1" onclick="cancelAuditLockRequest()">Decline</button></div>`
+        : window.__currentRole==='Auditor'? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelAuditLockRequest()">Withdraw Request</button>`
+        : `<p style="font-size:11.5px;color:var(--ink-soft);margin-top:8px;">Only the President can confirm this.</p>`}
+    </div>`;
+  })() : '';
   const archiveBlock = DB.archiveRequest? (()=>{
     const req = DB.archiveRequest; const afy = DB.financialYears.find(f=>f.id===req.fyId);
     const canAct = !isReadOnly() && req.requestedBy!==window.__currentRole;
@@ -6148,6 +6201,8 @@ function renderFYCard(){
     ${fy.status==='open'? renderClosingWizard(fy) : ''}
     <div class="tbl-wrap"><table><tr><th>Year</th><th>Status</th><th></th></tr>${rows}</table></div>
     ${actionBlock}
+    ${reopenBlock}
+    ${auditLockBlock}
     ${archiveBlock}
     ${DB.preArchiveBackupAt? `<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="restorePreArchiveBackup()">Restore Pre-Archive Backup (from ${new Date(DB.preArchiveBackupAt).toLocaleString('en-IN')})</button>` : ''}`;
 }
@@ -6180,6 +6235,13 @@ function renderClosingWizard(fy){
     </div>`).join('')}
   </div>`;
 }
+function openReopenFYPrompt(fyId){
+  const fy = DB.financialYears.find(f=>f.id===fyId); if(!fy) return;
+  openModal(`<div class="modal-head"><h2>Reopen ${fy.label} for Correction</h2><button class="close-x" onclick="closeModal()">×</button></div>
+    <p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Use this only for a genuine correction needed before audit sign-off. This becomes part of ${fy.label}'s permanent history — visible even after it's re-closed. A different role must confirm before it takes effect.</p>
+    <div class="field"><label>Reason for reopening (required)</label><textarea id="reopen_reason" rows="3" placeholder="e.g. Vendor bill dated 28-Mar wrongly posted to wrong ledger head, needs correcting before audit"></textarea></div>
+    <button class="btn btn-danger btn-block" onclick="requestReopenFY('${fy.id}', document.getElementById('reopen_reason').value); closeModal();">Request Reopen</button>`);
+}
 function requestCloseFY(fyId){
   if(!canEdit()) return;
   const fy = DB.financialYears.find(f=>f.id===fyId); if(!fy || fy.status!=='open') return;
@@ -6202,6 +6264,79 @@ function cancelCloseFYRequest(){
   DB.fyCloseRequest = null;
   logAction('FY Closing Request Cancelled', fy?fy.label:'');
   save(); render(); toast('Closing request withdrawn');
+}
+/* ============ REOPEN A CLOSED YEAR (for genuine pre-audit correction) ============
+   Deliberately narrow: only the most recently closed year can be reopened (the lock model is
+   cumulative — everything up to the latest closing date — so reopening an older year while a newer
+   one stays closed wouldn't actually unlock anything). Blocked outright, with no override, once a
+   year has been Audit-Locked — see below. Requires a reason and a different role to confirm, same
+   weight as Wipe/Import/Archive, and every reopen is kept in the year's permanent history even after
+   it's re-closed later. */
+function requestReopenFY(fyId, reason){
+  if(!canEdit()) return;
+  const fy = DB.financialYears.find(f=>f.id===fyId);
+  if(!fy || fy.status!=='closed'){ toast('Only a closed year can be reopened.'); return; }
+  if(fy.auditLocked){ toast(`${fy.label} is audit-locked and cannot be reopened — this is by design, to guarantee nothing changes once audit is complete.`); return; }
+  if(fy.endDate!==latestClosedFYEndDate()){ toast(`Only the most recently closed year can be reopened. Close/reopen years in order, most recent first.`); return; }
+  if(!reason || !reason.trim()){ toast('A reason is required — this becomes part of the permanent record for this year.'); return; }
+  if(DB.fyReopenRequest){ toast('There is already a reopen request pending.'); return; }
+  DB.fyReopenRequest = {fyId, reason:reason.trim(), requestedBy:window.__currentRole, requestedByName:actorName(), requestedAt:nowTS()};
+  logAction('FY Reopen Requested', `${fy.label} — requested by ${window.__currentRole} — reason: ${reason.trim()}`);
+  save(); render(); toast('Reopen requested — awaiting a different role to confirm before this year unlocks for new entries.');
+}
+function cancelReopenFYRequest(){
+  if(!canEdit()) return;
+  const fy = DB.financialYears.find(f=>f.id===DB.fyReopenRequest?.fyId);
+  DB.fyReopenRequest = null;
+  logAction('FY Reopen Request Cancelled', fy?fy.label:'');
+  save(); render(); toast('Reopen request withdrawn');
+}
+function confirmReopenFY(){
+  if(isReadOnly()){ toast(window.__currentRole+' cannot reopen a financial year — view only.'); return; }
+  const req = DB.fyReopenRequest; if(!req) return;
+  if(req.requestedBy===window.__currentRole){ toast('A different role must confirm this.'); return; }
+  const fy = DB.financialYears.find(f=>f.id===req.fyId); if(!fy || fy.status!=='closed') return;
+  if(fy.auditLocked){ toast(`${fy.label} was audit-locked since this was requested — reopening is no longer possible.`); DB.fyReopenRequest=null; save(); render(); return; }
+  fy.reopenHistory = fy.reopenHistory || [];
+  fy.reopenHistory.push({reopenedBy:window.__currentRole, reopenedByName:actorName(), reopenedAt:nowTS(), requestedBy:req.requestedBy, reason:req.reason, priorClosingSnapshot:fy.closingSnapshot});
+  fy.status = 'open';
+  fy.closedBy=null; fy.closedByName=null; fy.closedAt=null; fy.closingSnapshot=null;
+  DB.fyReopenRequest = null;
+  logAction('FY Reopened', `${fy.label} reopened by ${window.__currentRole} (confirmed, requested by ${req.requestedBy}) — reason: ${req.reason}`);
+  save(); render(); toast(`${fy.label} reopened for correction. Re-close it through the normal closing process once entries are fixed — this reopening is permanently recorded in the year's history.`);
+}
+/* ============ AUDIT LOCK (permanent, no override — answers "how do I guarantee no changes after audit") ============
+   Stronger than the routine "closed" status, which only blocks new postings but can still be reopened
+   for genuine pre-audit correction. Once Audit-Locked, reopening is refused outright everywhere in the
+   app, permanently — there is deliberately no path around this, since the entire point is an
+   unconditional guarantee once the Auditor's review is complete. Proposed by the Auditor (who is the
+   one certifying review is done), confirmed by the President (the governance body sealing it) — this
+   two-role requirement means neither can audit-lock a year alone. */
+function requestAuditLock(fyId){
+  if(window.__currentRole!=='Auditor'){ toast('Only the Auditor can propose an audit lock — this represents the Auditor certifying review is complete.'); return; }
+  const fy = DB.financialYears.find(f=>f.id===fyId);
+  if(!fy || fy.status!=='closed'){ toast('Only a closed year can be audit-locked.'); return; }
+  if(fy.auditLocked){ toast('Already audit-locked.'); return; }
+  if(DB.auditLockRequest){ toast('There is already an audit lock request pending.'); return; }
+  DB.auditLockRequest = {fyId, requestedBy:'Auditor', requestedByName:actorName(), requestedAt:nowTS()};
+  logAction('Audit Lock Requested', `${fy.label} — proposed by Auditor, awaiting President to confirm`);
+  save(); render(); toast('Audit lock proposed — the President must confirm. Once confirmed, this cannot be undone: the year can never be reopened again.');
+}
+function cancelAuditLockRequest(){
+  if(window.__currentRole!=='Auditor' && window.__currentRole!=='President') return;
+  const fy = DB.financialYears.find(f=>f.id===DB.auditLockRequest?.fyId);
+  DB.auditLockRequest = null;
+  logAction('Audit Lock Request Cancelled', fy?fy.label:'');
+  save(); render(); toast('Audit lock request withdrawn');
+}
+function confirmAuditLock(){
+  if(window.__currentRole!=='President'){ toast('Only the President can confirm an audit lock.'); return; }
+  const req = DB.auditLockRequest; if(!req) return;
+  const fy = DB.financialYears.find(f=>f.id===req.fyId); if(!fy || fy.status!=='closed') return;
+  fy.auditLocked = true; fy.auditLockedAt = nowTS(); fy.auditLockedConfirmedBy = 'President';
+  DB.auditLockRequest = null;
+  logAction('Audit Lock Confirmed', `${fy.label} — proposed by Auditor, confirmed by President. This year can never be reopened again.`);
+  save(); render(); toast(`${fy.label} is now permanently audit-locked — it can never be reopened, by anyone, from this point on.`);
 }
 /* ============ ARCHIVE CLOSED YEARS ============
    Keeps the live app small indefinitely as years accumulate: a closed year's full detail (vouchers,
@@ -8255,7 +8390,7 @@ const FAQ = [
   {k:['delete','wrong entry','remove','mistake','reverse','reversal'], q:'How do I correct a wrong entry?',
    a:'Accounts → Vouchers. Pending entries you made: "Withdraw" — nothing was posted yet, so it is simply removed. Approved entries: "Request Reversal" with remarks — a different role confirms it under Approve → Reversals. Confirming never deletes the original: it is kept in the ledger flagged "reversed" for audit, allocations are undone, and a new offsetting voucher (debit/credit swapped) carrying your remarks is auto-posted to bring the books back to zero.'},
   {k:['financial year','fy','close year','year end','year closing','closed period','locked period'], q:'How does closing a financial year work?',
-   a:'Setup → Financial Year shows the current year and lets you "Request Closing" once every entry dated within it is either approved or rejected (no pending items left). A different role then confirms it, same as any other control action here. Closing locks every date on or before the year-end against new postings — anyone trying to backdate a bill, receipt, payment, or journal into a closed year gets blocked with a clear message. Nothing needs to be manually carried forward: since the ledger is cumulative, each account\'s closing balance automatically is the next year\'s opening balance, and the next year opens on its own the moment you close. A permanent closing statement (Trial Balance, Balance Sheet, Income & Expenditure) is saved and viewable anytime from that screen.'},
+   a:'Setup → Financial Year shows the current year and lets you "Request Closing" once every entry dated within it is either approved or rejected (no pending items left). A different role then confirms it, same as any other control action here. Closing locks every date on or before the year-end against new postings — anyone trying to backdate a bill, receipt, payment, or journal into a closed year gets blocked with a clear message. Nothing needs to be manually carried forward: since the ledger is cumulative, each account\'s closing balance automatically is the next year\'s opening balance, and the next year opens on its own the moment you close. A permanent closing statement (Trial Balance, Balance Sheet, Income & Expenditure) is saved and viewable anytime from that screen. <b>Need to fix something before audit?</b> The most recently closed year can be reopened for correction (reason required, a different role confirms, permanently recorded in that year\'s history even after re-closing) — re-close it normally once fixed. <b>Want a hard guarantee that nothing changes after audit?</b> The Auditor can propose an Audit Lock on a closed year once review is complete, which the President then confirms — this is permanent and unconditional: once locked, that year can never be reopened again, by anyone.'},
   {k:['budget', 'expenditure budget', 'budget vs actual'], q:'How do I track budget vs actual spending?',
    a:'Setup → Budgets — pick a financial year and set an annual figure against any expense head. Reports → Budget vs Actual then shows, for each budgeted head, what\'s actually been spent so far this year, the variance, and a traffic-light-style "% used" badge so overspending is easy to spot at a glance.'},
   {k:['reconcile', 'unreconciled', 'bank reconciliation', 'uncleared'], q:'How do I see everything still unreconciled across all my bank accounts?',
@@ -8878,7 +9013,7 @@ function computeDailySummary(){
   const yVouchers = DB.vouchers.filter(v=>v.date===yStr && v.status==='approved');
   const received = yVouchers.filter(v=>v.type==='Receipt').reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
   const paid = yVouchers.filter(v=>v.type==='VendorPayment'||v.type==='Payroll').reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
-  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
+  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0) + (DB.fyReopenRequest?1:0) + (DB.auditLockRequest?1:0);
   const unreconciledBanks = DB.bankAccounts.filter(b=>b.type!=='FD').filter(b=>{
     const accName = b.ledgerAccountName; if(!accName) return false;
     return DB.vouchers.some(v=>v.status==='approved' && v.entries.some(e=>e.account===accName) && !(b.clearedVouchers||[]).includes(v.id));
