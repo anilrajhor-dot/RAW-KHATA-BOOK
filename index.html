@@ -1526,7 +1526,6 @@ if(!DB.internalControls) DB.internalControls = {cashPaymentLimit:10000, roundFig
 if(!DB.legalCases) DB.legalCases = [];
 if(DB.importRequest===undefined) DB.importRequest = null;
 if(DB.archiveRequest===undefined) DB.archiveRequest = null;
-if(DB.cloudSyncChangeRequest===undefined) DB.cloudSyncChangeRequest = null;
 if(DB.preImportBackupAt===undefined) DB.preImportBackupAt = null;
 if(!DB.seq.legal) DB.seq.legal = 1;
 if(!DB.agmReports) DB.agmReports = {}; // keyed by FY id: {chairmanReport: string}
@@ -1696,31 +1695,71 @@ function loadFirebaseSDK(callback){
   }
   loadNext();
 }
-function canManageCloudSync(){ return window.__currentRole==='President' || window.__currentRole==='Treasurer'; }
+// Leaves a small transition marker on the OLD access code's document — every other device is still
+// listening there right up until the moment it follows this same marker, so this is what lets Accountant,
+// Auditor, and any other phone pick up a President/Treasurer-approved change automatically, without
+// anyone needing to visit those devices individually. Uses a separately-named Firebase app instance so
+// this brief connection to the OLD project never disturbs whatever the current device's main connection
+// is doing (they could even be different Firebase projects entirely).
+function broadcastCloudSyncTransition(oldCfg, payload){
+  return new Promise(resolve=>{
+    if(!oldCfg){ resolve(); return; }
+    loadFirebaseSDK(async ()=>{
+      const appName = 'migration-notice-'+Date.now();
+      try{
+        const tempApp = firebase.initializeApp(oldCfg.firebaseConfig, appName);
+        await tempApp.auth().signInAnonymously();
+        await tempApp.firestore().collection('smartrwa_societies').doc(oldCfg.accessCode).set(payload, {merge:true});
+        await tempApp.delete();
+      }catch(e){ /* old project may be unreachable or already gone — that's fine, this is a best-effort notice, not a requirement */ }
+      resolve();
+    });
+  });
+}
+function canManageCloudSync(){ return window.__currentRole==='President'; }
 function requestCloudSyncChange(configText, accessCode){
-  if(!canManageCloudSync()){ toast('Only the President or Treasurer can change Cloud Sync settings.'); return; }
+  if(!canManageCloudSync()){ toast('Only the President can change Cloud Sync settings.'); return; }
   const parsedConfig = parseFirebaseConfigText(configText);
   if(!parsedConfig){ toast('Could not read that config — paste the block starting with "apiKey" through the closing brace, exactly as Firebase showed it (either the JSON or the JavaScript version both work).'); return; }
   if(!accessCode || accessCode.trim().length<6){ toast('Set a Society Access Code of at least 6 characters — this is the shared secret every device uses to sync to the same data.'); return; }
-  if(DB.cloudSyncChangeRequest){ toast('There is already a Cloud Sync change pending confirmation.'); return; }
-  DB.cloudSyncChangeRequest = {requestedBy:window.__currentRole, requestedByName:actorName(), requestedAt:nowTS(), configText, accessCode:accessCode.trim()};
-  logAction('Cloud Sync Change Requested', `Access code change requested by ${window.__currentRole} — awaiting a different one of President/Treasurer to confirm`);
-  save(); render(); toast('Cloud Sync change staged — the President or Treasurer (whichever role did not request this) must confirm before it takes effect.');
+  changeCloudSyncDirect(configText, accessCode);
 }
-function cancelCloudSyncChangeRequest(){
-  if(!canManageCloudSync()) return;
-  logAction('Cloud Sync Change Cancelled', DB.cloudSyncChangeRequest? `requested by ${DB.cloudSyncChangeRequest.requestedBy}` : '');
-  DB.cloudSyncChangeRequest = null;
-  save(); render(); toast('Cloud Sync change request withdrawn');
-}
-async function confirmCloudSyncChange(){
-  if(!canManageCloudSync()){ toast('Only the President or Treasurer can confirm this.'); return; }
-  if(!DB.cloudSyncChangeRequest){ toast('No Cloud Sync change pending'); return; }
-  if(DB.cloudSyncChangeRequest.requestedBy===window.__currentRole){ toast('A different one of President/Treasurer must confirm this — not the same role that requested it.'); return; }
-  const {configText, accessCode} = DB.cloudSyncChangeRequest;
-  DB.cloudSyncChangeRequest = null;
-  save();
+async function changeCloudSyncDirect(configText, accessCode){
+  const oldCfg = cloudSyncConfig();
+  const newParsedConfig = parseFirebaseConfigText(configText);
+  logAction('Cloud Sync Changed', `by ${window.__currentRole} — access code updated, every other device will follow automatically`);
+  if(oldCfg && newParsedConfig && oldCfg.accessCode!==accessCode.trim()){
+    toast('Notifying other devices of the new access code…');
+    await broadcastCloudSyncTransition(oldCfg, {migrateTo:{firebaseConfig:newParsedConfig, accessCode:accessCode.trim(), migratedAt:nowTS(), migratedBy:window.__currentRole}});
+  }
   await connectCloudSync(configText, accessCode);
+}
+function encodeCloudSyncSetupDetails(firebaseConfig, accessCode){
+  return 'SMARTRWA-SYNC-1:'+btoa(unescape(encodeURIComponent(JSON.stringify({firebaseConfig, accessCode}))));
+}
+function decodeCloudSyncSetupDetails(text){
+  const t = (text||'').trim();
+  if(!t.startsWith('SMARTRWA-SYNC-1:')) return null;
+  try{
+    const parsed = JSON.parse(decodeURIComponent(escape(atob(t.slice('SMARTRWA-SYNC-1:'.length)))));
+    if(!parsed.firebaseConfig || !parsed.accessCode) return null;
+    return parsed;
+  }catch(e){ return null; }
+}
+function copyCloudSyncSetupDetails(){
+  const cfg = cloudSyncConfig();
+  if(!cfg){ toast('Not connected yet — nothing to share.'); return; }
+  const code = encodeCloudSyncSetupDetails(cfg.firebaseConfig, cfg.accessCode);
+  navigator.clipboard.writeText(code).then(()=>{
+    toast('Copied — paste this into a WhatsApp/SMS/email to whoever needs to connect. On their phone: Setup → Cloud Sync → paste under "Join Using Setup Code".');
+  }).catch(()=>{
+    toast('Could not copy automatically — long-press to select and copy: '+code);
+  });
+}
+function connectFromSetupDetailsText(text){
+  const parsed = decodeCloudSyncSetupDetails(text);
+  if(!parsed){ toast('That does not look like a Cloud Sync setup code — ask whoever set it up to tap "Copy Setup Details for Other Devices" and send you that exact text.'); return; }
+  connectCloudSync(JSON.stringify(parsed.firebaseConfig), parsed.accessCode);
 }
 async function connectCloudSync(configText, accessCode){
   const parsedConfig = parseFirebaseConfigText(configText);
@@ -1735,7 +1774,7 @@ async function connectCloudSync(configText, accessCode){
       window.__cloudSyncState.connected = true;
       window.__cloudSyncState.lastError = null;
       startCloudSyncListener();
-      toast('Cloud sync connected — this device will now sync with any other device using the same access code.');
+      toast('Cloud sync connected — this device will now sync with any other device using the same access code. Tap "Copy Setup Details for Other Devices" below to get everyone else connected in one paste, no retyping.');
       render();
     }catch(e){
       window.__cloudSyncState.lastError = e.message || String(e);
@@ -1743,13 +1782,15 @@ async function connectCloudSync(configText, accessCode){
     }
   });
 }
-function disconnectCloudSync(){
-  if(!canManageCloudSync()){ toast('Only the President or Treasurer can disconnect Cloud Sync.'); return; }
+async function disconnectCloudSync(){
+  if(!canManageCloudSync()){ toast('Only the President can disconnect Cloud Sync.'); return; }
+  const oldCfg = cloudSyncConfig();
   if(window.__cloudSyncUnsubscribe) window.__cloudSyncUnsubscribe();
   clearCloudSyncConfig();
   logAction('Cloud Sync Disconnected', `by ${window.__currentRole}`);
-  toast('Cloud sync disconnected — this device now works offline-only again, exactly as before.');
+  toast('Cloud sync disconnected — this device now works offline-only again, exactly as before. Notifying other devices…');
   render();
+  if(oldCfg) await broadcastCloudSyncTransition(oldCfg, {disconnected:true, disconnectedAt:nowTS(), disconnectedBy:window.__currentRole});
 }
 const CLOUD_SYNC_CHUNK_BYTES = 700000; // measured in actual UTF-8 bytes, not JS string length — Devanagari names, ₹ symbols, and other non-ASCII text take 2-4 bytes each, so a 700,000-CHARACTER chunk could be 1.4-2.8MB in real bytes despite looking safe by character count. Splitting on encoded bytes, not characters, is what actually respects Firestore's ~1 MiB per-document limit.
 function splitIntoByteSafeChunks(text, maxBytes){
@@ -1785,10 +1826,39 @@ function startCloudSyncListener(){
       window.__cloudSyncState.lastError = 'Could not authenticate: '+(e.message||e);
       return;
     }
+    const docRef = firebase.firestore().collection('smartrwa_societies').doc(cfg.accessCode);
     window.__cloudSyncUnsubscribe = docRef.onSnapshot(async snap=>{
       if(!snap.exists) return; // nothing pushed yet from any device
       const manifest = snap.data();
-      if(!manifest || !manifest.chunkCount) return;
+      if(!manifest) return;
+
+      // Another device completed a President/Treasurer-approved change to a NEW access code. Follow it
+      // automatically — this is exactly what lets Accountant, Auditor, and any other phone pick up the
+      // change on their own, without anyone needing to visit those devices individually. Guarded against
+      // pointing at ourselves (nothing to do) and against acting twice on the same notice.
+      if(manifest.migrateTo && manifest.migrateTo.accessCode && manifest.migrateTo.accessCode!==cfg.accessCode){
+        const alreadyFollowed = window.__cloudSyncState.lastFollowedMigration===manifest.migrateTo.migratedAt;
+        if(!alreadyFollowed){
+          window.__cloudSyncState.lastFollowedMigration = manifest.migrateTo.migratedAt;
+          if(window.__cloudSyncUnsubscribe) window.__cloudSyncUnsubscribe();
+          saveCloudSyncConfig({firebaseConfig: manifest.migrateTo.firebaseConfig, accessCode: manifest.migrateTo.accessCode});
+          toast(`Cloud Sync access code was changed by ${manifest.migrateTo.migratedBy} — this device has reconnected automatically, no action needed.`);
+          startCloudSyncListener();
+          render();
+        }
+        return;
+      }
+      // Another device (President or Treasurer) disconnected Cloud Sync entirely for everyone. Follow
+      // that too — staying connected to an abandoned channel would just mean silently syncing with no one.
+      if(manifest.disconnected){
+        if(window.__cloudSyncUnsubscribe) window.__cloudSyncUnsubscribe();
+        clearCloudSyncConfig();
+        toast(`Cloud Sync was disconnected by ${manifest.disconnectedBy||'another device'} — this device is now back to offline-only, matching the rest of the society.`);
+        render();
+        return;
+      }
+
+      if(!manifest.chunkCount) return;
       const remoteModified = manifest.lastModified || 0;
       // Compare against the last point we ourselves actually synced TO or FROM — not DB.__lastModified,
       // which bumps on every local save including ones with nothing to do with sync (e.g. routine
@@ -2639,7 +2709,7 @@ function renderDashboard(){
   const vendorDue = DB.vendorBills.reduce((s,b)=>s+(b.netPayable-b.paid),0);
   const pfEsiDue = -accBalance('PF Payable').net + -accBalance('ESI Payable').net;
   const gstDue = -accBalance('GST Payable').net - accBalance('GST Input Credit').net;
-  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0) + (DB.cloudSyncChangeRequest?1:0);
+  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
 
   // Asset alerts (AMC/warranty due within 30 days or expired)
   const today = todayISO();
@@ -5195,7 +5265,7 @@ function deleteDocument(id){
 function renderApprovals(){
   const sr = subroute || 'pending';
   const delReqCount = DB.vouchers.filter(v=>v.reversalRequested).length;
-  const pendingCountForTab = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0) + (DB.cloudSyncChangeRequest?1:0);
+  const pendingCountForTab = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
   const tabs=[['pending',`Pending${pendingCountForTab?' ('+pendingCountForTab+')':''}`],['deletions',`Reversals${delReqCount?' ('+delReqCount+')':''}`],['history','Decision History'],['audit','Audit Log']];
   let body='';
   if(sr==='deletions'){
@@ -5270,17 +5340,6 @@ function renderApprovals(){
           : req.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelArchiveRequest()">Withdraw Request</button>` : ''}
       </div>`;
     }
-    if(DB.cloudSyncChangeRequest){
-      const req = DB.cloudSyncChangeRequest;
-      const canActOnThis = canManageCloudSync() && req.requestedBy!==window.__currentRole;
-      body += `<div class="card" style="border:2px solid var(--gold);margin-bottom:12px;">
-        <div style="font-weight:700;font-size:13.5px;">☁ Cloud Sync Change Awaiting Approval</div>
-        <div style="font-size:12.5px;margin-top:6px;"><b>${actorLabel(req.requestedBy,req.requestedByName)}</b> requested a Cloud Sync access code change on ${new Date(req.requestedAt).toLocaleString('en-IN')}.</div>
-        <div class="readonly-note" style="margin-top:8px;">Only the President or Treasurer — whichever did not request this — can confirm.</div>
-        ${canActOnThis? `<div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-danger" style="flex:1" onclick="confirmCloudSyncChange()">Confirm Change</button><button class="btn btn-outline" style="flex:1" onclick="cancelCloudSyncChangeRequest()">Decline</button></div>`
-          : req.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="cancelCloudSyncChangeRequest()">Withdraw Request</button>` : ''}
-      </div>`;
-    }
     if(actionable.length){
       body += `<div style="background:var(--paper);padding:8px 0 10px;margin-bottom:4px;">
         <label style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;margin-bottom:8px;"><input type="checkbox" onchange="toggleSelectAllPending(this)" style="width:16px;height:16px;"> Select all (${actionable.length})</label>
@@ -5288,7 +5347,7 @@ function renderApprovals(){
       </div>`;
     }
     body += rows + lockedRows;
-    if(!pend.length && !DB.importRequest && !DB.archiveRequest && !DB.cloudSyncChangeRequest) body = `<div class="empty"><div class="ic">✓</div>Nothing pending approval. All caught up.</div>`;
+    if(!pend.length && !DB.importRequest && !DB.archiveRequest) body = `<div class="empty"><div class="ic">✓</div>Nothing pending approval. All caught up.</div>`;
     else if(!actionable.length && pend.length) body += `<p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">All pending entries above were raised by you or are locked to your role — nothing here for you to authorise right now.</p>`;
   } else if(sr==='history'){
     const done = DB.vouchers.filter(v=>v.status==='approved'||v.status==='rejected').sort((a,b)=>b.id-a.id).slice(0,100);
@@ -6522,35 +6581,32 @@ function applyLateCharges(){
 function renderCloudSyncCard(){
   const cfg = cloudSyncConfig();
   const s = window.__cloudSyncState;
-  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-18-G</code></p>`;
+  const versionTag = `<p style="font-size:9.5px;color:var(--ink-soft);margin-top:10px;">Sync engine build: <code>SYNC-BUILD-2026-07-19-C</code></p>`;
   const canManage = canManageCloudSync();
-  const req = DB.cloudSyncChangeRequest;
-
-  if(req){
-    const canConfirm = canManage && req.requestedBy!==window.__currentRole;
-    return `<div class="readonly-note" style="border-color:var(--gold);margin-bottom:10px;">
-      <b>Change pending:</b> ${actorLabel(req.requestedBy,req.requestedByName)} requested a Cloud Sync change on ${new Date(req.requestedAt).toLocaleString('en-IN')}. The President or Treasurer — whichever did not request this — needs to confirm before it takes effect.
-      </div>
-      ${canConfirm? `<div style="display:flex;gap:8px;"><button class="btn btn-danger" style="flex:1" onclick="confirmCloudSyncChange()">Confirm Change</button><button class="btn btn-outline" style="flex:1" onclick="cancelCloudSyncChangeRequest()">Decline</button></div>`
-        : req.requestedBy===window.__currentRole? `<button class="btn btn-outline btn-block" onclick="cancelCloudSyncChangeRequest()">Withdraw Request</button>`
-        : `<p style="font-size:12px;color:var(--ink-soft);">Only the President or Treasurer can confirm this.</p>`}
-      ${versionTag}`;
-  }
 
   if(!cfg){
-    return `<p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Off by default — this app works entirely offline as normal. Connect it to sync data across every device using the same access code, so an entry made on one phone appears on the others. Needs your own free Firebase project (takes about 5 minutes to set up — ask the chat for step-by-step help if needed). Managed by the <b>President or Treasurer only</b>, with the other confirming any change — the same protection given to any other security-sensitive setting here.</p>
-      ${canManage? `<div class="field"><label>Firebase Config (paste the JSON from your Firebase project settings)</label><textarea id="cs_config" rows="4" style="font-family:monospace;font-size:11px;" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder='{"apiKey": "...", "projectId": "...", ...}'></textarea></div>
+    return `<p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Off by default — this app works entirely offline as normal. Connect it to sync data across every device using the same access code, so an entry made on one phone appears on the others. Managed by the <b>President only</b> — once connected, any later change reaches every other device automatically, no action needed on those devices.</p>
+      <div class="field"><label>Have a setup code from the President? Paste it here — this is the fastest way for every device except the very first one to join</label><textarea id="cs_setupcode" rows="2" style="font-family:monospace;font-size:11px;" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="SMARTRWA-SYNC-1:...."></textarea></div>
+      <button class="btn btn-primary btn-block" onclick="connectFromSetupDetailsText(document.getElementById('cs_setupcode').value)">Join Using Setup Code</button>
+      ${canManage? `<details style="margin-top:12px;"><summary style="font-size:12px;color:var(--ink-soft);cursor:pointer;">Or set this up for the first time (needs your own free Firebase project — about 5 minutes on Google's side, ask the chat for step-by-step help if needed)</summary>
+      <div class="field" style="margin-top:8px;"><label>Firebase Config (paste the JSON from your Firebase project settings)</label><textarea id="cs_config" rows="4" style="font-family:monospace;font-size:11px;" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder='{"apiKey": "...", "projectId": "...", ...}'></textarea></div>
       <div class="field"><label>Society Access Code (shared secret — set once, every device uses the same one)</label><input id="cs_code" type="text" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="e.g. greenpark-crossing-2026"></div>
-      <button class="btn btn-primary btn-block" onclick="requestCloudSyncChange(document.getElementById('cs_config').value, document.getElementById('cs_code').value)">Request Connect</button>`
-      : `<p style="font-size:12px;color:var(--ink-soft);">Only the President or Treasurer can set this up.</p>`}
-      <p style="font-size:10.5px;color:var(--ink-soft);margin-top:8px;">Honest limits: this syncs the whole dataset, "last write wins" — if two people save at the exact same moment on two devices, one save can overwrite the other's (unlikely for a small committee, not impossible). Security is this access code plus anonymous sign-in — reasonable for a small private group, not the same as individual logins.</p>
+      <button class="btn btn-primary btn-block" onclick="requestCloudSyncChange(document.getElementById('cs_config').value, document.getElementById('cs_code').value)">Connect</button></details>`
+      : ``}
+      <p style="font-size:10.5px;color:var(--ink-soft);margin-top:8px;">Honest limits: this syncs the whole dataset, "last write wins" — if two people save at the exact same moment on two devices, one save can overwrite the other's (unlikely for a small committee, not impossible). Security is this access code plus anonymous sign-in — reasonable for a small private group, not the same as individual logins. And one unavoidable limit: the very first device has to be set up manually since nothing exists yet to join — every device after that can use the one-tap setup code below instead.</p>
       ${versionTag}`;
   }
   return `<p style="font-size:12.5px;">${s.connected?'🟢 Connected':'🟡 Configured, not yet confirmed connected'} — access code: <code>${cfg.accessCode}</code></p>
     <p style="font-size:11px;color:var(--ink-soft);margin-top:4px;">${s.lastSyncedAt? 'Last synced '+new Date(s.lastSyncedAt).toLocaleString('en-IN') : 'Not synced yet this session'}</p>
     ${s.lastError? `<div class="readonly-note" style="border-color:var(--brick);color:var(--brick);margin-top:8px;">⚠ ${s.lastError} — this device keeps working offline via IndexedDB regardless; sync will resume once this clears.</div>` : ''}
-    ${canManage? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="if(confirm('Disconnect cloud sync on this device? Local data is unaffected — this device just stops syncing.'))disconnectCloudSync();">Disconnect</button>`
-      : `<p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Only the President or Treasurer can change or disconnect this.</p>`}
+    <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="copyCloudSyncSetupDetails()">📋 Copy Setup Details for Other Devices</button>
+    <p style="font-size:10.5px;color:var(--ink-soft);margin-top:4px;">Send this to whoever else needs to connect (WhatsApp, SMS, email) — on their phone, they paste it under Setup → Cloud Sync → "Join Using Setup Code" and they're connected in one tap, no typing needed.</p>
+    ${canManage? `<details style="margin-top:10px;"><summary style="font-size:12px;color:var(--ink-soft);cursor:pointer;">Change access code or Firebase project</summary>
+      <div class="field" style="margin-top:8px;"><label>New Firebase Config</label><textarea id="cs_config" rows="4" style="font-family:monospace;font-size:11px;" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder='{"apiKey": "...", "projectId": "...", ...}'></textarea></div>
+      <div class="field"><label>New Society Access Code</label><input id="cs_code" type="text" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="e.g. greenpark-crossing-2026"></div>
+      <button class="btn btn-primary btn-block" onclick="requestCloudSyncChange(document.getElementById('cs_config').value, document.getElementById('cs_code').value)">Apply Change — reaches every device automatically</button></details>
+      <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="if(confirm('Disconnect cloud sync for the whole society? Every connected device will automatically go back to offline-only — local data is unaffected everywhere.'))disconnectCloudSync();">Disconnect (all devices)</button>`
+      : `<p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Only the President can change or disconnect this — any change reaches this device automatically.</p>`}
     ${versionTag}`;
 }
 function renderSecurityGovernanceCard(){
@@ -8289,7 +8345,7 @@ const FAQ = [
   {k:['cloud sync','sync across devices','firebase','live sync','multiple devices','same data on phones'], q:'Can entries made on one phone show up on another device automatically?',
    a:'Yes, if you turn on Setup \u2192 Cloud Sync \u2014 off by default, and the app works fully offline exactly as always unless you enable it. It needs your own free Firebase project (a 5-minute setup on Google\'s side \u2014 ask this chat for "cloud sync setup steps" for the exact walkthrough) plus a shared Society Access Code you set once and use on every device. Two honest limits: it syncs the whole dataset "last write wins," not a per-field merge, so two people saving at the exact same instant on two devices could have one overwrite the other\'s (unlikely for a small committee); and security is that access code plus anonymous sign-in, reasonable for a small private group but not the same as individual logins. If sync ever fails to connect, the app keeps working offline exactly as before \u2014 nothing about the existing offline mode is at risk.'},
   {k:['change access code','who can change cloud sync','cloud sync permission','cloud sync maker checker'], q:'Who can set up or change Cloud Sync?',
-   a:'Only the <b>President or Treasurer</b> \u2014 the Accountant and Auditor can see the connection status but cannot connect, disconnect, or change the access code. Setting up or changing the access code needs the other of the two (President or Treasurer, whichever did not request it) to confirm, the same maker-checker protection given to other security-sensitive actions here \u2014 the request shows up in Approvals just like an import or archive request would.'},
+   a:'Only the <b>President</b> \u2014 Treasurer, Accountant, and Auditor can all see the connection status but none of them can connect, disconnect, or change the access code. This is a single step, not a maker-checker approval, since a change here automatically reaches every other connected device within seconds regardless \u2014 the moment the President changes or disconnects it, every other phone using the same access code silently follows along on its own, with just a brief on-screen notice, no action needed on those devices.'},
   {k:['consolidated','electricity','water','common area','main meter','lump sum','tower expense','lift'], q:'How do I split a lump-sum utility bill across flats?',
    a:'Billing → Consolidated Bills → +. Enter the total, choose Whole Society or One Tower, and how to split (by area / equally / by meter). For common electricity, tick "Calculate from Main Meter" — it deducts sub-meters from the main reading automatically. Each flat\'s bill shows the full working.'},
   {k:['category','rate','penthouse','duplex','villa','ews'], q:'How do I set different rates for different flat types?',
@@ -8822,7 +8878,7 @@ function computeDailySummary(){
   const yVouchers = DB.vouchers.filter(v=>v.date===yStr && v.status==='approved');
   const received = yVouchers.filter(v=>v.type==='Receipt').reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
   const paid = yVouchers.filter(v=>v.type==='VendorPayment'||v.type==='Payroll').reduce((s,v)=>s+v.entries.reduce((s2,e)=>s2+(e.debit||0),0),0);
-  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0) + (DB.cloudSyncChangeRequest?1:0);
+  const pendingApprovals = DB.vouchers.filter(v=>v.status==='pending').length + (DB.importRequest?1:0) + (DB.archiveRequest?1:0);
   const unreconciledBanks = DB.bankAccounts.filter(b=>b.type!=='FD').filter(b=>{
     const accName = b.ledgerAccountName; if(!accName) return false;
     return DB.vouchers.some(v=>v.status==='approved' && v.entries.some(e=>e.account===accName) && !(b.clearedVouchers||[]).includes(v.id));
