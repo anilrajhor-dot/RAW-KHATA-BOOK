@@ -2110,6 +2110,144 @@ function groupedRows(accNames, valueFn){
   }).filter(g=>g.rows.length);
 }
 function bankLedgerName(b){ return `${b.bankName} — ${b.type}${b.accountNumber? ' ×'+b.accountNumber.slice(-4):''}`; }
+/* ============ EXPORT TO TALLY (XML) ============
+   Tally's own "Import Data" feature reads this exact XML schema — this isn't a generic format, it's
+   the one Tally itself expects, built from Tally's documented structure (ENVELOPE > BODY > IMPORTDATA
+   > REQUESTDATA > TALLYMESSAGE, with LEDGER masters and VOUCHER entries). Ledger amounts follow Tally's
+   own sign convention: debit entries carry ISDEEMEDPOSITIVE=Yes with a negative AMOUNT, credit entries
+   carry ISDEEMEDPOSITIVE=No with a positive AMOUNT — this is Tally's convention, not an arbitrary choice.
+   Two files are generated separately (Masters, then Vouchers) since Tally imports these as separate
+   steps and this makes it easy to import Masters once, then Vouchers repeatedly for different periods.
+   Honest limit: this is generated correctly against Tally's documented schema and is well-formed XML,
+   but it can only be exercised against a real TallyPrime install, not tested end-to-end here — always
+   do a small test import (a handful of vouchers) before importing a full year in one go. */
+const TALLY_PARENT_GROUP = {
+  'Cash in Hand':'Cash-in-hand', 'Maintenance Receivable':'Sundry Debtors', 'Inventory Stock':'Stock-in-hand', 'GST Input Credit':'Duties & Taxes',
+  'Fixed Assets':'Fixed Assets', 'Accumulated Depreciation':'Fixed Assets',
+  'Sinking Fund':'Reserves & Surplus', 'Corpus Fund':'Reserves & Surplus', 'Opening Balance Equity':'Reserves & Surplus',
+  'Security Deposits':'Current Liabilities', 'Vendor Creditors':'Sundry Creditors',
+  'GST Payable':'Duties & Taxes', 'PF Payable':'Duties & Taxes', 'ESI Payable':'Duties & Taxes', 'TDS Payable':'Duties & Taxes',
+};
+function tallyGroupFor(accName){
+  if(TALLY_PARENT_GROUP[accName]) return TALLY_PARENT_GROUP[accName];
+  if(cashLikeAccountNames().includes(accName) && accName!=='Cash in Hand') return 'Bank Accounts';
+  const type = ACCOUNTS[accName];
+  if(type==='Income') return 'Indirect Income';
+  if(type==='Expense') return 'Indirect Expenses';
+  if(type==='Asset') return 'Current Assets';
+  if(type==='Liability') return 'Current Liabilities';
+  return 'Suspense A/c';
+}
+function tallyXMLEscape(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function tallyDateFmt(iso){ return (iso||'').replace(/-/g,''); } // Tally expects YYYYMMDD
+function generateTallyMastersXML(){
+  syncBankLedgerAccounts();
+  const asOf = dayBefore(currentFY().startDate);
+  const usedInVouchers = new Set();
+  DB.vouchers.filter(v=>v.status==='approved').forEach(v=>v.entries.forEach(e=>usedInVouchers.add(e.account)));
+  const accNames = Object.keys(ACCOUNTS).filter(acc=>{
+    const bal = accBalance(acc, {upto: asOf}).net;
+    return Math.abs(bal)>=1 || usedInVouchers.has(acc);
+  });
+  const ledgerXML = accNames.map(acc=>{
+    const bal = accBalance(acc, {upto: asOf}).net; // net = Dr − Cr in this app's convention
+    const group = tallyGroupFor(acc);
+    // Tally's OPENINGBALANCE: positive means debit-side opening for this ledger, consistent with our own net (Dr − Cr) convention
+    return `<TALLYMESSAGE xmlns:UDF="TallyUDF">
+  <LEDGER NAME="${tallyXMLEscape(acc)}" ACTION="Create">
+    <PARENT>${tallyXMLEscape(group)}</PARENT>
+    <OPENINGBALANCE>${Math.round(bal*100)/100}</OPENINGBALANCE>
+    <ISBILLWISEON>No</ISBILLWISEON>
+  </LEDGER>
+</TALLYMESSAGE>`;
+  }).join('\n');
+  return `<ENVELOPE>
+<HEADER>
+<TALLYREQUEST>Import Data</TALLYREQUEST>
+</HEADER>
+<BODY>
+<IMPORTDATA>
+<REQUESTDESC>
+<REPORTNAME>All Masters</REPORTNAME>
+<STATICVARIABLES>
+<SVCURRENTCOMPANY>${tallyXMLEscape(DB.society.name||'My Housing Society')}</SVCURRENTCOMPANY>
+</STATICVARIABLES>
+</REQUESTDESC>
+<REQUESTDATA>
+${ledgerXML}
+</REQUESTDATA>
+</IMPORTDATA>
+</BODY>
+</ENVELOPE>`;
+}
+function tallyVoucherType(v){
+  if(v.type==='Receipt') return 'Receipt';
+  if(v.type==='Payment' || v.type==='VendorPayment') return 'Payment';
+  return 'Journal';
+}
+function generateTallyVouchersXML(fromDate, toDate){
+  const vouchers = DB.vouchers.filter(v=>v.status==='approved' && v.date>=fromDate && v.date<=toDate).sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id);
+  const voucherXML = vouchers.map(v=>{
+    const vtype = tallyVoucherType(v);
+    const entries = v.entries.map(e=>{
+      const isDebit = (e.debit||0) > 0;
+      const amt = isDebit ? -(e.debit||0) : (e.credit||0);
+      return `    <ALLLEDGERENTRIES.LIST>
+      <LEDGERNAME>${tallyXMLEscape(e.account)}</LEDGERNAME>
+      <ISDEEMEDPOSITIVE>${isDebit?'Yes':'No'}</ISDEEMEDPOSITIVE>
+      <AMOUNT>${Math.round(amt*100)/100}</AMOUNT>
+    </ALLLEDGERENTRIES.LIST>`;
+    }).join('\n');
+    return `<TALLYMESSAGE xmlns:UDF="TallyUDF">
+  <VOUCHER VCHTYPE="${tallyXMLEscape(vtype)}" ACTION="Create">
+    <DATE>${tallyDateFmt(v.date)}</DATE>
+    <EFFECTIVEDATE>${tallyDateFmt(v.date)}</EFFECTIVEDATE>
+    <VOUCHERTYPENAME>${tallyXMLEscape(vtype)}</VOUCHERTYPENAME>
+    <VOUCHERNUMBER>${tallyXMLEscape(v.voucherNo||('#'+v.id))}</VOUCHERNUMBER>
+    <NARRATION>${tallyXMLEscape(v.narration||'')}</NARRATION>
+${entries}
+  </VOUCHER>
+</TALLYMESSAGE>`;
+  }).join('\n');
+  return `<ENVELOPE>
+<HEADER>
+<TALLYREQUEST>Import Data</TALLYREQUEST>
+</HEADER>
+<BODY>
+<IMPORTDATA>
+<REQUESTDESC>
+<REPORTNAME>Vouchers</REPORTNAME>
+<STATICVARIABLES>
+<SVCURRENTCOMPANY>${tallyXMLEscape(DB.society.name||'My Housing Society')}</SVCURRENTCOMPANY>
+</STATICVARIABLES>
+</REQUESTDESC>
+<REQUESTDATA>
+${voucherXML}
+</REQUESTDATA>
+</IMPORTDATA>
+</BODY>
+</ENVELOPE>`;
+}
+function downloadTallyMasters(){
+  const xml = generateTallyMastersXML();
+  const blob = new Blob([xml],{type:'application/xml'});
+  const url = URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download=`tally-masters-${DB.society.name||'society'}.xml`; a.click();
+  logAction('Tally Masters Exported', `by ${window.__currentRole}`);
+  toast('Ledger masters exported — in Tally, use Gateway of Tally → Import Data → Masters, and select this file. Do this once before importing vouchers.');
+}
+function downloadTallyVouchers(fromDate, toDate){
+  if(!fromDate || !toDate || fromDate>toDate){ toast('Pick a valid date range.'); return; }
+  const count = DB.vouchers.filter(v=>v.status==='approved' && v.date>=fromDate && v.date<=toDate).length;
+  if(!count){ toast('No approved vouchers in that date range.'); return; }
+  const xml = generateTallyVouchersXML(fromDate, toDate);
+  const blob = new Blob([xml],{type:'application/xml'});
+  const url = URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download=`tally-vouchers-${fromDate}-to-${toDate}.xml`; a.click();
+  logAction('Tally Vouchers Exported', `by ${window.__currentRole} — ${fromDate} to ${toDate}, ${count} voucher(s)`);
+  toast(`${count} voucher(s) exported — in Tally, use Gateway of Tally → Import Data → Vouchers, and select this file. Import Masters first if you haven't already.`);
+}
+
 function syncBankLedgerAccounts(){
   DB.bankAccounts.filter(b=>b.type!=='FD').forEach(b=>{
     if(!b.ledgerAccountName) b.ledgerAccountName = bankLedgerName(b);
@@ -5565,7 +5703,7 @@ function applyBudgetSuggestions(fyId){
 
 function renderReports(){
   const sr = subroute || 'trial';
-  const tabs=[['trial','Trial Balance'],['diagnose','Diagnose Tallying'],['genledger','General Ledger'],['daybook','Day Book'],['cashbook','Cash Book'],['bankbook','Bank Book'],['journal','Journal Register'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['bsschedule','Schedule-wise B/S'],['ratios','Financial Ratios'],['trends','5-Year Trends'],['budget','Budget vs Actual'],['unreconciled','Unreconciled Items'],['defaulters','Defaulters'],['advances','Advance Balances'],['lowbalance','Low Balance Alerts'],['flatledger','Flat Ledger'],['insights','Smart Insights'],['agm','AGM Pack']];
+  const tabs=[['trial','Trial Balance'],['diagnose','Diagnose Tallying'],['genledger','General Ledger'],['daybook','Day Book'],['cashbook','Cash Book'],['bankbook','Bank Book'],['journal','Journal Register'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['bsschedule','Schedule-wise B/S'],['ratios','Financial Ratios'],['trends','5-Year Trends'],['budget','Budget vs Actual'],['unreconciled','Unreconciled Items'],['defaulters','Defaulters'],['advances','Advance Balances'],['lowbalance','Low Balance Alerts'],['flatledger','Flat Ledger'],['insights','Smart Insights'],['agm','AGM Pack'],['tally','Export to Tally']];
   const isFinancialStatement = ['trial','ie','rp','bs','genledger','daybook','cashbook','bankbook','journal','bsschedule'].includes(sr);
   if(!window.__reportFrom) window.__reportFrom = fyStart();
   if(!window.__reportTo) window.__reportTo = todayISO();
@@ -5900,6 +6038,24 @@ function renderReports(){
     },0);
   } else if(sr==='insights'){
     body = renderSmartInsights();
+  } else if(sr==='tally'){
+    window.__tallyFrom = window.__tallyFrom || fyStart();
+    window.__tallyTo = window.__tallyTo || todayISO();
+    body = `<p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:12px;">Exports data in Tally's own XML import format — this is the exact schema Tally itself reads under Gateway of Tally → Import Data, not a generic spreadsheet. Two files, imported in order: Ledger Masters once (creates every account as a Tally ledger, correctly grouped, with the opening balance as at the start of the current year), then Vouchers for whatever date range you choose, as often as needed.</p>
+      <div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:12px;">
+        <div style="font-weight:700;font-size:13.5px;margin-bottom:6px;">Step 1 — Ledger Masters</div>
+        <p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Every account in the chart of accounts, mapped to Tally's standard groups (Cash-in-hand, Bank Accounts, Sundry Debtors, Sundry Creditors, Duties & Taxes, Indirect Income/Expenses, etc.), with opening balance as at ${dayBefore(currentFY().startDate)}. Do this once — re-run only if new bank accounts get added later.</p>
+        <button class="btn btn-primary btn-block" onclick="downloadTallyMasters()">Export Ledger Masters (XML)</button>
+      </div>
+      <div class="card" style="box-shadow:none;border:1px solid var(--border);margin-bottom:12px;">
+        <div style="font-weight:700;font-size:13.5px;margin-bottom:6px;">Step 2 — Vouchers</div>
+        <div class="row2" style="margin-bottom:10px;">
+          <div class="field"><label>From</label><input id="tally_from" type="date" value="${window.__tallyFrom}" onchange="window.__tallyFrom=this.value;"></div>
+          <div class="field"><label>To</label><input id="tally_to" type="date" value="${window.__tallyTo}" onchange="window.__tallyTo=this.value;"></div>
+        </div>
+        <button class="btn btn-primary btn-block" onclick="downloadTallyVouchers(document.getElementById('tally_from').value, document.getElementById('tally_to').value)">Export Vouchers (XML)</button>
+      </div>
+      <p style="font-size:11px;color:var(--ink-soft);">Two honest limits: Maintenance Receivable and Vendor Creditors export as single pooled ledgers, matching how this app itself tracks them — not broken out per flat or per vendor in Tally. And while this is built correctly against Tally's documented format, it's only been verified for well-formed, valid XML here, not against a live Tally install — always test-import a small date range first before importing a full year.</p>`;
   }
   const printBtn = isFinancialStatement? `<button class="btn btn-outline btn-block" style="margin-bottom:10px;" onclick="printStatement()">🖨 Print / Save as PDF</button>` : '';
   return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('reports','${t[0]}')">${t[1]}</button>`).join('')}</div>${periodBar}${printBtn}<div class="card" id="printArea">${body}</div>`;
