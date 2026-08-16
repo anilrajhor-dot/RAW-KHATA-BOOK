@@ -1956,11 +1956,17 @@ async function updateStorageUsageDisplay(){
   }catch(e){}
   if(usedMB===undefined){ usedMB = JSON.stringify(DB).length/1024/1024; quotaMB = null; } // fallback if the estimate API isn't available
   const el2 = document.getElementById('storageUsageDisplay'); if(!el2) return; // user may have navigated away while this was loading
+  const unusedMB = quotaMB!==null? Math.max(0, quotaMB-usedMB) : null;
   const pct = quotaMB? Math.min(100, Math.round(usedMB/quotaMB*100)) : null;
   const color = pct===null? 'var(--moss)' : pct>=80?'var(--brick)':pct>=50?'var(--gold)':'var(--moss)';
+  const fmtMB = mb=> mb>=1024? (mb/1024).toFixed(2)+' GB' : mb.toFixed(1)+' MB';
   el2.innerHTML = `<div style="margin-bottom:10px;">
-    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--ink-soft);"><span>Storage used</span><span>${usedMB.toFixed(1)} MB${quotaMB?' of ~'+Math.round(quotaMB)+' MB available':''}</span></div>
-    ${pct!==null?`<div style="background:var(--paper);border-radius:6px;height:6px;overflow:hidden;margin-top:3px;"><div style="background:${color};height:100%;width:${pct}%;"></div></div>`:''}
+    ${quotaMB!==null? `<div style="display:flex;gap:8px;margin-bottom:8px;">
+      <div style="flex:1;background:var(--paper);border-radius:8px;padding:8px;text-align:center;"><div style="font-size:10px;color:var(--ink-soft);">Total</div><div style="font-size:13px;font-weight:700;">${fmtMB(quotaMB)}</div></div>
+      <div style="flex:1;background:var(--paper);border-radius:8px;padding:8px;text-align:center;"><div style="font-size:10px;color:var(--ink-soft);">Used</div><div style="font-size:13px;font-weight:700;color:${color};">${fmtMB(usedMB)}</div></div>
+      <div style="flex:1;background:var(--paper);border-radius:8px;padding:8px;text-align:center;"><div style="font-size:10px;color:var(--ink-soft);">Unused</div><div style="font-size:13px;font-weight:700;color:var(--moss);">${fmtMB(unusedMB)}</div></div>
+    </div>` : `<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--ink-soft);"><span>Storage used</span><span>${fmtMB(usedMB)}</span></div>`}
+    ${pct!==null?`<div style="background:var(--paper);border-radius:6px;height:6px;overflow:hidden;margin-top:3px;"><div style="background:${color};height:100%;width:${pct}%;"></div></div><div style="text-align:right;font-size:10px;color:var(--ink-soft);margin-top:2px;">${pct}% used</div>`:''}
     ${pct!==null && pct>=70? `<p style="font-size:10.5px;color:${color};margin-top:4px;">Getting close to what this device's storage allows — consider archiving older closed years (Setup → Financial Year) to free up room.</p>` : ''}
   </div>`;
 }
@@ -5304,7 +5310,7 @@ function renderAudit(){
     const links = [
       ['Trial Balance','reports','trial'], ['Income & Expenditure','reports','ie'], ['Receipts & Payments','reports','rp'],
 
-      ['Balance Sheet','reports','bs'], ['Schedule-wise Balance Sheet','reports','bsschedule'], ['General Ledger','reports','genledger'], ['Day Book','reports','daybook'], ['Cash Book','reports','cashbook'], ['Bank Book','reports','bankbook'], ['Journal Register','reports','journal'], ['Defaulters List','reports','defaulters'], ['Flat Ledger','reports','flatledger'],
+      ['Balance Sheet','reports','bs'], ['Schedule-wise Balance Sheet','reports','bsschedule'], ['General Ledger','reports','genledger'], ['Day Book','reports','daybook'], ['Cash Book','reports','cashbook'], ['Bank Book','reports','bankbook'], ['Journal Register','reports','journal'], ['Defaulters List','reports','defaulters'], ['Statement of Account','reports','statement'],
       ['GST Return Summary','gst','summary'], ['GST Outward (GSTR-1)','gst','outward'], ['GST Input Credit','gst','itc'],
     ];
     body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Jump straight to any statement for verification. Use the period selector on each screen to pull figures for the year under audit.</p>
@@ -5703,8 +5709,8 @@ function applyBudgetSuggestions(fyId){
 
 function renderReports(){
   const sr = subroute || 'trial';
-  const tabs=[['trial','Trial Balance'],['diagnose','Diagnose Tallying'],['genledger','General Ledger'],['daybook','Day Book'],['cashbook','Cash Book'],['bankbook','Bank Book'],['journal','Journal Register'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['bsschedule','Schedule-wise B/S'],['ratios','Financial Ratios'],['trends','5-Year Trends'],['budget','Budget vs Actual'],['unreconciled','Unreconciled Items'],['defaulters','Defaulters'],['advances','Advance Balances'],['lowbalance','Low Balance Alerts'],['flatledger','Flat Ledger'],['insights','Smart Insights'],['agm','AGM Pack'],['tally','Export to Tally']];
-  const isFinancialStatement = ['trial','ie','rp','bs','genledger','daybook','cashbook','bankbook','journal','bsschedule'].includes(sr);
+  const tabs=[['trial','Trial Balance'],['diagnose','Diagnose Tallying'],['genledger','General Ledger'],['daybook','Day Book'],['cashbook','Cash Book'],['bankbook','Bank Book'],['journal','Journal Register'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['bsschedule','Schedule-wise B/S'],['ratios','Financial Ratios'],['trends','5-Year Trends'],['budget','Budget vs Actual'],['unreconciled','Unreconciled Items'],['defaulters','Defaulters'],['advances','Advance Balances'],['lowbalance','Low Balance Alerts'],['statement','Statement of Account'],['insights','Smart Insights'],['agm','AGM Pack'],['tally','Export to Tally']];
+  const isFinancialStatement = ['trial','ie','rp','bs','genledger','daybook','cashbook','bankbook','journal','bsschedule','statement'].includes(sr);
   if(!window.__reportFrom) window.__reportFrom = fyStart();
   if(!window.__reportTo) window.__reportTo = todayISO();
   let body='';
@@ -6019,20 +6025,90 @@ function renderReports(){
       ${rows.map(x=>`<tr><td>${flatLabel(x.f)}</td><td>${x.f.owner?.name||'—'}</td><td>${x.f.owner?.phone||'—'}</td><td class="num-cell" style="color:var(--moss)">₹${fmt(Math.abs(x.bal))}</td></tr>`).join('')||'<tr><td colspan=4 style="color:var(--ink-soft)">No flats in advance as at this date</td></tr>'}
       </table></div>
       <p style="font-size:11px;color:var(--ink-soft);margin-top:8px;">Based on each flat's running Maintenance Receivable ledger — a negative balance means the flat has paid ahead of what's been billed so far.</p>`;
-  } else if(sr==='flatledger'){
-    body = `<div class="field"><label>Flat</label><select id="fl_sel">${DB.flats.map(f=>`<option value="${f.id}">${flatLabel(f)}</option>`).join('')}</select></div><div id="fl_body"></div>`;
+  } else if(sr==='statement'){
+    window.__stmtType = window.__stmtType || 'flat';
+    const plAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Income'||ACCOUNTS[a]==='Expense').sort();
+    const bsAccs = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Asset'||ACCOUNTS[a]==='Liability').sort();
+    const typeOptions = [['flat','Flat Owner'],['supplier','Supplier'],['pl','P&L Head'],['bs','Balance Sheet Head']];
+    body = `<div class="subtabs" style="margin-bottom:10px;">${typeOptions.map(([k,l])=>`<button class="subtab ${window.__stmtType===k?'active':''}" onclick="window.__stmtType='${k}';render();">${l}</button>`).join('')}</div>`;
+    if(window.__stmtType==='flat'){
+      body += `<div class="field"><label>Flat</label><select id="stmt_sel">${DB.flats.slice().sort((a,b)=>flatLabel(a).localeCompare(flatLabel(b))).map(f=>`<option value="${f.id}">${flatLabel(f)} — ${f.owner?.name||'—'}</option>`).join('')}</select></div><div id="stmt_body"></div>`;
+    } else if(window.__stmtType==='supplier'){
+      body += `<div class="field"><label>Supplier</label><select id="stmt_sel">${DB.vendors.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(v=>`<option value="${v.id}">${v.name}</option>`).join('')}</select></div><div id="stmt_body"></div>`;
+    } else {
+      const list = window.__stmtType==='pl'? plAccs : bsAccs;
+      body += `<div class="field"><label>${window.__stmtType==='pl'?'P&L Head':'Balance Sheet Head'}</label><select id="stmt_sel">${list.map(a=>`<option value="${a}">${a} (${ACCOUNTS[a]})</option>`).join('')}</select></div><div id="stmt_body"></div>`;
+    }
     setTimeout(()=>{
-      const sel=document.getElementById('fl_sel'); if(!sel) return;
+      const sel=document.getElementById('stmt_sel'); if(!sel) return;
       const draw=()=>{
-        const flatId=sel.value; let bal=0;
-        const rows = DB.vouchers.filter(v=>v.flatId===flatId).sort((a,b)=>a.date.localeCompare(b.date)).map(v=>{
-          const rec = v.entries.find(e=>e.account==='Maintenance Receivable');
-          if(!rec) return '';
-          bal += (rec.debit||0)-(rec.credit||0);
-          return `<tr><td>${v.date}</td><td>${v.narration||v.type}</td><td class="num-cell">${rec.debit?'₹'+fmt(rec.debit):''}</td><td class="num-cell">${rec.credit?'₹'+fmt(rec.credit):''}</td><td class="num-cell">₹${fmt(bal)}</td></tr>`;
-        }).join('');
-        const flBody = document.getElementById('fl_body'); if(!flBody) return;
-        flBody.innerHTML = `<div class="tbl-wrap"><table><tr><th>Date</th><th>Particulars</th><th class="num-cell">Billed</th><th class="num-cell">Received</th><th class="num-cell">Balance</th></tr>${rows||'<tr><td colspan=5 style="color:var(--ink-soft)">No transactions</td></tr>'}</table></div>`;
+        const stmtBody = document.getElementById('stmt_body'); if(!stmtBody) return;
+        const f2 = window.__reportFrom, t2 = window.__reportTo;
+        let opening, rowsHTML, closing, entityLabel, csvRows;
+        if(window.__stmtType==='flat'){
+          const flatId = sel.value; const flat = getFlat(flatId);
+          entityLabel = flat? flatLabel(flat)+(flat.owner?.name? ' — '+flat.owner.name : '') : '';
+          opening = 0;
+          DB.vouchers.filter(v=>v.status==='approved' && v.flatId===flatId && v.date<f2).forEach(v=>{
+            const rec = v.entries.find(e=>e.account==='Maintenance Receivable'); if(rec) opening += (rec.debit||0)-(rec.credit||0);
+          });
+          let bal = opening;
+          csvRows = [['Date','Voucher','Particulars','Billed','Received','Balance'], [f2,'','Opening Balance','','',opening]];
+          const rows = DB.vouchers.filter(v=>v.status==='approved' && v.flatId===flatId && v.date>=f2 && v.date<=t2).sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id).map(v=>{
+            const rec = v.entries.find(e=>e.account==='Maintenance Receivable'); if(!rec) return '';
+            bal += (rec.debit||0)-(rec.credit||0);
+            csvRows.push([v.date, v.voucherNo||('#'+v.id), v.narration||v.type, rec.debit||'', rec.credit||'', bal]);
+            return `<tr><td style="font-size:11px;">${v.voucherNo||'#'+v.id}</td><td>${v.date}</td><td style="font-size:12px;">${v.narration||v.type}</td><td class="num-cell">${rec.debit?'₹'+fmt(rec.debit):''}</td><td class="num-cell">${rec.credit?'₹'+fmt(rec.credit):''}</td><td class="num-cell">₹${fmt(bal)}</td></tr>`;
+          }).join('');
+          closing = bal;
+          rowsHTML = `<div class="tbl-wrap"><table><tr><th>Voucher</th><th>Date</th><th>Particulars</th><th class="num-cell">Billed</th><th class="num-cell">Received</th><th class="num-cell">Balance</th></tr>
+            <tr style="color:var(--ink-soft);font-style:italic;"><td colspan="5">Opening Balance</td><td class="num-cell">₹${fmt(opening)}</td></tr>
+            ${rows||'<tr><td colspan="5" style="color:var(--ink-soft)">No transactions in this period</td></tr>'}
+            <tr style="font-weight:700;border-top:2px solid var(--ink)"><td colspan="5">Closing Balance</td><td class="num-cell">₹${fmt(closing)}</td></tr></table></div>`;
+        } else if(window.__stmtType==='supplier'){
+          const vendorId = sel.value; const vendor = getVendor(vendorId);
+          entityLabel = vendor? vendor.name : '';
+          opening = 0;
+          DB.vouchers.filter(v=>v.status==='approved' && v.vendorId===vendorId && v.date<f2).forEach(v=>{
+            const rec = v.entries.find(e=>e.account==='Vendor Creditors'); if(rec) opening += (rec.credit||0)-(rec.debit||0);
+          });
+          let bal = opening;
+          csvRows = [['Date','Voucher','Particulars','Billed','Paid','Balance Due'], [f2,'','Opening Balance','','',opening]];
+          const rows = DB.vouchers.filter(v=>v.status==='approved' && v.vendorId===vendorId && v.date>=f2 && v.date<=t2).sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id).map(v=>{
+            const rec = v.entries.find(e=>e.account==='Vendor Creditors'); if(!rec) return '';
+            bal += (rec.credit||0)-(rec.debit||0);
+            csvRows.push([v.date, v.voucherNo||('#'+v.id), v.narration||v.type, rec.credit||'', rec.debit||'', bal]);
+            return `<tr><td style="font-size:11px;">${v.voucherNo||'#'+v.id}</td><td>${v.date}</td><td style="font-size:12px;">${v.narration||v.type}</td><td class="num-cell">${rec.credit?'₹'+fmt(rec.credit):''}</td><td class="num-cell">${rec.debit?'₹'+fmt(rec.debit):''}</td><td class="num-cell">₹${fmt(bal)}</td></tr>`;
+          }).join('');
+          closing = bal;
+          rowsHTML = `<div class="tbl-wrap"><table><tr><th>Voucher</th><th>Date</th><th>Particulars</th><th class="num-cell">Billed</th><th class="num-cell">Paid</th><th class="num-cell">Balance Due</th></tr>
+            <tr style="color:var(--ink-soft);font-style:italic;"><td colspan="5">Opening Balance</td><td class="num-cell">₹${fmt(opening)}</td></tr>
+            ${rows||'<tr><td colspan="5" style="color:var(--ink-soft)">No transactions in this period</td></tr>'}
+            <tr style="font-weight:700;border-top:2px solid var(--ink)"><td colspan="5">Closing Balance</td><td class="num-cell">₹${fmt(closing)}</td></tr></table></div>`;
+        } else {
+          const accName = sel.value; entityLabel = accName+' ('+ACCOUNTS[accName]+')';
+          opening = accBalance(accName,{upto:dayBefore(f2)}).net;
+          let bal = opening;
+          csvRows = [['Date','Voucher','Particulars','Debit','Credit','Balance'], [f2,'','Opening Balance','','',opening]];
+          const rows = DB.vouchers.filter(v=>v.status==='approved' && v.date>=f2 && v.date<=t2 && v.entries.some(e=>e.account===accName)).sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id).map(v=>{
+            const e = v.entries.find(x=>x.account===accName); bal += (e.debit||0)-(e.credit||0);
+            csvRows.push([v.date, v.voucherNo||('#'+v.id), v.narration||v.type, e.debit||'', e.credit||'', bal]);
+            return `<tr><td style="font-size:11px;">${v.voucherNo||'#'+v.id}</td><td>${v.date}</td><td style="font-size:12px;">${v.narration||v.type}</td><td class="num-cell">${e.debit?'₹'+fmt(e.debit):''}</td><td class="num-cell">${e.credit?'₹'+fmt(e.credit):''}</td><td class="num-cell">₹${fmt(bal)}</td></tr>`;
+          }).join('');
+          closing = bal;
+          rowsHTML = `<div class="tbl-wrap"><table><tr><th>Voucher</th><th>Date</th><th>Particulars</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th><th class="num-cell">Balance</th></tr>
+            <tr style="color:var(--ink-soft);font-style:italic;"><td colspan="5">Opening Balance</td><td class="num-cell">₹${fmt(opening)}</td></tr>
+            ${rows||'<tr><td colspan="5" style="color:var(--ink-soft)">No transactions in this period</td></tr>'}
+            <tr style="font-weight:700;border-top:2px solid var(--ink)"><td colspan="5">Closing Balance</td><td class="num-cell">₹${fmt(closing)}</td></tr></table></div>`;
+        }
+        window.__stmtExportData = csvRows;
+        const filenameBase = `statement-${entityLabel.replace(/[^a-z0-9]/gi,'-')}-${f2}-to-${t2}`;
+        stmtBody.innerHTML = `<h3 style="font-size:13.5px;margin-top:10px;">${entityLabel}</h3><p style="font-size:11px;color:var(--ink-soft);margin-bottom:8px;">For the period ${f2} to ${t2}</p>${rowsHTML}
+          <div class="no-print" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 4px;">
+            <button class="btn btn-outline btn-sm" onclick="downloadLedgerCSV(window.__stmtExportData,'${filenameBase}.csv')">⬇ CSV</button>
+            <button class="btn btn-outline btn-sm" onclick="downloadLedgerExcel(window.__stmtExportData,'${filenameBase}.xlsx')">⬇ Excel</button>
+            <button class="btn btn-outline btn-sm" onclick="shareLedgerCSV(window.__stmtExportData,'${filenameBase}.csv','${entityLabel.replace(/'/g,"\\'")} Statement')">📤 Share</button>
+          </div>`;
       };
       sel.onchange=draw; draw();
     },0);
@@ -8950,7 +9026,7 @@ const NAV_COMMANDS = [
   {k:['unreconciled items','unreconciled'], route:'reports', sub:'unreconciled', label:'Unreconciled Items'},
   {k:['advance balance','advances held','advance list'], route:'reports', sub:'advances', label:'Advance Balances'},
   {k:['low balance alert','low balance'], route:'reports', sub:'lowbalance', label:'Low Balance Alerts'},
-  {k:['flat ledger'], route:'reports', sub:'flatledger', label:'Flat Ledger'},
+  {k:['flat ledger'], route:'reports', sub:'statement', label:'Statement of Account'},
   {k:['smart insights'], route:'reports', sub:'insights', label:'Smart Insights'},
   {k:['agm pack','agm report'], route:'reports', sub:'agm', label:'AGM Pack'},
   {k:['overdue statement','overdue list','defaulter list','defaulters list','defaulters'], route:'reports', sub:'defaulters', label:'Defaulters'},
