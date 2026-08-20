@@ -1526,6 +1526,8 @@ if(!DB.internalControls) DB.internalControls = {cashPaymentLimit:10000, roundFig
 if(!DB.legalCases) DB.legalCases = [];
 if(DB.importRequest===undefined) DB.importRequest = null;
 if(DB.archiveRequest===undefined) DB.archiveRequest = null;
+if(DB.dailyClosingEnabled===undefined) DB.dailyClosingEnabled = false;
+if(DB.dayCloses===undefined) DB.dayCloses = [];
 if(DB.preImportBackupAt===undefined) DB.preImportBackupAt = null;
 if(!DB.seq.legal) DB.seq.legal = 1;
 if(!DB.agmReports) DB.agmReports = {}; // keyed by FY id: {chairmanReport: string}
@@ -2418,6 +2420,7 @@ function addVoucher(v){
     toast(`${v.date} falls in a closed accounting period — entry not posted.`);
     return null;
   }
+  if(blockIfDailyClosingOwed()) return null;
   v.id = nextId('voucher'); v.voucherNo = nextVoucherNo(v.type, v.date);
   v.status = 'pending'; v.maker = window.__currentRole; v.makerName = actorName(); v.makerAt = nowTS();
   v.checker = null; v.checkerName=''; v.checkerAt = null; v.checkerNote = '';
@@ -2425,6 +2428,64 @@ function addVoucher(v){
   logAction('Create', `${v.type} voucher ${v.voucherNo} (#${v.id}) — ${v.narration||''} (₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))})`);
   return v;
 }
+/* ============ DAILY CLOSING DISCIPLINE (opt-in) ============
+   Matches the EOD (end-of-day) closing ritual from banking practice: at close of business each day,
+   review whether Trial Balance / Balance Sheet / Cash Flow genuinely tally, and formally record that
+   the day was checked clean. Off by default, so no existing user is suddenly blocked by a habit they
+   never opted into. The gate only ever blocks new entries when there's a REAL unresolved difference on
+   a day that was never closed — not merely for forgetting to click the button on a day that was fine,
+   since blocking over a clean day would be punishing a procedural miss rather than a real problem. */
+function lastDailyCloseDate(){
+  if(!DB.dayCloses || !DB.dayCloses.length) return null;
+  return DB.dayCloses.map(d=>d.date).sort().slice(-1)[0];
+}
+function coreTallyingClean(){
+  // Daily Closing cares about whether the books themselves genuinely tally — Trial Balance, Balance
+  // Sheet, and Cash Flow vs Balance Sheet. Bank reconciliation status is deliberately excluded: it's
+  // ongoing housekeeping tied to when a physical bank statement arrives, not something resolved fresh
+  // each day, and treating it as a blocker here would make closing the day nearly impossible for any
+  // real account that hasn't been reconciled that particular day — it already has its own reminder
+  // under Setup → Bank & FD Accounts.
+  return computeStatementDiagnosis().filter(s=>!s.title.startsWith('Bank:'));
+}
+function dailyClosingOwedFor(){
+  // Returns the earliest date that needs closing if there's a real gap AND a genuine unresolved
+  // difference right now — null if nothing is owed (either no gap, or the books are clean regardless).
+  if(!DB.dailyClosingEnabled) return null;
+  const last = lastDailyCloseDate();
+  const yesterday = dayBefore(todayISO());
+  if(last && last>=yesterday) return null; // closed yesterday or later — nothing owed
+  const sections = coreTallyingClean();
+  if(sections.every(s=>s.ok)) return null; // gap exists, but books are genuinely clean right now — a soft reminder, not a hard block
+  return last? new Date(new Date(last).getTime()+86400000).toISOString().slice(0,10) : (DB.vouchers.length? DB.vouchers.map(v=>v.date).sort()[0] : todayISO());
+}
+function blockIfDailyClosingOwed(){
+  const owedFrom = dailyClosingOwedFor();
+  if(!owedFrom) return false;
+  toast(`Daily Closing hasn't been done since before ${owedFrom}, and there's an unresolved difference in the books — new entries are on hold until this is fixed. Go to Setup → Daily Closing to see exactly what's wrong and how to fix it.`);
+  return true;
+}
+function toggleDailyClosing(){
+  if(isReadOnly()){ toast(window.__currentRole+' cannot change this setting.'); return; }
+  DB.dailyClosingEnabled = !DB.dailyClosingEnabled;
+  logAction('Daily Closing '+(DB.dailyClosingEnabled?'Enabled':'Disabled'), `by ${window.__currentRole}`);
+  save(); render();
+  toast(DB.dailyClosingEnabled? 'Daily Closing turned on — a reminder to close each day\'s books will now appear, and new entries pause if a day is skipped with an unresolved difference.' : 'Daily Closing turned off — no more daily reminder or gate.');
+}
+function closeToday(){
+  if(isReadOnly()){ toast(window.__currentRole+' cannot close the day.'); return; }
+  const today = todayISO();
+  if(DB.dayCloses && DB.dayCloses.some(d=>d.date===today)){ toast('Today is already closed.'); return; }
+  const sections = coreTallyingClean();
+  const allOk = sections.every(s=>s.ok);
+  if(!allOk){ go('settings'); toast('Cannot close today — see the difference(s) under Setup → Daily Closing and how to fix each one first.'); return; }
+  DB.dayCloses = DB.dayCloses || [];
+  DB.dayCloses.push({date:today, closedBy:window.__currentRole, closedByName:actorName(), closedAt:nowTS()});
+  logAction('Day Closed', `${today} — closed clean by ${window.__currentRole}`);
+  save(); render();
+  toast(`${today} closed — Trial Balance, Balance Sheet, and Cash Flow all confirmed tallying.`);
+}
+
 function accBalance(name, opts){
   let dr=0,cr=0; const upto = opts?.upto, from = opts?.from;
   DB.vouchers.forEach(v=>{
@@ -2921,8 +2982,25 @@ function renderDashboard(){
       </div>
     </div>` : '';
 
+  const dailyClosingBanner = (()=>{
+    if(!DB.dailyClosingEnabled) return '';
+    const today = todayISO();
+    if(DB.dayCloses && DB.dayCloses.some(d=>d.date===today)) return ''; // already closed today, nothing to show
+    const owedFrom = dailyClosingOwedFor();
+    if(owedFrom){
+      return `<div class="card" style="background:var(--brick-soft);border:1px solid var(--brick);">
+        <div style="font-size:12.5px;"><b>🔒 Daily Closing action needed.</b> No day has been closed since before ${owedFrom}, and there's a genuine difference in the books — new entries are on hold until this is fixed.</div>
+        <button class="btn btn-danger btn-sm" style="margin-top:8px;" onclick="go('settings')">Review & Fix</button>
+      </div>`;
+    }
+    return `<div class="card" style="background:var(--amber-soft);border:1px solid var(--gold);display:flex;justify-content:space-between;align-items:center;gap:10px;">
+      <div style="font-size:12.5px;">📋 Today's books haven't been closed yet.</div>
+      ${isReadOnly()? '' : `<button class="btn btn-primary btn-sm" onclick="closeToday()">Close Today's Books</button>`}
+    </div>`;
+  })();
   return `
   ${backupBanner}
+  ${dailyClosingBanner}
   ${!localStorage.getItem('smartrwa_chat_banner_dismissed')? `<div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--amber-soft);border:1px solid var(--gold);">
     <div style="font-size:12.5px;"><b>💬 New here?</b> Tap the chat icon (top right) and just ask — <i>"how do I record a receipt"</i>, <i>"how do I add a vendor bill"</i> — or type a report name like <i>"trial balance"</i> to open it directly.</div>
     <div style="display:flex;flex-direction:column;gap:4px;flex:0 0 auto;">
@@ -6262,6 +6340,9 @@ function renderSettings(){
   <div class="card"><div class="section-title">Financial Year</div>
     ${renderFYCard()}
   </div>
+  <div class="card"><div class="section-title">Daily Closing <span style="font-size:11px;font-weight:400;color:var(--ink-soft);">(optional)</span></div>
+    ${renderDailyClosingCard()}
+  </div>
   <div class="card"><div class="section-title">Budgets</div>
     ${renderBudgetCard()}
   </div>
@@ -6373,6 +6454,42 @@ function renderSettings(){
 }
 
 /* ============ FINANCIAL YEAR CLOSING ============ */
+function renderDailyClosingCard(){
+  const enabled = !!DB.dailyClosingEnabled;
+  const last = lastDailyCloseDate();
+  const today = todayISO();
+  const closedToday = last===today;
+  const owedFrom = dailyClosingOwedFor();
+  let html = `<p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Matches the end-of-day closing ritual from banking practice: confirm Trial Balance, Balance Sheet, and Cash Flow genuinely tally at close of business, and record that today was checked. ${enabled?'':'Off by default — turn on if you want this discipline enforced.'}</p>
+    <button class="btn ${enabled?'btn-danger':'btn-primary'} btn-block" onclick="toggleDailyClosing()">${enabled?'Turn Off':'Turn On'} Daily Closing</button>`;
+  if(enabled){
+    html += `<div style="margin-top:12px;padding:10px;border-radius:8px;background:${closedToday?'var(--moss-soft)':owedFrom?'var(--brick-soft)':'var(--amber-soft)'};">
+      <div style="font-weight:700;font-size:13px;">${closedToday?'✅ Today is closed':owedFrom?'⚠️ Action needed':'Today is not yet closed'}</div>
+      <div style="font-size:12px;margin-top:3px;">${closedToday? `Closed by ${DB.dayCloses[DB.dayCloses.length-1].closedBy} at ${new Date(DB.dayCloses[DB.dayCloses.length-1].closedAt).toLocaleTimeString('en-IN')}.` : owedFrom? `No day has been closed since before ${owedFrom}, and there's a genuine difference in the books right now — see below, and new entries are on hold until this is fixed.` : last? `Last closed ${last}.` : 'No day has ever been closed yet.'}</div>
+      ${!closedToday && !isReadOnly()? `<button class="btn btn-primary btn-sm" style="margin-top:8px;" onclick="closeToday()">Close Today's Books</button>`:''}
+    </div>`;
+    if(owedFrom || !closedToday){
+      const sections = coreTallyingClean();
+      const allOk = sections.every(s=>s.ok);
+      if(!allOk){
+        html += sections.filter(s=>!s.ok).map(s=>`<div class="card" style="border-left:4px solid var(--brick);margin-top:10px;box-shadow:none;border:1px solid var(--border);border-left:4px solid var(--brick);">
+          <div style="font-weight:700;font-size:13px;">⚠️ ${s.title}</div>
+          <div style="font-size:12px;margin-top:4px;">${s.summary}</div>
+          <div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">${s.detail}</div>
+          ${s.fix?`<div style="font-size:11px;margin-top:6px;padding:6px 8px;background:var(--amber-soft);border-radius:6px;"><b>Fix:</b> ${s.fix}</div>`:''}
+        </div>`).join('');
+      }
+    }
+    if(DB.dayCloses && DB.dayCloses.length){
+      html += `<details style="margin-top:10px;"><summary style="font-size:12px;color:var(--ink-soft);cursor:pointer;">Closing history (${DB.dayCloses.length})</summary>
+        <div class="tbl-wrap" style="margin-top:6px;"><table><tr><th>Date</th><th>Closed By</th><th>Time</th></tr>
+        ${DB.dayCloses.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,30).map(d=>`<tr><td>${d.date}</td><td>${actorLabel(d.closedBy,d.closedByName)}</td><td style="font-size:11px;">${new Date(d.closedAt).toLocaleTimeString('en-IN')}</td></tr>`).join('')}
+        </table></div></details>`;
+    }
+  }
+  return html;
+}
+
 function renderFYCard(){
   const fy = currentFY();
   const rows = DB.financialYears.slice().sort((a,b)=>b.startDate.localeCompare(a.startDate)).map(f=>`
@@ -8758,6 +8875,8 @@ const FAQ = [
    a:'Four roles — President, Accountant, Treasurer, Auditor. Everyone starts at PIN 1234. Once logged in, tap the 🔑 icon in the top bar anytime to change your own PIN (needs your current one). If you forget it, ask the President to reset it (Setup → Access, no old PIN needed) — but that reset PIN only unlocks a forced "set your own new PIN" screen, nothing else. The President cannot use it to actually operate as that role, and neither can you until you have chosen a new private PIN yourself.'},
   {k:['storage','how much storage','storage full','total used unused','storage used'], q:'How much storage does this use, and how do I check?',
    a:'Setup → Data shows three figures side by side — Total, Used, and Unused — plus a progress bar, using the actual free space this device is reporting, not a rough guess. On a typical phone with tens of GB free, this app\'s data (even years of a large society\'s records) is a very small fraction of that. If usage ever climbs high enough to matter, a note appears suggesting Setup → Financial Year → Archive for older closed years — see the separate question on that.'},
+{k:['daily closing','close the day','end of day','eod','day close','difference at close'], q:'Can I close the books daily and get blocked if something doesn\'t tally?',
+   a:'Setup → Daily Closing (off by default — turn it on if you want this discipline). "Close Today\'s Books" checks Trial Balance, Balance Sheet, and Cash Flow — if everything genuinely tallies, it records the day as closed. If not, it shows exactly what\'s wrong and how to fix it, using the same diagnosis as Reports → Diagnose Tallying. If a day gets skipped and there\'s a real unresolved difference, new entries pause everywhere in the app until it\'s fixed — a Dashboard banner makes this hard to miss. If a day gets skipped but the books are actually clean (just forgot to close), nothing gets blocked — only a gentle reminder, since that\'s a procedural miss, not a real problem. Bank reconciliation status is deliberately not part of this check, since that\'s ongoing housekeeping tied to when your physical bank statement arrives, not something resolved fresh every day — it has its own separate reminder under Setup → Bank & FD Accounts.'},
 {k:['pwa','install','home screen','offline'], q:'Can I install this as an app?',
    a:'Yes — in Safari tap Share → "Add to Home Screen". It opens full-screen like a native app and works fully offline. Data stays on the device.'},
   {k:['tally','tallyprime','export to tally','tally xml','tally import'], q:'Can I export data to Tally / TallyPrime?',
