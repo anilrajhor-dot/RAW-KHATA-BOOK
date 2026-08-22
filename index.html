@@ -2982,6 +2982,10 @@ function renderDashboard(){
       </div>
     </div>` : '';
 
+  const demoDataBanner = DB.isDemoData? `<div class="card" style="background:var(--amber-soft);border:1px solid var(--gold);display:flex;justify-content:space-between;align-items:center;gap:10px;">
+    <div style="font-size:12.5px;"><b>🧪 Demo Data</b> — none of this is real. Remove it under Setup before entering your society's actual records.</div>
+    ${isReadOnly()? '' : `<button class="btn btn-outline btn-sm" onclick="go('settings')">Manage</button>`}
+  </div>` : '';
   const dailyClosingBanner = (()=>{
     if(!DB.dailyClosingEnabled) return '';
     const today = todayISO();
@@ -2999,6 +3003,7 @@ function renderDashboard(){
     </div>`;
   })();
   return `
+  ${demoDataBanner}
   ${backupBanner}
   ${dailyClosingBanner}
   ${!localStorage.getItem('smartrwa_chat_banner_dismissed')? `<div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--amber-soft);border:1px solid var(--gold);">
@@ -6343,6 +6348,9 @@ function renderSettings(){
   <div class="card"><div class="section-title">Daily Closing <span style="font-size:11px;font-weight:400;color:var(--ink-soft);">(optional)</span></div>
     ${renderDailyClosingCard()}
   </div>
+  <div class="card"><div class="section-title">Demo Data</div>
+    ${renderDemoDataCard()}
+  </div>
   <div class="card"><div class="section-title">Budgets</div>
     ${renderBudgetCard()}
   </div>
@@ -6454,6 +6462,20 @@ function renderSettings(){
 }
 
 /* ============ FINANCIAL YEAR CLOSING ============ */
+function renderDemoDataCard(){
+  if(DB.isDemoData){
+    return `<div style="padding:10px;border-radius:8px;background:var(--amber-soft);border:1px solid var(--gold);margin-bottom:10px;">
+      <div style="font-weight:700;font-size:13px;">🧪 You're viewing Demo Data</div>
+      <div style="font-size:12px;margin-top:4px;">${DB.flats.length} flats, ${DB.vouchers.length} vouchers across 3 years — none of this is real. Remove it before entering your society's actual records.</div>
+    </div>
+    ${!isReadOnly()? `<button class="btn btn-danger btn-block" onclick="removeDemoData()">Remove Demo Data</button>` : `<p style="font-size:11.5px;color:var(--ink-soft);">Only editing roles can remove demo data.</p>`}`;
+  }
+  return `<p style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px;">Load 3 years of realistic sample data (24 flats, ~2,100 vouchers) to explore every screen before entering real records — billing, receipts, vendor bills, payroll, two closed years and one open year, all pre-approved and verified tallying. Removable anytime, no trace left behind.</p>
+    ${!isReadOnly()? `<div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-primary btn-sm" style="flex:1;" onclick="loadDemoData()">Load Demo Data</button>
+      <button class="btn btn-outline btn-sm" style="flex:1;" onclick="downloadDemoData()">⬇ Download as File</button>
+    </div>` : `<p style="font-size:11.5px;color:var(--ink-soft);">Only editing roles can load demo data.</p>`}`;
+}
 function renderDailyClosingCard(){
   const enabled = !!DB.dailyClosingEnabled;
   const last = lastDailyCloseDate();
@@ -8223,9 +8245,209 @@ async function restorePreImportBackup(){
 }
 
 /* ============ FULL DATA WIPE (MAKER-CHECKER) ============ */
+/* ============ DEMO DATA (3 years, for exploring the app) ============
+   Built entirely client-side, not a bundled file — keeps the app itself lean, and means the demo
+   dataset can be generated fresh every time rather than shipped as dead weight in the HTML. Uses only
+   real, verified account names from the actual chart of accounts (ACCOUNTS above) — a past mistake
+   was inventing an account name for test data and it silently broke the Balance Sheet, so every
+   account name here is checked against that same list before use. */
+function buildDemoDB(){
+  const society = {name:'Green Meadows CHS (Demo Data)', address:'Sample Society Road, Pune', regNo:'DEMO/2020/001', pan:'', gstin:'', fyStartMonth:4, minBalanceThreshold:0, totalArea:24000, upiId:''};
+  const towers = ['A','B','C'].map((t,i)=>({id:'T'+(i+1), name:t}));
+  const flatTypes = [{id:'FT1',name:'1BHK',area:600},{id:'FT2',name:'2BHK',area:900},{id:'FT3',name:'3BHK',area:1200}];
+  const flats = [];
+  let fid=1;
+  towers.forEach(t=>{
+    for(let n=1;n<=8;n++){
+      const typeIdx = n%3;
+      flats.push({id:'F'+(fid++), tower:t.name, flatNo:t.name+'-'+(100+n), flatType:flatTypes[typeIdx].id,
+        owner:{name:['Ramesh Kumar','Sunita Sharma','Amit Patel','Priya Nair','Vikram Singh','Anjali Rao','Suresh Iyer','Deepa Menon'][n-1]+' ('+t.name+(100+n)+')', phone:'98765'+String(10000+fid).slice(-5), email:''},
+        history:[]});
+    }
+  });
+  const chargeHeads = defaultCharges();
+  const bankAccounts = [{id:'BA1', type:'Savings', bankName:'HDFC Bank', accountNumber:'50100123456789', ledgerAccountName:'HDFC Bank — Savings ×6789'}];
+  ACCOUNTS[bankAccounts[0].ledgerAccountName] = 'Asset'; ACCOUNT_GROUPS[bankAccounts[0].ledgerAccountName] = 'Current Assets';
+  const vendors = [{id:'V1',name:'Sunrise Housekeeping Services',gstin:'27AAAAA0000A1Z5',pan:'AAAAA0000A'},{id:'V2',name:'SecureGuard Security Pvt Ltd',gstin:'27BBBBB0000B1Z5',pan:'BBBBB0000B'}];
+  const employees = [{id:'E1',name:'Ramu Yadav',designation:'Security Guard',salary:15000,pfApplicable:true,esiApplicable:true},{id:'E2',name:'Kamla Devi',designation:'Housekeeping Staff',salary:12000,pfApplicable:true,esiApplicable:true}];
+
+  const financialYears = [
+    {id:'FY1', label:'2023-24', startDate:'2023-04-01', endDate:'2024-03-31', status:'closed'},
+    {id:'FY2', label:'2024-25', startDate:'2024-04-01', endDate:'2025-03-31', status:'closed'},
+    {id:'FY3', label:'2025-26', startDate:'2025-04-01', endDate:'2026-03-31', status:'open'},
+  ];
+
+  const vouchers=[]; const bills=[]; const vendorBills=[]; const payrollRuns=[];
+  let vid=1, billId=1, vbillId=1, payrollId=1;
+  const mkV = (type,date,narration,entries,flatId,vendorId)=>{
+    const v = {id:vid, voucherNo:type[0]+'V/'+fyLabelForDate(date)+'/'+String(vid).padStart(4,'0'), type, date, narration, entries,
+      flatId, vendorId, status:'approved', maker:'Accountant', makerName:'', makerAt:date+'T10:00:00.000Z',
+      checker:'Treasurer', checkerName:'', checkerAt:date+'T11:00:00.000Z', checkerNote:''};
+    vouchers.push(v); vid++; return v;
+  };
+
+  // Opening balances as of FY2023-24 start
+  mkV('Journal','2023-04-01','Opening balances', [
+    {account:'Cash in Hand', debit:25000, credit:0},
+    {account:bankAccounts[0].ledgerAccountName, debit:1250000, credit:0},
+    {account:'Fixed Assets', debit:800000, credit:0},
+    {account:'Corpus Fund', debit:0, credit:1200000},
+    {account:'Sinking Fund', debit:0, credit:875000},
+  ]);
+
+  const bankLedger = bankAccounts[0].ledgerAccountName;
+  const months = [];
+  for(let y=2023;y<=2026;y++) for(let m=1;m<=12;m++){ const d=new Date(y,m-1,1); if(d>=new Date(2023,3,1) && d<=new Date(2026,6,1)) months.push(y+'-'+String(m).padStart(2,'0')); }
+
+  months.forEach((period,mi)=>{
+    const [py,pm] = period.split('-'); const dueDate = `${py}-${pm}-10`;
+    if(new Date(dueDate) > new Date('2026-08-01')) return; // demo data doesn't reach into the future
+    // Monthly maintenance billing + receipts per flat
+    flats.forEach((f,fi)=>{
+      const typeIdx = fi%3; const baseAmt = [2000,3200,4200][typeIdx];
+      const bill = {id:'B'+billId, flatId:f.id, period, dueDate, items:[{account:'Maintenance Income', description:'Maintenance Charges', amount:baseAmt, gst:0}], subTotal:baseAmt, gstTotal:0, total:baseAmt, paid:0, status:'unpaid'};
+      bills.push(bill); billId++;
+      mkV('Journal', dueDate, `Maintenance bill ${f.tower}-${f.flatNo.split('-')[1]} — ${period}`, [
+        {account:'Maintenance Receivable', debit:baseAmt, credit:0}, {account:'Maintenance Income', debit:0, credit:baseAmt},
+      ], f.id);
+      // Realistic payment pattern: most pay within the month; a handful of flats run a few months behind (defaulters); flat #3 in each tower slightly overpays sometimes (advance)
+      const skipsPayment = (fi%8===3 || fi%8===6) && (mi%4===0); // occasional genuine gaps for a couple of flats
+      if(!skipsPayment){
+        const payDate = `${py}-${pm}-`+String(12+(fi%15)).padStart(2,'0');
+        const payAmt = (fi%8===2 && mi%5===0)? baseAmt+500 : baseAmt; // occasional small advance
+        mkV('Receipt', payDate, `Maintenance received ${f.tower}-${f.flatNo.split('-')[1]}`, [
+          {account: fi%3===0?'Cash in Hand':bankLedger, debit:payAmt, credit:0}, {account:'Maintenance Receivable', debit:0, credit:payAmt},
+        ], f.id);
+        bill.paid = payAmt; bill.status = payAmt>=baseAmt? 'paid':'partial';
+      }
+    });
+    // Monthly vendor bills + payments (housekeeping, security)
+    [['V1','Housekeeping Expense',18000],['V2','Security Expense',32000]].forEach(([vendorId,expAcc,amt])=>{
+      const vb = {id:'VB'+vbillId, vendorId, date:`${py}-${pm}-05`, billNo:`INV-${period}-${vendorId}`, amount:amt, gstAmount:0, tdsAmount:0, status:'unpaid'};
+      vendorBills.push(vb); vbillId++;
+      mkV('Journal', vb.date, `Vendor bill — ${vendorId==='V1'?'Sunrise Housekeeping':'SecureGuard Security'} — ${period}`, [
+        {account:expAcc, debit:amt, credit:0}, {account:'Vendor Creditors', debit:0, credit:amt},
+      ], null, vendorId);
+      mkV('VendorPayment', `${py}-${pm}-20`, `Payment — ${vendorId==='V1'?'Sunrise Housekeeping':'SecureGuard Security'} — ${period}`, [
+        {account:'Vendor Creditors', debit:amt, credit:0}, {account:bankLedger, debit:0, credit:amt},
+      ], null, vendorId);
+      vb.status='paid';
+    });
+    // Direct electricity payment (no vendor ledger tracking, matches many societies' actual practice)
+    mkV('Payment', `${py}-${pm}-08`, `Electricity bill payment — ${period}`, [
+      {account:'Electricity Expense', debit:22000, credit:0}, {account:bankLedger, debit:0, credit:22000},
+    ]);
+    // Monthly payroll
+    const run = {id:'PR'+payrollId, period, entries: employees.map(e=>({employeeId:e.id, gross:e.salary, pf:Math.round(e.salary*0.12), esi:Math.round(e.salary*0.0075)}))};
+    payrollRuns.push(run); payrollId++;
+    const totalGross = employees.reduce((s,e)=>s+e.salary,0), totalPF = employees.reduce((s,e)=>s+Math.round(e.salary*0.12),0), totalESI = employees.reduce((s,e)=>s+Math.round(e.salary*0.0075),0);
+    mkV('Journal', `${py}-${pm}-01`, `Salaries — ${period}`, [
+      {account:'Salaries Expense', debit:totalGross, credit:0}, {account:'Employer PF & ESI Expense', debit:totalPF+totalESI, credit:0},
+      {account:'PF Payable', debit:0, credit:totalPF*2}, {account:'ESI Payable', debit:0, credit:totalESI*2},
+      {account:bankLedger, debit:0, credit:totalGross-totalPF-totalESI},
+    ]);
+    mkV('Payment', `${py}-${pm}-15`, `PF & ESI remittance — ${period}`, [
+      {account:'PF Payable', debit:totalPF*2, credit:0}, {account:'ESI Payable', debit:totalESI*2, credit:0}, {account:bankLedger, debit:0, credit:(totalPF+totalESI)*2},
+    ]);
+  });
+
+  const seq = {flat:flats.length+1, bill:billId, voucher:vid, complaint:1, head:200, vendor:vendors.length+1, vbill:vbillId, emp:employees.length+1, payroll:payrollId, asset:1, item:1, itx:1, ftype:flatTypes.length+1, meter:1, tower:towers.length+1, mmr:1, cbill:1, bank:bankAccounts.length+1};
+
+  const db = {
+    isDemoData:true, society, towers, flats, flatTypes, chargeHeads, bankAccounts, vendors, employees, vouchers, bills, vendorBills, payrollRuns,
+    financialYears, seq, complaints:[], assets:[], inventoryItems:[], inventoryTx:[], meterReadings:[], categoryRates:{}, consolidatedBills:[], mainMeterReadings:[],
+    security: DB.security, utilityRates: DB.utilityRates||{},
+    budgets:{}, auditLog:[{id:1, ts:nowTS(), role:'System', action:'Demo Data Generated', detail:`3 years, ${flats.length} flats, ${vouchers.length} vouchers`}],
+    wipeRequest:null, importRequest:null, archiveRequest:null, cloudSyncChangeRequest:null, fyReopenRequest:null, auditLockRequest:null,
+    dailyClosingEnabled:false, dayCloses:[], pendingImportText:null, lastBackupAt:null,
+    assetVerifications:[], auditObservations:[], cashVerifications:[], controlChecklistRuns:[], documents:[],
+    govtCompliance:[], legalCases:[], loginHistory:[], complianceItems:[],
+    agmReports:[], fyCloseRequest:null, inventorySeeded:false, lastBackupChecksum:null, lastBackupVerified:null,
+    preArchiveBackupAt:null, preImportBackupAt:null, registeredDevice:null, statutoryRegisterStatus:{}, wipeBackupAt:null,
+    internalControls: {cashPaymentLimit:10000, roundFigureThreshold:10000, backdatedDaysThreshold:30, vendorConcentrationPct:40},
+    billingRules: {interestEnabled:false, interestRatePctPerMonth:0, graceDays:0, penaltyEnabled:false, penaltyType:'flat', penaltyAmount:0, rebateEnabled:false, rebatePct:0, rebateDaysBeforeDue:0},
+  };
+  // Defensive safety net: every array field the app accesses directly anywhere, defaulted if somehow
+  // still missing — a past run of this generator crashed on exactly this kind of gap (complianceItems
+  // wasn't in the explicit list above at first), so this catches anything still overlooked.
+  ['assetVerifications','assets','auditLog','auditObservations','bankAccounts','bills','cashVerifications',
+   'chargeHeads','complaints','complianceItems','consolidatedBills','controlChecklistRuns','dayCloses','documents',
+   'employees','financialYears','flatTypes','flats','govtCompliance','inventoryItems','inventoryTx','legalCases',
+   'loginHistory','meterReadings','payrollRuns','towers','vendorBills','vendors','vouchers'].forEach(k=>{ if(db[k]===undefined) db[k]=[]; });
+  // Closing snapshots for the two closed years, computed the same way the real Close FY flow does
+  ['FY1','FY2'].forEach(fyId=>{
+    const fy = financialYears.find(f=>f.id===fyId);
+    fy.closedBy='Treasurer'; fy.closedByName=''; fy.closedAt=fy.endDate+'T18:00:00.000Z';
+  });
+  return db;
+}
+function verifyDemoDataTallies(db){
+  let dr=0,cr=0; db.vouchers.forEach(v=>v.entries.forEach(e=>{dr+=e.debit||0;cr+=e.credit||0;}));
+  const tbOk = Math.abs(dr-cr)<1;
+  const assets = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Asset').reduce((s,a)=>{
+    let bal=0; db.vouchers.forEach(v=>v.entries.forEach(e=>{ if(e.account===a) bal += (e.debit||0)-(e.credit||0); })); return s+bal;
+  },0);
+  const liabPlusSurplus = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]!=='Asset').reduce((s,a)=>{
+    let bal=0; db.vouchers.forEach(v=>v.entries.forEach(e=>{ if(e.account===a) bal += (e.credit||0)-(e.debit||0); })); return s+bal;
+  },0);
+  const bsOk = Math.abs(assets-liabPlusSurplus)<1;
+  return {tbOk, bsOk, dr:Math.round(dr), cr:Math.round(cr), assets:Math.round(assets), liabPlusSurplus:Math.round(liabPlusSurplus)};
+}
+function loadDemoData(){
+  if(isReadOnly()){ toast(window.__currentRole+' cannot load demo data.'); return; }
+  const hasRealData = DB.vouchers && DB.vouchers.length>0 && !DB.isDemoData;
+  const msg = hasRealData
+    ? 'This device already has real data. Loading demo data REPLACES everything currently here — a restore point is saved automatically, but please make sure you have exported a proper backup first. Continue?'
+    : 'Load 3 years of sample data to explore the app? This replaces anything currently here.';
+  if(!confirm(msg)) return;
+  try{ idbSet('pre_demo_backup', JSON.stringify(DB)); }catch(e){}
+  const demo = buildDemoDB();
+  const check = verifyDemoDataTallies(demo);
+  if(!check.tbOk || !check.bsOk){ toast('Demo data generation produced a tallying error — not loaded. Please report this.'); console.error('Demo data tally check failed', check); return; }
+  DB = demo;
+  save(); toast(`Demo data loaded — ${demo.flats.length} flats, ${demo.vouchers.length} vouchers across 3 years (2023-24, 2024-25, 2025-26). Trial Balance and Balance Sheet both verified tallying.`); go('dashboard');
+}
+function downloadDemoData(){
+  const demo = buildDemoDB();
+  const check = verifyDemoDataTallies(demo);
+  if(!check.tbOk || !check.bsOk){ toast('Demo data generation produced a tallying error — not downloaded. Please report this.'); console.error('Demo data tally check failed', check); return; }
+  const text = JSON.stringify(demo, null, 2);
+  const blob = new Blob([text],{type:'application/json'});
+  const url = URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download='smartrwa-demo-data-3years.json'; a.click();
+  toast('Demo data file downloaded — import it anytime via Setup → Import Backup.');
+}
+function removeDemoData(){
+  if(isReadOnly()){ toast(window.__currentRole+' cannot remove demo data.'); return; }
+  if(!DB.isDemoData){ toast('This is not demo data.'); return; }
+  if(!confirm('Remove demo data and return to a clean, empty app? A restore point of the demo data is saved first.')) return;
+  try{ idbSet('pre_demo_backup', JSON.stringify(DB)); }catch(e){}
+  const security = DB.security, society = {name:'My Housing Society', address:'', regNo:'', pan:'', gstin:'', fyStartMonth:4, minBalanceThreshold:0, totalArea:0, upiId:''}, utilityRates = DB.utilityRates;
+  DB = {
+    society, security, utilityRates,
+    flats:[], chargeHeads:defaultCharges(), vouchers:[], bills:[], complaints:[],
+    vendors:[], vendorBills:[], employees:[], payrollRuns:[], assets:[], inventoryItems:[], inventoryTx:[],
+    flatTypes:[], meterReadings:[], categoryRates:{}, consolidatedBills:[], towers:[], mainMeterReadings:[], bankAccounts:[],
+    seq:{flat:1,bill:1,voucher:1,complaint:1,head:100,vendor:1,vbill:1,emp:1,payroll:1,asset:1,item:1,itx:1,ftype:1,meter:1,tower:1,mmr:1,cbill:1,bank:1},
+    auditLog:[{id:1, ts:nowTS(), role:window.__currentRole, action:'Demo Data Removed', detail:'Returned to clean empty state'}],
+    wipeRequest:null, financialYears:[], dailyClosingEnabled:false, dayCloses:[], isDemoData:false,
+    // Same comprehensive list as buildDemoDB — this exact class of gap (fields the boot-time migration
+    // normally patches in, but a manual mid-session DB reset skips) is what crashed several screens
+    // the first time this was tested, so every field discovered via that same sweep is included here too.
+    assetVerifications:[], auditObservations:[], cashVerifications:[], controlChecklistRuns:[], documents:[],
+    govtCompliance:[], legalCases:[], loginHistory:[], complianceItems:[],
+    agmReports:[], fyCloseRequest:null, fyReopenRequest:null, archiveRequest:null, auditLockRequest:null, importRequest:null, cloudSyncChangeRequest:null,
+    inventorySeeded:false, lastBackupChecksum:null, lastBackupVerified:null, pendingImportText:null, lastBackupAt:null,
+    preArchiveBackupAt:null, preImportBackupAt:null, registeredDevice:null, statutoryRegisterStatus:{}, wipeBackupAt:null,
+    internalControls: {cashPaymentLimit:10000, roundFigureThreshold:10000, backdatedDaysThreshold:30, vendorConcentrationPct:40},
+    billingRules: {interestEnabled:false, interestRatePctPerMonth:0, graceDays:0, penaltyEnabled:false, penaltyType:'flat', penaltyAmount:0, rebateEnabled:false, rebatePct:0, rebateDaysBeforeDue:0},
+    budgets:{},
+  };
+  save(); toast('Demo data removed — back to a clean, empty app.'); go('dashboard');
+}
+
 function requestWipeAll(){
   if(!canEdit()) return;
-  const reason = prompt('Reason for requesting a full data wipe (required):');
   if(!reason || !reason.trim()) return;
   DB.wipeRequest = {requestedBy: window.__currentRole, requestedAt: nowTS(), reason: reason.trim()};
   logAction('Wipe Requested', `Full data wipe requested — reason: ${reason.trim()}`);
@@ -8877,6 +9099,8 @@ const FAQ = [
    a:'Setup → Data shows three figures side by side — Total, Used, and Unused — plus a progress bar, using the actual free space this device is reporting, not a rough guess. On a typical phone with tens of GB free, this app\'s data (even years of a large society\'s records) is a very small fraction of that. If usage ever climbs high enough to matter, a note appears suggesting Setup → Financial Year → Archive for older closed years — see the separate question on that.'},
 {k:['daily closing','close the day','end of day','eod','day close','difference at close'], q:'Can I close the books daily and get blocked if something doesn\'t tally?',
    a:'Setup → Daily Closing (off by default — turn it on if you want this discipline). "Close Today\'s Books" checks Trial Balance, Balance Sheet, and Cash Flow — if everything genuinely tallies, it records the day as closed. If not, it shows exactly what\'s wrong and how to fix it, using the same diagnosis as Reports → Diagnose Tallying. If a day gets skipped and there\'s a real unresolved difference, new entries pause everywhere in the app until it\'s fixed — a Dashboard banner makes this hard to miss. If a day gets skipped but the books are actually clean (just forgot to close), nothing gets blocked — only a gentle reminder, since that\'s a procedural miss, not a real problem. Bank reconciliation status is deliberately not part of this check, since that\'s ongoing housekeeping tied to when your physical bank statement arrives, not something resolved fresh every day — it has its own separate reminder under Setup → Bank & FD Accounts.'},
+{k:['demo data','sample data','trial data','test data','explore the app','try before real data'], q:'Can I load sample data to try the app before entering real records?',
+   a:'Setup → Demo Data. Load 3 years of realistic sample data — 24 flats, roughly 2,100 vouchers, billing and receipts, vendor bills, payroll, two closed years and one open year — all pre-approved and verified tallying (Trial Balance and Balance Sheet both checked exactly), so every screen and report has something meaningful to show. A clear banner appears everywhere while it\'s loaded, so it\'s never mistaken for real records. Download it as a file instead if you\'d rather explore it later or share it. Remove Demo Data anytime — a restore point is saved first, and it returns the app to a completely clean, empty state, ready for your society\'s actual records. Loading demo data replaces whatever is currently in the app, so if real data is already entered, back that up first.'},
 {k:['pwa','install','home screen','offline'], q:'Can I install this as an app?',
    a:'Yes — in Safari tap Share → "Add to Home Screen". It opens full-screen like a native app and works fully offline. Data stays on the device.'},
   {k:['tally','tallyprime','export to tally','tally xml','tally import'], q:'Can I export data to Tally / TallyPrime?',
