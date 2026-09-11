@@ -4232,9 +4232,26 @@ function renderPaginationControls(pageKey, currentPage, totalPages, totalCount, 
 }
 function renderAccounts(){
   const sr = subroute || 'vouchers';
-  const tabs = [['vouchers','Vouchers'],['ledger','Ledger'],['budget','Budget']];
+  const tabs = [['register','Daily Register'],['vouchers','Vouchers'],['ledger','Ledger'],['budget','Budget']];
   let body='';
-  if(sr==='vouchers'){
+  if(sr==='register'){
+    window.__regDate = window.__regDate || todayISO();
+    const regDate = window.__regDate;
+    const dayVouchers = DB.vouchers.filter(v=>v.date===regDate).sort((a,b)=>(a.makerAt||'').localeCompare(b.makerAt||''));
+    const isToday = regDate===todayISO();
+    body = `<div class="field"><label>Date</label><input id="reg_date" type="date" value="${regDate}" max="${todayISO()}" onchange="window.__regDate=this.value;render();"></div>
+      ${!isReadOnly()? `<button class="btn btn-primary btn-block" style="margin-bottom:12px;" onclick="openVoucherModal('Journal','${regDate}')">+ Add Journal Entry</button>` : ''}
+      ${dayVouchers.length? `<div class="tbl-wrap"><table><tr><th>Voucher No.</th><th>Time</th><th>Type</th><th>Narration</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th><th>Status</th></tr>
+        ${dayVouchers.map(v=>`<tr onclick="${v.status==='pending'?`go('approvals')`:''}">
+          <td style="font-size:11px;font-family:'IBM Plex Mono',monospace;">${v.voucherNo||('#'+v.id)}</td>
+          <td style="font-size:11px;">${v.makerAt? new Date(v.makerAt).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : ''}</td>
+          <td>${v.type}</td><td style="font-size:12px;">${v.narration||''}</td>
+          <td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.debit||0),0))}</td>
+          <td class="num-cell">₹${fmt(v.entries.reduce((s,e)=>s+(e.credit||0),0))}</td>
+          <td><span class="stamp ${v.status}">${v.status}</span></td></tr>`).join('')}
+        </table></div>` : `<div class="empty"><div class="ic">§</div>Nothing entered for ${regDate} yet.</div>`}
+      ${isToday? `<div class="card" style="margin-top:14px;"><div class="section-title">Close of Business</div>${renderDailyClosingCard()}</div>` : ''}`;
+  } else if(sr==='vouchers'){
     const vsAll = DB.vouchers.slice().sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
     const {pageItems: vs, currentPage, totalPages, totalCount, pageSize} = paginateSlice(vsAll, 'vouchers', 50);
     body = vsAll.length? `<div class="tbl-wrap"><table><tr><th>Voucher No.</th><th>Date</th><th>Type</th><th>Narration</th><th class="num-cell">Amount</th><th>Status</th><th>Audit</th><th></th></tr>
@@ -4297,11 +4314,11 @@ function renderAccounts(){
   return `<div class="subtabs">${tabs.map(t=>`<button class="subtab ${sr===t[0]?'active':''}" onclick="go('accounts','${t[0]}')">${t[1]}</button>`).join('')}</div>
   <div class="card">${body}</div>`;
 }
-function openVoucherModal(){
+function openVoucherModal(presetType, presetDate){
   openModal(`
     <div class="modal-head"><h2>New Voucher</h2><button class="close-x" onclick="closeModal()">×</button></div>
-    <div class="field"><label>Voucher Type</label><select id="vc_type" onchange="toggleVoucherFields()"><option>Payment</option><option>Journal</option><option>Contra</option><option>Receipt</option></select></div>
-    <div class="field"><label>Date</label><input id="vc_date" type="date" value="${todayISO()}"></div>
+    <div class="field"><label>Voucher Type</label><select id="vc_type" onchange="toggleVoucherFields()"><option ${presetType==='Payment'?'selected':''}>Payment</option><option ${presetType==='Journal'?'selected':''}>Journal</option><option ${presetType==='Contra'?'selected':''}>Contra</option><option ${presetType==='Receipt'?'selected':''}>Receipt</option></select></div>
+    <div class="field"><label>Date</label><input id="vc_date" type="date" value="${presetDate||todayISO()}"></div>
     <div class="field" id="vc_drWrap"><label id="vc_drLabel">Debit Account</label><select id="vc_dr">${Object.keys(ACCOUNTS).map(a=>`<option>${a}</option>`).join('')}</select></div>
     <div class="field" id="vc_modeWrapDr" style="display:none;"><label>Received Into</label>${paymentAccountSelect('vc_modeDr')}</div>
     <div class="field" id="vc_crWrap"><label id="vc_crLabel">Credit Account</label><select id="vc_cr">${Object.keys(ACCOUNTS).map(a=>`<option>${a}</option>`).join('')}</select></div>
@@ -9101,6 +9118,8 @@ const FAQ = [
    a:'Setup → Daily Closing (off by default — turn it on if you want this discipline). "Close Today\'s Books" checks Trial Balance, Balance Sheet, and Cash Flow — if everything genuinely tallies, it records the day as closed. If not, it shows exactly what\'s wrong and how to fix it, using the same diagnosis as Reports → Diagnose Tallying. If a day gets skipped and there\'s a real unresolved difference, new entries pause everywhere in the app until it\'s fixed — a Dashboard banner makes this hard to miss. If a day gets skipped but the books are actually clean (just forgot to close), nothing gets blocked — only a gentle reminder, since that\'s a procedural miss, not a real problem. Bank reconciliation status is deliberately not part of this check, since that\'s ongoing housekeeping tied to when your physical bank statement arrives, not something resolved fresh every day — it has its own separate reminder under Setup → Bank & FD Accounts.'},
 {k:['demo data','sample data','trial data','test data','explore the app','try before real data'], q:'Can I load sample data to try the app before entering real records?',
    a:'Setup → Demo Data. Load 3 years of realistic sample data — 24 flats, roughly 2,100 vouchers, billing and receipts, vendor bills, payroll, two closed years and one open year — all pre-approved and verified tallying (Trial Balance and Balance Sheet both checked exactly), so every screen and report has something meaningful to show. A clear banner appears everywhere while it\'s loaded, so it\'s never mistaken for real records. Download it as a file instead if you\'d rather explore it later or share it. Remove Demo Data anytime — a restore point is saved first, and it returns the app to a completely clean, empty state, ready for your society\'s actual records. Loading demo data replaces whatever is currently in the app, so if real data is already entered, back that up first.'},
+{k:['daily register','journal register','day register','day book entry','log journal entries'], q:'Is there a single place to log the day\'s journal entries and check they balance at close?',
+   a:'Accounts → Daily Register. Shows every entry dated that day in one register-style list — voucher number, time, type, narration, debit and credit — with an "Add Journal Entry" button right there that opens the same double-entry form used everywhere else in the app, so Debit and Credit are always enforced to balance before anything can be saved (same maker-checker approval applies too). When you\'re viewing today specifically, a Close of Business section appears at the bottom — this is the same Daily Closing check (see the separate question on that): confirms Trial Balance, Balance Sheet, and Cash Flow all genuinely tally, and if not, shows exactly what\'s wrong and how to fix it, right there without leaving the register.'},
 {k:['pwa','install','home screen','offline'], q:'Can I install this as an app?',
    a:'Yes — in Safari tap Share → "Add to Home Screen". It opens full-screen like a native app and works fully offline. Data stays on the device.'},
   {k:['tally','tallyprime','export to tally','tally xml','tally import'], q:'Can I export data to Tally / TallyPrime?',
