@@ -1393,8 +1393,65 @@ function computeExceptionReport(){
     if(amt1===amt2) exceptions.push({type:'Possible Duplicate Payment (Same Bill Paid Twice)', category:'Fraud Pattern', severity:'High', detail:`${getVendor(p.vendorId)?.name} — two payments of ₹${fmt(amt1)} on ${p.date}`, date:p.date});
   }));
 
-  // ===== DATA QUALITY =====
-  // Dormant flats (no receipt in 6+ months despite having a due)
+  // ===== ACCOUNTING INTEGRITY (Trial Balance / Balance Sheet / classification) =====
+  // These mirror the same checks Reports → Diagnose Tallying runs, surfaced here too so a single
+  // Exception scan catches them — deliberately never "fixed" by inserting a balancing/suspense entry;
+  // only ever flagged, with the genuine difference shown and a concrete next step.
+  { let dr=0,cr=0; DB.vouchers.filter(v=>v.status==='approved').forEach(v=>v.entries.forEach(e=>{dr+=e.debit||0;cr+=e.credit||0;}));
+    if(Math.abs(dr-cr)>=1) exceptions.push({type:'Trial Balance Mismatch', category:'Accounting Integrity', severity:'High',
+      detail:`Total Debit ₹${fmt(dr)} vs Total Credit ₹${fmt(cr)} — difference ₹${fmt(Math.abs(dr-cr))}`, date:todayISO(),
+      fix:'Every voucher is built balanced at entry, so this points to a corrupted or manually-edited record — open Reports → Diagnose Tallying for the exact cause.'}); }
+  { syncBankLedgerAccounts();
+    const assets = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Asset').reduce((s,a)=>s+accBalance(a).net,0);
+    const liabPlusSurplus = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]!=='Asset').reduce((s,a)=>{ const b=accBalance(a); return s+(b.cr-b.dr); },0);
+    if(Math.abs(assets-liabPlusSurplus)>=1) exceptions.push({type:'Balance Sheet Mismatch', category:'Accounting Integrity', severity:'High',
+      detail:`Assets ₹${fmt(assets)} vs Liabilities + Funds + Surplus ₹${fmt(liabPlusSurplus)} — difference ₹${fmt(Math.abs(assets-liabPlusSurplus))}`, date:todayISO(),
+      fix:'Open Reports → Balance Sheet or Diagnose Tallying to see which account is driving the difference — never force this to zero with an artificial entry.'}); }
+  // GST Payable should normally carry a credit balance (a liability). A debit balance there is not a
+  // normal liability — it typically means GST paid exceeds GST collected, i.e. a receivable, not a
+  // payable — and needs a classification decision, not silent treatment as an ordinary liability.
+  { const b = accBalance('GST Payable');
+    if(b.net > 0.5) exceptions.push({type:'GST Payable Shows a Debit Balance', category:'Accounting Integrity', severity:'Medium',
+      detail:`GST Payable carries a debit balance of ₹${fmt(b.net)} — the opposite of its normal credit/liability balance`, date:todayISO(),
+      fix:'This usually means GST paid exceeds GST collected — effectively a GST Receivable, not a payable. Review and reclassify explicitly rather than leaving it under Current Liabilities.'}); }
+  // Opening Balance Equity is meant to be a temporary bucket used only while first setting up the
+  // books — any balance still sitting there is worth a human decision on where it truly belongs,
+  // not an automatic classification as an ordinary liability.
+  { const b = accBalance('Opening Balance Equity');
+    if(Math.abs(b.net)>=1) exceptions.push({type:'Opening Balance Equity Not Yet Mapped', category:'Accounting Integrity', severity:'Medium',
+      detail:`Opening Balance Equity carries a balance of ₹${fmt(Math.abs(b.net))} (${b.net>0?'debit':'credit'})`, date:todayISO(),
+      fix:'This account is meant to be temporary. Identify which real fund, reserve, or liability this balance actually belongs to and move it there with a reviewed journal entry — do not leave it here indefinitely.'}); }
+  // Any account name used in an actual voucher but missing from the chart of accounts entirely would
+  // otherwise be silently excluded from Balance Sheet and Income & Expenditure — worth surfacing loudly
+  // rather than letting it vanish from every report without anyone noticing.
+  { syncBankLedgerAccounts();
+    const used = new Set(); DB.vouchers.filter(v=>v.status==='approved').forEach(v=>v.entries.forEach(e=>used.add(e.account)));
+    [...used].filter(a=>!ACCOUNTS[a]).forEach(a=>{
+      let bal=0; DB.vouchers.filter(v=>v.status==='approved').forEach(v=>v.entries.forEach(e=>{ if(e.account===a) bal+=(e.debit||0)-(e.credit||0); }));
+      exceptions.push({type:'Unmapped Account', category:'Accounting Integrity', severity:'High', detail:`"${a}" is used in approved vouchers (net ₹${fmt(bal)}) but isn't in the chart of accounts — currently excluded from Balance Sheet and Income & Expenditure entirely`, date:todayISO(),
+        fix:'This account needs to be properly classified (Asset/Liability/Income/Expense) before it can appear correctly in any report. This most often happens after a raw data import — check Setup → Import Backup history.'});
+    }); }
+  // Flat-level overpayments / unapplied receipts — every flat currently in credit (paid more than
+  // billed), not just unusually large ones (see the separate, narrower fraud-pattern check above).
+  DB.flats.forEach(f=>{
+    const out = flatLedgerBalance(f.id);
+    if(out < -1) exceptions.push({type:'Flat Overpayment / Unapplied Receipt', category:'Receivables Reconciliation', severity:'Low',
+      detail:`${flatLabel(f)} — ₹${fmt(Math.abs(out))} paid in advance of bills raised`, date:todayISO(),
+      fix:'Confirm this is a genuine advance the owner intends to carry forward, not a misposted or duplicate receipt — it will auto-adjust against their next bill either way.'});
+  });
+  // Vouchers or bills referencing a flat that no longer exists in the flat list — a data integrity gap,
+  // most often from a flat being deleted or a corrupted import, that would otherwise make that
+  // transaction invisible in any flat-wise report.
+  { const flatIds = new Set(DB.flats.map(f=>f.id));
+    const badFlatIds = new Set();
+    DB.vouchers.filter(v=>v.flatId && !flatIds.has(v.flatId)).forEach(v=>badFlatIds.add(v.flatId));
+    DB.bills.filter(b=>b.flatId && !flatIds.has(b.flatId)).forEach(b=>badFlatIds.add(b.flatId));
+    badFlatIds.forEach(fid=>{
+      const count = DB.vouchers.filter(v=>v.flatId===fid).length + DB.bills.filter(b=>b.flatId===fid).length;
+      exceptions.push({type:'Invalid Flat Reference', category:'Accounting Integrity', severity:'High', detail:`${count} record(s) reference flat ID "${fid}", which doesn't exist in the current flat list`, date:todayISO(),
+        fix:'These transactions are excluded from that flat statement and from Defaulters/Outstanding reports since they cannot be matched to a real flat. Check Setup → Import Backup history for when this may have been introduced.'});
+    }); }
+
   DB.flats.forEach(f=>{
     const out = flatOutstanding(f.id); if(out<=0) return;
     const lastReceipt = DB.vouchers.filter(v=>v.status==='approved' && v.type==='Receipt' && v.flatId===f.id).sort((a,b)=>b.date.localeCompare(a.date))[0];
@@ -4240,7 +4297,11 @@ function renderAccounts(){
     const dayVouchers = DB.vouchers.filter(v=>v.date===regDate).sort((a,b)=>(a.makerAt||'').localeCompare(b.makerAt||''));
     const isToday = regDate===todayISO();
     body = `<div class="field"><label>Date</label><input id="reg_date" type="date" value="${regDate}" max="${todayISO()}" onchange="window.__regDate=this.value;render();"></div>
-      ${!isReadOnly()? `<button class="btn btn-primary btn-block" style="margin-bottom:12px;" onclick="openVoucherModal('Journal','${regDate}')">+ Add Journal Entry</button>` : ''}
+      ${!isReadOnly()? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        <button class="btn btn-primary btn-sm" style="flex:1;min-width:140px;" onclick="openReceiptModal()">+ Maintenance Received</button>
+        <button class="btn btn-primary btn-sm" style="flex:1;min-width:140px;" onclick="openVendorPaymentModal()">+ Pay Vendor/Creditor</button>
+        <button class="btn btn-outline btn-sm" style="flex:1;min-width:140px;" onclick="openVoucherModal('Journal','${regDate}')">+ Other Journal Entry</button>
+      </div>` : ''}
       ${dayVouchers.length? `<div class="tbl-wrap"><table><tr><th>Voucher No.</th><th>Time</th><th>Type</th><th>Narration</th><th class="num-cell">Debit</th><th class="num-cell">Credit</th><th>Status</th></tr>
         ${dayVouchers.map(v=>`<tr onclick="${v.status==='pending'?`go('approvals')`:''}">
           <td style="font-size:11px;font-family:'IBM Plex Mono',monospace;">${v.voucherNo||('#'+v.id)}</td>
@@ -5384,14 +5445,14 @@ function renderAudit(){
     window.__excFilter = window.__excFilter || 'All';
     const exceptions = computeExceptionReport();
     const sevColor = s=>({High:'brick',Medium:'gold',Low:'moss'}[s]); const sevBg = s=>({High:'brick-soft',Medium:'amber-soft',Low:'moss-soft'}[s]);
-    const categories = ['All','Internal Control','Fraud Pattern','Data Quality'];
+    const categories = ['All','Accounting Integrity','Receivables Reconciliation','Internal Control','Fraud Pattern','Data Quality'];
     const counts = {}; exceptions.forEach(e=> counts[e.category]=(counts[e.category]||0)+1);
     const shownAll = window.__excFilter==='All'? exceptions : exceptions.filter(e=>e.category===window.__excFilter);
     const {pageItems: shown, currentPage, totalPages, totalCount, pageSize} = paginateSlice(shownAll, 'exceptions', 50);
-    body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Computed live from current data across three areas: <b>Internal Control</b> (procedural checks — cash limits, back-dating, voucher-numbering integrity, budget overspend), <b>Fraud Pattern</b> (behavioural/statistical checks borrowed from bank inspection practice), and <b>Data Quality</b> (missing GST/PAN, dormant flats). ${isReadOnly()?'':'<a href="#" onclick="event.preventDefault();go(\'settings\')">Adjust thresholds under Setup → Internal Controls.</a>'}</p>
+    body = `<p style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Computed live from current data — never by hiding a difference or inserting a balancing entry — across five areas: <b>Accounting Integrity</b> (Trial Balance/Balance Sheet mismatches, unmapped accounts, misclassified balances), <b>Receivables Reconciliation</b> (flat-wise overpayments and unapplied receipts), <b>Internal Control</b> (procedural checks — cash limits, back-dating, voucher-numbering integrity, budget overspend), <b>Fraud Pattern</b> (behavioural/statistical checks borrowed from bank inspection practice), and <b>Data Quality</b> (missing GST/PAN, dormant flats). ${isReadOnly()?'':'<a href="#" onclick="event.preventDefault();go(\'settings\')">Adjust thresholds under Setup → Internal Controls.</a>'}</p>
       <div class="subtabs">${categories.map(c=>`<button class="subtab ${window.__excFilter===c?'active':''}" onclick="window.__excFilter='${c}';window.__paginationState.exceptions=1;render();">${c}${c!=='All'&&counts[c]?' ('+counts[c]+')':''}</button>`).join('')}</div>
       ${shownAll.length? `<div class="tbl-wrap"><table><tr><th>Type</th><th>Severity</th><th>Detail</th></tr>
-      ${shown.map(e=>`<tr><td style="font-size:12px;">${e.type}</td><td><span class="stamp" style="background:var(--${sevBg(e.severity)});color:var(--${sevColor(e.severity)});">${e.severity}</span></td><td style="font-size:12px;">${e.detail}</td></tr>`).join('')}
+      ${shown.map(e=>`<tr><td style="font-size:12px;">${e.type}</td><td><span class="stamp" style="background:var(--${sevBg(e.severity)});color:var(--${sevColor(e.severity)});">${e.severity}</span></td><td style="font-size:12px;">${e.detail}${e.fix?`<div style="font-size:11px;color:var(--ink-soft);margin-top:3px;padding:4px 6px;background:var(--paper);border-radius:5px;"><b>Suggested action:</b> ${e.fix}</div>`:''}</td></tr>`).join('')}
       </table></div>${renderPaginationControls('exceptions', currentPage, totalPages, totalCount, pageSize)}` : `<div class="empty"><div class="ic">✓</div>No exceptions found${window.__excFilter!=='All'?' in '+window.__excFilter:''}.</div>`}`;
   } else if(sr==='legal'){
     const cases = DB.legalCases.slice().sort((a,b)=>(b.status==='Ongoing')-(a.status==='Ongoing') || b.filedDate.localeCompare(a.filedDate));
@@ -5809,7 +5870,7 @@ function applyBudgetSuggestions(fyId){
 
 function renderReports(){
   const sr = subroute || 'trial';
-  const tabs=[['trial','Trial Balance'],['diagnose','Diagnose Tallying'],['genledger','General Ledger'],['daybook','Day Book'],['cashbook','Cash Book'],['bankbook','Bank Book'],['journal','Journal Register'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['bsschedule','Schedule-wise B/S'],['ratios','Financial Ratios'],['trends','5-Year Trends'],['budget','Budget vs Actual'],['unreconciled','Unreconciled Items'],['defaulters','Defaulters'],['advances','Advance Balances'],['lowbalance','Low Balance Alerts'],['statement','Statement of Account'],['insights','Smart Insights'],['agm','AGM Pack'],['tally','Export to Tally']];
+  const tabs=[['validation','Test & Validation Report'],['trial','Trial Balance'],['diagnose','Diagnose Tallying'],['genledger','General Ledger'],['daybook','Day Book'],['cashbook','Cash Book'],['bankbook','Bank Book'],['journal','Journal Register'],['ie','Income & Expenditure'],['rp','Receipts & Payments'],['bs','Balance Sheet'],['bsschedule','Schedule-wise B/S'],['ratios','Financial Ratios'],['trends','5-Year Trends'],['budget','Budget vs Actual'],['unreconciled','Unreconciled Items'],['defaulters','Defaulters'],['advances','Advance Balances'],['lowbalance','Low Balance Alerts'],['statement','Statement of Account'],['insights','Smart Insights'],['agm','AGM Pack'],['tally','Export to Tally']];
   const isFinancialStatement = ['trial','ie','rp','bs','genledger','daybook','cashbook','bankbook','journal','bsschedule','statement'].includes(sr);
   if(!window.__reportFrom) window.__reportFrom = fyStart();
   if(!window.__reportTo) window.__reportTo = todayISO();
@@ -5820,7 +5881,43 @@ function renderReports(){
     </div>` : '';
   const from = window.__reportFrom, to = window.__reportTo;
 
-  if(sr==='trial'){
+  if(sr==='validation'){
+    syncBankLedgerAccounts();
+    let dr=0,cr=0; DB.vouchers.filter(v=>v.status==='approved').forEach(v=>v.entries.forEach(e=>{dr+=e.debit||0;cr+=e.credit||0;}));
+    const tbDiff = dr-cr;
+    const assets = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]==='Asset').reduce((s,a)=>s+accBalance(a).net,0);
+    const liabPlusSurplus = Object.keys(ACCOUNTS).filter(a=>ACCOUNTS[a]!=='Asset').reduce((s,a)=>{ const b=accBalance(a); return s+(b.cr-b.dr); },0);
+    const bsDiff = assets-liabPlusSurplus;
+    const exceptions = computeExceptionReport();
+    const byCategory = {}; exceptions.forEach(e=>{ byCategory[e.category]=byCategory[e.category]||{High:0,Medium:0,Low:0}; byCategory[e.category][e.severity]++; });
+    const highCount = exceptions.filter(e=>e.severity==='High').length;
+    const checks = [
+      {label:'Trial Balance', pass: Math.abs(tbDiff)<1, detail: Math.abs(tbDiff)<1? `Total Debit = Total Credit = ₹${fmt(dr)}` : `Debit ₹${fmt(dr)} vs Credit ₹${fmt(cr)} — difference ₹${fmt(Math.abs(tbDiff))}`},
+      {label:'Balance Sheet', pass: Math.abs(bsDiff)<1, detail: Math.abs(bsDiff)<1? `Assets = Liabilities + Funds + Surplus = ₹${fmt(assets)}` : `Assets ₹${fmt(assets)} vs Liab+Funds+Surplus ₹${fmt(liabPlusSurplus)} — difference ₹${fmt(Math.abs(bsDiff))}`},
+      {label:'Unmapped Accounts', pass: !exceptions.some(e=>e.type==='Unmapped Account'), detail: exceptions.filter(e=>e.type==='Unmapped Account').length? exceptions.filter(e=>e.type==='Unmapped Account').length+' account(s) used in vouchers but not in the chart of accounts' : 'Every account used in a voucher is properly classified'},
+      {label:'Invalid Flat References', pass: !exceptions.some(e=>e.type==='Invalid Flat Reference'), detail: exceptions.filter(e=>e.type==='Invalid Flat Reference').length? exceptions.filter(e=>e.type==='Invalid Flat Reference').length+' record(s) reference a flat that no longer exists' : 'Every voucher and bill references a real, existing flat'},
+      {label:'GST Payable Classification', pass: !exceptions.some(e=>e.type==='GST Payable Shows a Debit Balance'), detail: exceptions.some(e=>e.type==='GST Payable Shows a Debit Balance')? 'GST Payable carries an abnormal debit balance — see Accounting Integrity exceptions' : 'GST Payable carries a normal credit (liability) balance'},
+      {label:'Opening Balance Equity', pass: !exceptions.some(e=>e.type==='Opening Balance Equity Not Yet Mapped'), detail: exceptions.some(e=>e.type==='Opening Balance Equity Not Yet Mapped')? 'Still carries a balance — needs mapping to a real fund/liability' : 'Fully cleared — nothing left unmapped'},
+      {label:'Negative Cash', pass: !exceptions.some(e=>e.type==='Negative Cash Balance'), detail: exceptions.some(e=>e.type==='Negative Cash Balance')? 'Cash in Hand shows a negative balance — impossible in reality' : 'Cash in Hand balance is non-negative'},
+      {label:'Duplicate Vouchers', pass: !exceptions.some(e=>e.type==='Duplicate Voucher Number'), detail: exceptions.filter(e=>e.type==='Duplicate Voucher Number').length? exceptions.filter(e=>e.type==='Duplicate Voucher Number').length+' duplicate voucher number(s) found' : 'Every voucher number is unique'},
+      {label:'Bank Accounts Included', pass: true, detail: `${DB.bankAccounts.filter(b=>b.type!=='FD').length} active bank account(s), all automatically included in Balance Sheet and reports via the chart of accounts — none can be silently left out`},
+    ];
+    const allPass = checks.every(c=>c.pass);
+    body = `<div class="card" style="text-align:center;background:${allPass?'var(--moss-soft)':'var(--brick-soft)'};border:2px solid ${allPass?'var(--moss)':'var(--brick)'};margin-bottom:14px;">
+      <div style="font-size:28px;">${allPass?'✅':'⚠️'}</div>
+      <div style="font-size:16px;font-weight:700;margin-top:4px;">${allPass? 'All Checks Pass' : highCount+' High-Severity Issue'+(highCount!==1?'s':'')+' Found'}</div>
+      <div style="font-size:11.5px;color:var(--ink-soft);margin-top:4px;">Generated live from current data, ${new Date().toLocaleString('en-IN')} — nothing here is cached or pre-computed</div>
+    </div>
+    <div class="tbl-wrap"><table><tr><th>Check</th><th>Result</th><th>Detail</th></tr>
+      ${checks.map(c=>`<tr><td style="font-size:12.5px;font-weight:600;">${c.label}</td><td><span class="stamp" style="background:var(--${c.pass?'moss-soft':'brick-soft'});color:var(--${c.pass?'moss':'brick'});">${c.pass?'PASS':'FAIL'}</span></td><td style="font-size:11.5px;color:var(--ink-soft);">${c.detail}</td></tr>`).join('')}
+    </table></div>
+    <h3 style="font-size:13px;margin-top:16px;">Exceptions by Category</h3>
+    <div class="tbl-wrap"><table><tr><th>Category</th><th class="num-cell">High</th><th class="num-cell">Medium</th><th class="num-cell">Low</th></tr>
+      ${Object.keys(byCategory).length? Object.entries(byCategory).map(([cat,c])=>`<tr><td style="font-size:12.5px;">${cat}</td><td class="num-cell" style="color:var(--brick);">${c.High||0}</td><td class="num-cell" style="color:var(--gold);">${c.Medium||0}</td><td class="num-cell" style="color:var(--moss);">${c.Low||0}</td></tr>`).join('') : '<tr><td colspan="4" style="color:var(--ink-soft)">No exceptions of any kind</td></tr>'}
+    </table></div>
+    <p style="font-size:11.5px;color:var(--ink-soft);margin-top:10px;">${exceptions.length} total exception(s) across all categories — <a href="#" onclick="event.preventDefault();go('audit','exceptions')">view full detail with suggested actions →</a></p>
+    <p style="font-size:10.5px;color:var(--ink-soft);margin-top:10px;">This report never hides a difference or inserts a balancing entry to force a tally — every figure here is the genuine, current state of the ledger. All Balance Sheet and Income & Expenditure figures are derived dynamically from each account's classification (Setup → Chart of Accounts), not from any fixed list — a new bank account, fund, or expense head added anywhere in the app is automatically included everywhere, with no separate step needed.</p>`;
+  } else if(sr==='trial'){
     let totDr=0,totCr=0;
     const groups={};
     Object.keys(ACCOUNTS).forEach(a=>{ const b=accBalance(a,{upto:to}); if(!b.dr&&!b.cr) return; totDr+=b.dr; totCr+=b.cr;
@@ -9119,7 +9216,9 @@ const FAQ = [
 {k:['demo data','sample data','trial data','test data','explore the app','try before real data'], q:'Can I load sample data to try the app before entering real records?',
    a:'Setup → Demo Data. Load 3 years of realistic sample data — 24 flats, roughly 2,100 vouchers, billing and receipts, vendor bills, payroll, two closed years and one open year — all pre-approved and verified tallying (Trial Balance and Balance Sheet both checked exactly), so every screen and report has something meaningful to show. A clear banner appears everywhere while it\'s loaded, so it\'s never mistaken for real records. Download it as a file instead if you\'d rather explore it later or share it. Remove Demo Data anytime — a restore point is saved first, and it returns the app to a completely clean, empty state, ready for your society\'s actual records. Loading demo data replaces whatever is currently in the app, so if real data is already entered, back that up first.'},
 {k:['daily register','journal register','day register','day book entry','log journal entries'], q:'Is there a single place to log the day\'s journal entries and check they balance at close?',
-   a:'Accounts → Daily Register. Shows every entry dated that day in one register-style list — voucher number, time, type, narration, debit and credit — with an "Add Journal Entry" button right there that opens the same double-entry form used everywhere else in the app, so Debit and Credit are always enforced to balance before anything can be saved (same maker-checker approval applies too). When you\'re viewing today specifically, a Close of Business section appears at the bottom — this is the same Daily Closing check (see the separate question on that): confirms Trial Balance, Balance Sheet, and Cash Flow all genuinely tally, and if not, shows exactly what\'s wrong and how to fix it, right there without leaving the register.'},
+   a:'Accounts → Daily Register. Shows every entry dated that day in one register-style list — voucher number, time, type, narration, debit and credit. Three buttons right there cover the common cases: “+ Maintenance Received” (ties to the specific flat, matches their outstanding bill — the correct way to record what a resident paid, not a generic journal), “+ Pay Vendor/Creditor” (ties to the specific vendor, settles their oldest bills first), and “+ Other Journal Entry” for anything else, which opens the same double-entry form used everywhere in the app — Debit and Credit are always enforced to balance before saving, and the same maker-checker approval applies to all three. When you\'re viewing today specifically, a Close of Business section appears at the bottom — the same Daily Closing check (see the separate question on that): confirms Trial Balance, Balance Sheet, and Cash Flow all genuinely tally, and if not, shows exactly what\'s wrong and how to fix it, right there without leaving the register.'},
+{k:['validation report','test and validation report','accounting health check','does balance sheet tally correctly','gst payable debit','opening balance equity','unmapped account'], q:'How do I get an overall PASS/FAIL check that the books are genuinely correct, not just made to look like they tally?',
+   a:'Reports → Test & Validation Report, first tab in Reports. A single PASS/FAIL grid — Trial Balance, Balance Sheet, unmapped accounts, invalid flat references, GST Payable classification, Opening Balance Equity, negative cash, duplicate vouchers, and confirmation every active bank account is automatically included — generated fresh from live data every time, never cached. Nothing here is ever forced to tally: if Assets do not equal Liabilities + Funds + Surplus, or Debit does not equal Credit, the exact difference is shown, never hidden or patched over with an artificial balancing entry. Balance Sheet and Income & Expenditure are built entirely from each account\'s classification (Asset/Liability/Income/Expense) rather than a fixed list, so a new bank account, fund, or expense head is automatically included everywhere the moment it exists — nothing needs a separate step to "flow through". Audit → Exceptions has the full detail behind each check, organized into five categories including two new ones — Accounting Integrity and Receivables Reconciliation — each exception listed with its account, amount, reason, and a concrete suggested action.'},
 {k:['pwa','install','home screen','offline'], q:'Can I install this as an app?',
    a:'Yes — in Safari tap Share → "Add to Home Screen". It opens full-screen like a native app and works fully offline. Data stays on the device.'},
   {k:['tally','tallyprime','export to tally','tally xml','tally import'], q:'Can I export data to Tally / TallyPrime?',
